@@ -1,5 +1,10 @@
 from dataclasses import dataclass
-from typing import Literal, Sequence
+from pathlib import Path
+import re
+import subprocess
+from typing import Literal, Sequence, TextIO
+
+from rare_variant_enrichment.io import open_text, read_nonempty_lines, write_json
 
 
 @dataclass(frozen=True)
@@ -95,6 +100,194 @@ def nearby_features(
     return [
         feature for feature in sorted(features) if abs(position - feature.tss) <= max_distance
     ]
+
+
+def classify_chromosome(
+    vcf_path: Path,
+    features_path: Path,
+    shared_samples_path: Path,
+    chromosome: str,
+    exact_ac: Sequence[int],
+    cumulative_ac_max: Sequence[int],
+    max_distance: int,
+    carrier_output: Path,
+    regions_output: Path,
+    qc_output: Path,
+) -> None:
+    _, vcf_contigs = _read_vcf_header(vcf_path)
+    if vcf_contigs and chromosome not in vcf_contigs:
+        raise ValueError(f"Requested chromosome is absent from VCF: {chromosome}")
+
+    features = [feature for feature in _read_features(features_path) if feature.chrom == chromosome]
+    shared_samples = set(read_nonempty_lines(shared_samples_path))
+    ac_classes = build_ac_classes(exact_ac, cumulative_ac_max)
+    regions = merge_tss_windows(features, max_distance)
+    _write_regions(regions_output, regions)
+
+    qc = {
+        "alt_alleles": 0,
+        "chromosome": chromosome,
+        "emitted_keys": 0,
+        "extracted_records": 0,
+        "feature_count": len(features),
+        "merged_region_count": len(regions),
+        "missing_genotypes": 0,
+        "tabix_query_count": 0,
+        "variant_feature_pairs": 0,
+    }
+    minimum_distances: dict[tuple[str, str, str], int] = {}
+    if not features:
+        _write_carriers(carrier_output, minimum_distances)
+        write_json(qc_output, qc)
+        return
+
+    sample_ids = _stream_tabix_records(
+        vcf_path,
+        regions_output,
+        chromosome,
+        features,
+        shared_samples,
+        ac_classes,
+        minimum_distances,
+        qc,
+    )
+    if sample_ids is None:
+        raise ValueError("Tabix output does not contain a VCF header")
+
+    qc["emitted_keys"] = len(minimum_distances)
+    _write_carriers(carrier_output, minimum_distances)
+    write_json(qc_output, qc)
+
+
+def _read_features(path: Path) -> list[FeatureTss]:
+    with open_text(path) as handle:
+        header = _read_first_nonempty_line(handle, "Feature TSV is empty")
+        if header != ["chrom", "tss", "feature_id"]:
+            raise ValueError("Feature TSV header must be chrom, tss, feature_id")
+
+        features: list[FeatureTss] = []
+        for line_number, raw_line in enumerate(handle, start=2):
+            if not raw_line.strip():
+                continue
+            fields = raw_line.rstrip("\r\n").split("\t")
+            if len(fields) != 3:
+                raise ValueError(f"Feature TSV line {line_number} must have three columns")
+            chrom, tss_text, feature_id = fields
+            try:
+                tss = int(tss_text)
+            except ValueError as error:
+                raise ValueError(f"Feature TSV line {line_number} has a non-integer TSS") from error
+            if not chrom or not feature_id or tss < 1:
+                raise ValueError(f"Feature TSV line {line_number} has invalid feature values")
+            features.append(FeatureTss(chrom, tss, feature_id))
+    return features
+
+
+def _read_vcf_header(path: Path) -> tuple[list[str], set[str]]:
+    contigs: set[str] = set()
+    with open_text(path) as handle:
+        for raw_line in handle:
+            line = raw_line.rstrip("\r\n")
+            if line.startswith("##contig=<"):
+                match = re.search(r"(?:^|,)ID=([^,>]+)", line.removeprefix("##contig=<"))
+                if match:
+                    contigs.add(match.group(1))
+            elif line.startswith("#CHROM"):
+                fields = line.split("\t")
+                if len(fields) < 9:
+                    raise ValueError("VCF header must contain fixed columns and FORMAT")
+                return fields[9:], contigs
+    raise ValueError("VCF does not contain a #CHROM header")
+
+
+def _stream_tabix_records(
+    vcf_path: Path,
+    regions_path: Path,
+    chromosome: str,
+    features: Sequence[FeatureTss],
+    shared_samples: set[str],
+    ac_classes: Sequence[AcClass],
+    minimum_distances: dict[tuple[str, str, str], int],
+    qc: dict[str, int | str],
+) -> list[str] | None:
+    command = ["tabix", "-h", "-R", str(regions_path), str(vcf_path)]
+    sample_ids: list[str] | None = None
+    with subprocess.Popen(command, stdout=subprocess.PIPE, text=True) as process:
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            line = raw_line.rstrip("\r\n")
+            if not line:
+                continue
+            if line.startswith("#"):
+                if line.startswith("#CHROM"):
+                    header = line.split("\t")
+                    if len(header) < 9:
+                        raise ValueError("Tabix VCF header must contain fixed columns and FORMAT")
+                    sample_ids = header[9:]
+                continue
+            if sample_ids is None:
+                raise ValueError("Tabix record appeared before the VCF header")
+
+            fields = line.split("\t")
+            qc["extracted_records"] += 1
+            qc["missing_genotypes"] += _count_missing_genotypes(fields)
+            alleles = parse_variant_alleles(fields, sample_ids, shared_samples)
+            qc["alt_alleles"] += len(alleles)
+            for allele in alleles:
+                if allele.chrom != chromosome:
+                    raise ValueError(
+                        f"Tabix returned chromosome {allele.chrom} for requested chromosome {chromosome}"
+                    )
+                matched_features = nearby_features(features, allele.pos, max_distance)
+                qc["variant_feature_pairs"] += len(matched_features)
+                matching_classes = [ac_class for ac_class in ac_classes if ac_class.contains(allele.ac)]
+                for feature in matched_features:
+                    distance = abs(allele.pos - feature.tss)
+                    for sample_id in allele.carriers:
+                        for ac_class in matching_classes:
+                            key = (sample_id, feature.feature_id, ac_class.label)
+                            previous_distance = minimum_distances.get(key)
+                            if previous_distance is None or distance < previous_distance:
+                                minimum_distances[key] = distance
+        if process.wait() != 0:
+            raise subprocess.CalledProcessError(process.returncode, command)
+
+    qc["tabix_query_count"] = 1
+    return sample_ids
+
+
+def _count_missing_genotypes(fields: Sequence[str]) -> int:
+    if len(fields) < 9:
+        raise ValueError("VCF record must contain fixed fields and FORMAT")
+    genotype_index = _genotype_index(fields[8])
+    missing = 0
+    for sample_field in fields[9:]:
+        genotype_fields = sample_field.split(":")
+        genotype = genotype_fields[genotype_index] if genotype_index < len(genotype_fields) else "."
+        if not genotype or "." in genotype.replace("|", "/").split("/"):
+            missing += 1
+    return missing
+
+
+def _write_regions(path: Path, regions: Sequence[tuple[str, int, int]]) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write("#chrom\tstart\tend\n")
+        for chrom, start, end in regions:
+            handle.write(f"{chrom}\t{start}\t{end}\n")
+
+
+def _write_carriers(path: Path, minimum_distances: dict[tuple[str, str, str], int]) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write("sample_id\tfeature_id\tac_class\tminimum_distance_bp\n")
+        for (sample_id, feature_id, ac_class), distance in sorted(minimum_distances.items()):
+            handle.write(f"{sample_id}\t{feature_id}\t{ac_class}\t{distance}\n")
+
+
+def _read_first_nonempty_line(handle: TextIO, empty_message: str) -> list[str]:
+    for raw_line in handle:
+        if raw_line.strip():
+            return raw_line.rstrip("\r\n").split("\t")
+    raise ValueError(empty_message)
 
 
 def _unique_values(values: Sequence[int]) -> list[int]:

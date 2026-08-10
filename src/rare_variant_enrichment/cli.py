@@ -3,6 +3,7 @@ import math
 from pathlib import Path
 
 from rare_variant_enrichment.phenotypes import prepare_phenotypes
+from rare_variant_enrichment.variants import classify_chromosome
 
 
 COMMANDS = ("prepare-phenotypes", "classify-chromosome", "gather", "calculate")
@@ -20,7 +21,18 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--feature-output", required=True, type=Path)
     prepare_parser.add_argument("--sample-output", required=True, type=Path)
     prepare_parser.add_argument("--qc-output", required=True, type=Path)
-    for command in COMMANDS[1:]:
+    classify_parser = subparsers.add_parser("classify-chromosome")
+    classify_parser.add_argument("--vcf", required=True, type=Path)
+    classify_parser.add_argument("--features", required=True, type=Path)
+    classify_parser.add_argument("--shared-samples", required=True, type=Path)
+    classify_parser.add_argument("--chromosome", required=True)
+    classify_parser.add_argument("--exact-ac", required=True, type=parse_csv_ints)
+    classify_parser.add_argument("--cumulative-ac-max", required=True, type=parse_csv_ints)
+    classify_parser.add_argument("--max-distance", required=True, type=int)
+    classify_parser.add_argument("--carrier-output", required=True, type=Path)
+    classify_parser.add_argument("--regions-output", required=True, type=Path)
+    classify_parser.add_argument("--qc-output", required=True, type=Path)
+    for command in COMMANDS[2:]:
         subparsers.add_parser(command)
     return parser
 
@@ -36,6 +48,19 @@ def main() -> int:
             args.tail,
             args.feature_output,
             args.sample_output,
+            args.qc_output,
+        )
+    elif args.command == "classify-chromosome":
+        classify_chromosome(
+            args.vcf,
+            args.features,
+            args.shared_samples,
+            args.chromosome,
+            args.exact_ac,
+            args.cumulative_ac_max,
+            args.max_distance,
+            args.carrier_output,
+            args.regions_output,
             args.qc_output,
         )
     return 0
