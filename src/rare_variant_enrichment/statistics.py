@@ -49,27 +49,33 @@ def fisher_exact_two_sided(n11: int, n10: int, n01: int, n00: int) -> float:
     row2 = n01 + n00
     col1 = n11 + n01
     total = row1 + row2
-
-    def log_choose(n: int, k: int) -> float:
-        if k < 0 or k > n:
-            return float("-inf")
-        return math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1)
-
-    def probability(x: int) -> float:
-        return math.exp(
-            log_choose(col1, x)
-            + log_choose(total - col1, row1 - x)
-            - log_choose(total, row1)
-        )
-
-    observed = probability(n11)
     lower = max(0, row1 - (total - col1))
     upper = min(row1, col1)
-    p_value = sum(
-        table_probability
-        for x in range(lower, upper + 1)
-        if (table_probability := probability(x)) <= observed * (1.0 + 1e-12)
-    )
+    if lower == upper:
+        return 1.0
+
+    mode = min(upper, max(lower, ((row1 + 1) * (col1 + 1)) // (total + 2)))
+    relative_probabilities = [0.0] * (upper - lower + 1)
+    relative_probabilities[mode - lower] = 1.0
+
+    for x in range(mode, upper):
+        relative_probabilities[x + 1 - lower] = relative_probabilities[x - lower] * (
+            (col1 - x) * (row1 - x)
+            / ((x + 1) * (total - col1 - row1 + x + 1))
+        )
+    for x in range(mode, lower, -1):
+        relative_probabilities[x - 1 - lower] = relative_probabilities[x - lower] * (
+            x * (total - col1 - row1 + x)
+            / ((col1 - x + 1) * (row1 - x + 1))
+        )
+
+    observed = relative_probabilities[n11 - lower]
+    normalizer = math.fsum(relative_probabilities)
+    p_value = math.fsum(
+        probability
+        for probability in relative_probabilities
+        if probability <= observed * (1.0 + 1e-12)
+    ) / normalizer
     return min(1.0, max(0.0, p_value))
 
 

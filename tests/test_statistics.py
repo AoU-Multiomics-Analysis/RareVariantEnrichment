@@ -17,6 +17,11 @@ def test_fisher_exact_matches_hand_checked_table():
     assert fisher_exact_two_sided(1, 9, 11, 3) == pytest.approx(0.002759456, rel=1e-6)
 
 
+def test_fisher_exact_preserves_precision_at_billion_scale_small_margin():
+    p_value = fisher_exact_two_sided(1, 19_999_999, 9, 7_979_999_991)
+    assert p_value == pytest.approx(0.024720616835182417, rel=1e-12, abs=0.0)
+
+
 def test_fisher_exact_handles_all_zero_cells_and_rejects_negative_cells():
     assert fisher_exact_two_sided(0, 0, 0, 0) == 1.0
     with pytest.raises(ValueError, match="non-negative integers"):
