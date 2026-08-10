@@ -115,7 +115,9 @@ def classify_chromosome(
     qc_output: Path,
 ) -> None:
     _, vcf_contigs = _read_vcf_header(vcf_path)
-    if vcf_contigs and chromosome not in vcf_contigs:
+    if not vcf_contigs:
+        raise ValueError("VCF header does not declare contigs")
+    if chromosome not in vcf_contigs:
         raise ValueError(f"Requested chromosome is absent from VCF: {chromosome}")
 
     features = [feature for feature in _read_features(features_path) if feature.chrom == chromosome]
@@ -146,6 +148,7 @@ def classify_chromosome(
         regions_output,
         chromosome,
         features,
+        max_distance,
         shared_samples,
         ac_classes,
         minimum_distances,
@@ -205,6 +208,7 @@ def _stream_tabix_records(
     regions_path: Path,
     chromosome: str,
     features: Sequence[FeatureTss],
+    max_distance: int,
     shared_samples: set[str],
     ac_classes: Sequence[AcClass],
     minimum_distances: dict[tuple[str, str, str], int],

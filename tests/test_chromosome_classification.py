@@ -1,4 +1,5 @@
 import json
+from io import StringIO
 import shutil
 import subprocess
 from pathlib import Path
@@ -6,6 +7,21 @@ from pathlib import Path
 import pytest
 
 from rare_variant_enrichment.variants import classify_chromosome
+
+
+class _TabixProcess:
+    def __init__(self, output: str):
+        self.stdout = StringIO(output)
+        self.returncode = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.stdout.close()
+
+    def wait(self) -> int:
+        return self.returncode
 
 
 @pytest.mark.skipif(
@@ -98,6 +114,77 @@ def test_classify_chromosome_rejects_requested_vcf_chromosome_before_tabix(tmp_p
             "chr2",
             [1],
             [1],
+            100,
+            tmp_path / "carriers.tsv",
+            tmp_path / "regions.bed",
+            tmp_path / "qc.json",
+        )
+
+
+def test_classify_chromosome_processes_streamed_record_without_htslib(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    vcf = tmp_path / "variants.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##contig=<ID=chr1>\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+    )
+    features = tmp_path / "features.tsv"
+    features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
+    samples = tmp_path / "shared_samples.txt"
+    samples.write_text("S1\n")
+    tabix_output = (
+        "##fileformat=VCFv4.2\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        "chr1\t100\t.\tA\tC\t.\tPASS\tAC=1\tGT\t0/1\n"
+    )
+    monkeypatch.setattr(
+        "rare_variant_enrichment.variants.subprocess.Popen",
+        lambda *_args, **_kwargs: _TabixProcess(tabix_output),
+    )
+    carriers = tmp_path / "carriers.tsv"
+    qc_path = tmp_path / "qc.json"
+
+    classify_chromosome(
+        vcf,
+        features,
+        samples,
+        "chr1",
+        [1],
+        [],
+        100,
+        carriers,
+        tmp_path / "regions.bed",
+        qc_path,
+    )
+
+    assert carriers.read_text().splitlines() == [
+        "sample_id\tfeature_id\tac_class\tminimum_distance_bp",
+        "S1\tGENE1\tAC=1\t0",
+    ]
+    assert json.loads(qc_path.read_text())["extracted_records"] == 1
+
+
+def test_classify_chromosome_rejects_vcf_without_contig_metadata(tmp_path: Path):
+    vcf = tmp_path / "variants.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+    )
+    features = tmp_path / "features.tsv"
+    features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
+    samples = tmp_path / "shared_samples.txt"
+    samples.write_text("S1\n")
+
+    with pytest.raises(ValueError, match="VCF header does not declare contigs"):
+        classify_chromosome(
+            vcf,
+            features,
+            samples,
+            "chr1",
+            [1],
+            [],
             100,
             tmp_path / "carriers.tsv",
             tmp_path / "regions.bed",
