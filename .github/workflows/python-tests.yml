@@ -1,0 +1,40 @@
+name: Python tests
+
+on:
+  push:
+    paths:
+      - ".github/workflows/python-tests.yml"
+      - "src/**"
+      - "tests/**"
+      - "pyproject.toml"
+  pull_request:
+    paths:
+      - ".github/workflows/python-tests.yml"
+      - "src/**"
+      - "tests/**"
+      - "pyproject.toml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tabix
+        run: sudo apt-get update && sudo apt-get install -y tabix
+
+      - name: Install package
+        run: pip install -e . pytest
+
+      - name: Run tests
+        run: python -m pytest -v
+
+      - name: Verify command help
+        run: rare-variant-enrichment --help
