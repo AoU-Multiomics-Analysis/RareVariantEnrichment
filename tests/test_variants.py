@@ -25,6 +25,11 @@ def test_ac_classes_match_their_exact_or_cumulative_cutoff():
     assert not cumulative.contains(3)
 
 
+def test_build_ac_classes_rejects_no_configured_family():
+    with pytest.raises(ValueError, match="At least one AC class is required"):
+        build_ac_classes([], [])
+
+
 def test_multiallelic_record_assigns_ac_and_carriers_per_alt():
     fields = "chr1\t100\t.\tA\tC,G\t.\tPASS\tAC=1,2\tGT\t0/1\t0/2\t0/2".split("\t")
 

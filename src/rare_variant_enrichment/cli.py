@@ -107,6 +107,8 @@ def parse_csv_strings(value: str) -> list[str]:
 
 
 def parse_csv_ints(value: str) -> list[int]:
+    if value == "":
+        return []
     try:
         return [int(item) for item in parse_csv_strings(value)]
     except ValueError as error:

@@ -39,6 +39,8 @@ def build_ac_classes(
 ) -> list[AcClass]:
     exact = _unique_values(exact_ac)
     cumulative = _unique_values(cumulative_ac_max)
+    if not exact and not cumulative:
+        raise ValueError("At least one AC class is required")
     return [
         *[AcClass(f"AC={value}", "exact", value) for value in exact],
         *[AcClass(f"AC<={value}", "cumulative", value) for value in cumulative],

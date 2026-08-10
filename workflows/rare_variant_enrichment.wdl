@@ -11,6 +11,8 @@ task PrepareVcfIndex {
         Int disk_gb
     }
 
+    File chromosomes_file = write_lines(chromosomes)
+
     command <<<
         set -euo pipefail
 
@@ -22,12 +24,12 @@ task PrepareVcfIndex {
         fi
 
         tabix -l variants.vcf.gz > indexed_contigs.txt
-        for chromosome in ~{sep=" " chromosomes}; do
+        while IFS= read -r chromosome; do
             if ! grep -F -x -q -- "$chromosome" indexed_contigs.txt; then
                 echo "Requested chromosome is absent from VCF index: $chromosome" >&2
                 exit 1
             fi
-        done
+        done < "~{chromosomes_file}"
 
         tabix -H variants.vcf.gz \
             | awk -F '\t' '$1 == "#CHROM" { for (column = 10; column <= NF; column++) print $column }' \
@@ -61,15 +63,37 @@ task PreparePhenotypes {
         Int disk_gb
     }
 
+    File chromosomes_file = write_lines(chromosomes)
+    File z_thresholds_file = write_lines(z_thresholds)
+    File outlier_tail_file = write_lines([outlier_tail])
+
     command <<<
         set -euo pipefail
+
+        join_by_comma() {
+            local IFS=,
+            printf '%s' "$*"
+        }
+
+        chromosomes=()
+        while IFS= read -r value; do
+            chromosomes+=("$value")
+        done < "~{chromosomes_file}"
+        z_thresholds=()
+        while IFS= read -r value; do
+            z_thresholds+=("$value")
+        done < "~{z_thresholds_file}"
+        IFS= read -r outlier_tail < "~{outlier_tail_file}"
+
+        chromosomes_csv="$(join_by_comma "${chromosomes[@]}")"
+        z_thresholds_csv="$(join_by_comma "${z_thresholds[@]}")"
 
         rare-variant-enrichment prepare-phenotypes \
             --phenotype-bed "~{phenotype_bed}" \
             --vcf-samples "~{vcf_samples}" \
-            --chromosomes "~{sep="," chromosomes}" \
-            --z-thresholds "~{sep="," z_thresholds}" \
-            --tail "~{outlier_tail}" \
+            --chromosomes "$chromosomes_csv" \
+            --z-thresholds "$z_thresholds_csv" \
+            --tail "$outlier_tail" \
             --feature-output features.tsv \
             --sample-output shared_samples.txt \
             --qc-output phenotype_qc.json
@@ -98,11 +122,18 @@ task DetermineMaximumDistance {
         Int disk_gb
     }
 
+    File distance_thresholds_file = write_lines(distance_thresholds_bp)
+
     command <<<
         set -euo pipefail
 
+        distance_thresholds_bp=()
+        while IFS= read -r distance_bp; do
+            distance_thresholds_bp+=("$distance_bp")
+        done < "~{distance_thresholds_file}"
+
         maximum_distance_bp=-1
-        for distance_bp in ~{sep=" " distance_thresholds_bp}; do
+        for distance_bp in "${distance_thresholds_bp[@]}"; do
             if (( distance_bp > maximum_distance_bp )); then
                 maximum_distance_bp="$distance_bp"
             fi
@@ -142,8 +173,30 @@ task ClassifyChromosome {
         Int disk_gb
     }
 
+    File chromosome_file = write_lines([chromosome])
+    File exact_allele_counts_file = write_lines(exact_allele_counts)
+    File cumulative_allele_count_maxima_file = write_lines(cumulative_allele_count_maxima)
+
     command <<<
         set -euo pipefail
+
+        join_by_comma() {
+            local IFS=,
+            printf '%s' "$*"
+        }
+
+        IFS= read -r chromosome < "~{chromosome_file}"
+        exact_allele_counts=()
+        while IFS= read -r value; do
+            exact_allele_counts+=("$value")
+        done < "~{exact_allele_counts_file}"
+        cumulative_allele_count_maxima=()
+        while IFS= read -r value; do
+            cumulative_allele_count_maxima+=("$value")
+        done < "~{cumulative_allele_count_maxima_file}"
+
+        exact_allele_counts_csv="$(join_by_comma "${exact_allele_counts[@]}")"
+        cumulative_allele_count_maxima_csv="$(join_by_comma "${cumulative_allele_count_maxima[@]}")"
 
         ln -s "~{rare_variant_vcf}" variants.vcf.gz
         ln -s "~{rare_variant_vcf_tbi}" variants.vcf.gz.tbi
@@ -152,9 +205,9 @@ task ClassifyChromosome {
             --vcf variants.vcf.gz \
             --features "~{features_tsv}" \
             --shared-samples "~{shared_samples}" \
-            --chromosome "~{chromosome}" \
-            --exact-ac "~{sep="," exact_allele_counts}" \
-            --cumulative-ac-max "~{sep="," cumulative_allele_count_maxima}" \
+            --chromosome "$chromosome" \
+            --exact-ac "$exact_allele_counts_csv" \
+            --cumulative-ac-max "$cumulative_allele_count_maxima_csv" \
             --max-distance "~{maximum_distance_bp}" \
             --carrier-output carrier_pairs.tsv \
             --regions-output query_regions.bed \
@@ -185,12 +238,22 @@ task GatherCarrierPairs {
         Int disk_gb
     }
 
+    File carrier_pairs_file = write_lines(carrier_pairs)
+    File chromosome_qc_file = write_lines(chromosome_qc)
+
     command <<<
         set -euo pipefail
 
+        gather_arguments=()
+        while IFS= read -r carrier_path; do
+            gather_arguments+=(--carrier-input "$carrier_path")
+        done < "~{carrier_pairs_file}"
+        while IFS= read -r qc_path; do
+            gather_arguments+=(--qc-input "$qc_path")
+        done < "~{chromosome_qc_file}"
+
         rare-variant-enrichment gather \
-            ~{sep=" " prefix("--carrier-input ", carrier_pairs)} \
-            ~{sep=" " prefix("--qc-input ", chromosome_qc)} \
+            "${gather_arguments[@]}" \
             --carrier-output carrier_minimum_distances.tsv \
             --qc-output chromosome_qc.tsv
     >>>
@@ -224,18 +287,52 @@ task CalculateEnrichment {
         Int disk_gb
     }
 
+    File exact_allele_counts_file = write_lines(exact_allele_counts)
+    File cumulative_allele_count_maxima_file = write_lines(cumulative_allele_count_maxima)
+    File z_thresholds_file = write_lines(z_thresholds)
+    File distance_thresholds_bp_file = write_lines(distance_thresholds_bp)
+    File outlier_tail_file = write_lines([outlier_tail])
+
     command <<<
         set -euo pipefail
+
+        join_by_comma() {
+            local IFS=,
+            printf '%s' "$*"
+        }
+
+        exact_allele_counts=()
+        while IFS= read -r value; do
+            exact_allele_counts+=("$value")
+        done < "~{exact_allele_counts_file}"
+        cumulative_allele_count_maxima=()
+        while IFS= read -r value; do
+            cumulative_allele_count_maxima+=("$value")
+        done < "~{cumulative_allele_count_maxima_file}"
+        z_thresholds=()
+        while IFS= read -r value; do
+            z_thresholds+=("$value")
+        done < "~{z_thresholds_file}"
+        distance_thresholds_bp=()
+        while IFS= read -r value; do
+            distance_thresholds_bp+=("$value")
+        done < "~{distance_thresholds_bp_file}"
+        IFS= read -r outlier_tail < "~{outlier_tail_file}"
+
+        exact_allele_counts_csv="$(join_by_comma "${exact_allele_counts[@]}")"
+        cumulative_allele_count_maxima_csv="$(join_by_comma "${cumulative_allele_count_maxima[@]}")"
+        z_thresholds_csv="$(join_by_comma "${z_thresholds[@]}")"
+        distance_thresholds_bp_csv="$(join_by_comma "${distance_thresholds_bp[@]}")"
 
         rare-variant-enrichment calculate \
             --phenotype-bed "~{phenotype_bed}" \
             --shared-samples "~{shared_samples}" \
             --carriers "~{carrier_minimum_distances_tsv}" \
-            --exact-ac "~{sep="," exact_allele_counts}" \
-            --cumulative-ac-max "~{sep="," cumulative_allele_count_maxima}" \
-            --z-thresholds "~{sep="," z_thresholds}" \
-            --distance-thresholds "~{sep="," distance_thresholds_bp}" \
-            --tail "~{outlier_tail}" \
+            --exact-ac "$exact_allele_counts_csv" \
+            --cumulative-ac-max "$cumulative_allele_count_maxima_csv" \
+            --z-thresholds "$z_thresholds_csv" \
+            --distance-thresholds "$distance_thresholds_bp_csv" \
+            --tail "$outlier_tail" \
             --output-tsv enrichment.tsv \
             --output-json enrichment.json
     >>>
