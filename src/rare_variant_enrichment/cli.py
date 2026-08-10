@@ -2,6 +2,7 @@ import argparse
 import math
 from pathlib import Path
 
+from rare_variant_enrichment.aggregation import gather_outputs
 from rare_variant_enrichment.phenotypes import prepare_phenotypes
 from rare_variant_enrichment.variants import classify_chromosome
 
@@ -32,8 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
     classify_parser.add_argument("--carrier-output", required=True, type=Path)
     classify_parser.add_argument("--regions-output", required=True, type=Path)
     classify_parser.add_argument("--qc-output", required=True, type=Path)
-    for command in COMMANDS[2:]:
-        subparsers.add_parser(command)
+    gather_parser = subparsers.add_parser("gather")
+    gather_parser.add_argument("--carrier-input", action="append", required=True, type=Path)
+    gather_parser.add_argument("--qc-input", action="append", required=True, type=Path)
+    gather_parser.add_argument("--carrier-output", required=True, type=Path)
+    gather_parser.add_argument("--qc-output", required=True, type=Path)
+    subparsers.add_parser("calculate")
     return parser
 
 
@@ -63,6 +68,8 @@ def main() -> int:
             args.regions_output,
             args.qc_output,
         )
+    elif args.command == "gather":
+        gather_outputs(args.carrier_input, args.qc_input, args.carrier_output, args.qc_output)
     return 0
 
 
