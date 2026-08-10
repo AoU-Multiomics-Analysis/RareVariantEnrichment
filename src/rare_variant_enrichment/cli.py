@@ -4,6 +4,7 @@ from pathlib import Path
 
 from rare_variant_enrichment.aggregation import gather_outputs
 from rare_variant_enrichment.phenotypes import prepare_phenotypes
+from rare_variant_enrichment.statistics import calculate_enrichment
 from rare_variant_enrichment.variants import classify_chromosome
 
 
@@ -38,7 +39,19 @@ def build_parser() -> argparse.ArgumentParser:
     gather_parser.add_argument("--qc-input", action="append", required=True, type=Path)
     gather_parser.add_argument("--carrier-output", required=True, type=Path)
     gather_parser.add_argument("--qc-output", required=True, type=Path)
-    subparsers.add_parser("calculate")
+    calculate_parser = subparsers.add_parser("calculate")
+    calculate_parser.add_argument("--phenotype-bed", required=True, type=Path)
+    calculate_parser.add_argument("--shared-samples", required=True, type=Path)
+    calculate_parser.add_argument("--carriers", required=True, type=Path)
+    calculate_parser.add_argument("--exact-ac", required=True, type=parse_csv_ints)
+    calculate_parser.add_argument("--cumulative-ac-max", required=True, type=parse_csv_ints)
+    calculate_parser.add_argument("--z-thresholds", required=True, type=parse_csv_floats)
+    calculate_parser.add_argument("--distance-thresholds", required=True, type=parse_csv_ints)
+    calculate_parser.add_argument(
+        "--tail", required=True, choices=("absolute", "positive", "negative")
+    )
+    calculate_parser.add_argument("--output-tsv", required=True, type=Path)
+    calculate_parser.add_argument("--output-json", required=True, type=Path)
     return parser
 
 
@@ -70,6 +83,19 @@ def main() -> int:
         )
     elif args.command == "gather":
         gather_outputs(args.carrier_input, args.qc_input, args.carrier_output, args.qc_output)
+    elif args.command == "calculate":
+        calculate_enrichment(
+            args.phenotype_bed,
+            args.shared_samples,
+            args.carriers,
+            args.exact_ac,
+            args.cumulative_ac_max,
+            args.z_thresholds,
+            args.distance_thresholds,
+            args.tail,
+            args.output_tsv,
+            args.output_json,
+        )
     return 0
 
 
