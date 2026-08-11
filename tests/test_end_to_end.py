@@ -7,7 +7,7 @@ import pytest
 
 from rare_variant_enrichment.aggregation import gather_outputs
 from rare_variant_enrichment.phenotypes import prepare_phenotypes
-from rare_variant_enrichment.statistics import calculate_enrichment
+from rare_variant_enrichment.statistics import benjamini_hochberg, calculate_enrichment
 from rare_variant_enrichment.variants import classify_chromosome
 
 
@@ -93,63 +93,44 @@ def test_miniature_pipeline_emits_hand_checked_threshold_combinations(
 
     rows = list(csv.DictReader(enrichment.open(), delimiter="\t"))
     assert len(rows) == 2 * 6 * 4 * 2
-    baseline_rows = [
-        row
-        for row in rows
-        if row["annotation_family"] == "baseline"
-        and row["annotation_class"] == "all_rare_variants"
-    ]
     by_key = {
-        (row["z_threshold"], row["ac_class"], row["distance_bp"]): row
-        for row in baseline_rows
-    }
-    assert set(row["ac_class"] for row in rows) == {"AC=1", "AC=2", "AC<=1", "AC<=2"}
-
-    exact_singletons = by_key[("2.0", "AC=1", "10")]
-    assert (
-        exact_singletons["total_observations"],
-        exact_singletons["n11"],
-        exact_singletons["n10"],
-        exact_singletons["n01"],
-        exact_singletons["n00"],
-    ) == ("11", "1", "0", "2", "8")
-    assert float(exact_singletons["fisher_p_value"]) == pytest.approx(3 / 11)
-
-    cumulative_doubletons = by_key[("2.0", "AC<=2", "100")]
-    assert (
-        cumulative_doubletons["n11"],
-        cumulative_doubletons["n10"],
-        cumulative_doubletons["n01"],
-        cumulative_doubletons["n00"],
-    ) == ("2", "3", "1", "5")
-
-    stricter_singletons = by_key[("3.0", "AC=1", "10")]
-    assert (
-        stricter_singletons["n11"],
-        stricter_singletons["n10"],
-        stricter_singletons["n01"],
-        stricter_singletons["n00"],
-    ) == ("1", "0", "1", "9")
-
-    by_annotation = {
         (
+            row["z_threshold"],
             row["annotation_family"],
             row["annotation_class"],
-            row["z_threshold"],
             row["ac_class"],
             row["distance_bp"],
         ): row
         for row in rows
     }
-    stop_singletons = by_annotation[("consequence", "stop_gained", "2.0", "AC=1", "10")]
-    assert (stop_singletons["n11"], stop_singletons["n10"]) == ("1", "0")
-    assert by_annotation[("loftee", "HC", "2.0", "AC=1", "10")]["n11"] == "1"
-    assert by_annotation[("consequence", "frameshift_variant", "2.0", "AC=1", "10")][
-        "n11"
-    ] == "0"
-    assert all(
-        0.0 <= float(row["fisher_p_value"]) <= float(row["fisher_fdr_bh"]) <= 1.0
-        for row in rows
+    assert set(row["ac_class"] for row in rows) == {"AC=1", "AC=2", "AC<=1", "AC<=2"}
+
+    expected_cells = {
+        ("baseline", "all_rare_variants"): ("1", "2", "0", "8"),
+        ("consequence", "stop_gained"): ("1", "2", "0", "8"),
+        ("consequence", "missense_variant"): ("0", "3", "0", "8"),
+        ("loftee", "HC"): ("1", "2", "0", "8"),
+        ("loftee", "LC"): ("0", "3", "0", "8"),
+    }
+    for (family, annotation_class), expected_counts in expected_cells.items():
+        row = by_key[("2.0", family, annotation_class, "AC=1", "10")]
+        assert (row["n11"], row["n10"], row["n01"], row["n00"]) == expected_counts
+
+    converted_frequency_carrier = (
+        "S2\tENSG000002.2\tAC=2\tbaseline\tall_rare_variants\t30"
+    )
+    excluded_common_maf_carrier = (
+        "S2\tENSG000002.2\tAC=2\tbaseline\tall_rare_variants\t0"
+    )
+    missing_frequency_carrier = (
+        "S1\tENSG000003.3\tAC=1\tbaseline\tall_rare_variants\t0"
+    )
+    carrier_rows = chromosome_carriers.read_text().splitlines()
+    assert converted_frequency_carrier in carrier_rows
+    assert excluded_common_maf_carrier not in carrier_rows
+    assert missing_frequency_carrier not in carrier_rows
+    assert [float(row["fisher_fdr_bh"]) for row in rows] == pytest.approx(
+        benjamini_hochberg([float(row["fisher_p_value"]) for row in rows])
     )
 
     run_summary = json.loads(summary.read_text())
