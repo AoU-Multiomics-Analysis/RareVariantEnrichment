@@ -96,6 +96,57 @@ def test_gather_cli_writes_aggregated_outputs(tmp_path: Path):
     assert qc_output.read_text().splitlines() == ["chromosome\textracted_records", "chr1\t1"]
 
 
+def test_classify_cli_dispatches_vat_annotation_arguments(tmp_path: Path, monkeypatch):
+    received: list[object] = []
+
+    def fake_classify(*arguments):
+        received.extend(arguments)
+
+    monkeypatch.setattr(cli, "classify_chromosome", fake_classify)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "classify-chromosome",
+            "--vcf", "variants.vcf.gz",
+            "--vat", "annotations.tsv.bgz",
+            "--vat-schema", "vat-schema.json",
+            "--features", "features.tsv",
+            "--shared-samples", "shared.txt",
+            "--chromosome", "chr1",
+            "--exact-ac", "1,2",
+            "--cumulative-ac-max", "1,2",
+            "--consequence-classes", "stop_gained,missense_variant",
+            "--maximum-gvs-maf", "0.01",
+            "--max-distance", "100",
+            "--annotation-chunk-size-bp", "25",
+            "--carrier-output", "carriers.tsv",
+            "--regions-output", "regions.bed",
+            "--qc-output", "qc.json",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received == [
+        Path("variants.vcf.gz"),
+        Path("annotations.tsv.bgz"),
+        Path("vat-schema.json"),
+        Path("features.tsv"),
+        Path("shared.txt"),
+        "chr1",
+        [1, 2],
+        [1, 2],
+        ["stop_gained", "missense_variant"],
+        0.01,
+        100,
+        25,
+        Path("carriers.tsv"),
+        Path("regions.bed"),
+        Path("qc.json"),
+    ]
+
+
 def test_parse_csv_ints_decodes_empty_wdl_array():
     assert parse_csv_ints("") == []
 
@@ -123,6 +174,10 @@ def test_ac_cli_options_allow_one_empty_family(
             command,
             "--vcf",
             "variants.vcf.gz",
+            "--vat",
+            "annotations.tsv.bgz",
+            "--vat-schema",
+            "vat-schema.json",
             "--features",
             "features.tsv",
             "--shared-samples",
@@ -130,8 +185,14 @@ def test_ac_cli_options_allow_one_empty_family(
             "--chromosome",
             "chr1",
             *common,
+            "--consequence-classes",
+            "stop_gained",
+            "--maximum-gvs-maf",
+            "0.01",
             "--max-distance",
             "1000",
+            "--annotation-chunk-size-bp",
+            "10000000",
             "--carrier-output",
             "carriers.tsv",
             "--regions-output",

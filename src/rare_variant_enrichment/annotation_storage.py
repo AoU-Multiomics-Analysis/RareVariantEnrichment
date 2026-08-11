@@ -272,6 +272,28 @@ class VatChunkStore:
         ).fetchone()
         return float(row[0]) if row is not None else None
 
+    def has_allele(self, key: VariantKey) -> bool:
+        self._require_finalized()
+        row = self.connection.execute(
+            """
+            SELECT 1 FROM variant_frequency
+            WHERE chromosome = ? AND position = ? AND ref = ? AND alt = ?
+            """,
+            self._key_fields(key),
+        ).fetchone()
+        return row is not None
+
+    def has_gene_annotation(self, key: VariantKey, normalized_gene_id: str) -> bool:
+        self._require_finalized()
+        row = self.connection.execute(
+            """
+            SELECT 1 FROM gene_annotation
+            WHERE chromosome = ? AND position = ? AND ref = ? AND alt = ? AND gene_id = ?
+            """,
+            (*self._key_fields(key), normalized_gene_id),
+        ).fetchone()
+        return row is not None
+
     def gene_annotation(self, key: VariantKey, normalized_gene_id: str) -> GeneAnnotation:
         self._require_finalized()
         row = self.connection.execute(

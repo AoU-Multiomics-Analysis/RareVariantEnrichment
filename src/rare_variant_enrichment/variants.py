@@ -1,12 +1,43 @@
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import re
 import subprocess
-from typing import Literal, MutableMapping, Sequence, TextIO
+from typing import Callable, Iterator, Literal, MutableMapping, Sequence, TextIO
 
+from rare_variant_enrichment.annotation_storage import VatChunkStore
+from rare_variant_enrichment.annotations import (
+    GeneAnnotation,
+    VatSchema,
+    VariantKey,
+    build_annotation_classes,
+    normalize_gene_id,
+)
 from rare_variant_enrichment.io import open_text, read_nonempty_lines, write_json
 from rare_variant_enrichment.storage import MinimumDistanceStore
+
+
+_VAT_QC_SUM_KEYS = (
+    "vat_rows",
+    "unique_vat_alleles",
+    "unique_vat_allele_gene_pairs",
+    "converted_gvs_max_af_values",
+    "missing_frequency_alleles",
+    "non_numeric_frequency_alleles",
+    "out_of_range_frequency_alleles",
+    "inconsistent_frequency_alleles",
+    "above_maf_threshold_alleles",
+    "consequence_terms_parsed",
+    "recognized_consequence_terms",
+    "unknown_consequence_terms",
+    "unknown_consequence_rows",
+    "configured_consequence_annotations",
+    "loftee_hc_values",
+    "loftee_lc_values",
+    "loftee_missing_values",
+    "loftee_unrecognized_values",
+)
 
 
 @dataclass(frozen=True)
@@ -192,40 +223,77 @@ def nearby_features(
 
 def classify_chromosome(
     vcf_path: Path,
+    vat_path: Path,
+    vat_schema_path: Path,
     features_path: Path,
     shared_samples_path: Path,
     chromosome: str,
     exact_ac: Sequence[int],
     cumulative_ac_max: Sequence[int],
+    consequence_classes: Sequence[str],
+    maximum_gvs_maf: float,
     max_distance: int,
+    annotation_chunk_size_bp: int,
     carrier_output: Path,
     regions_output: Path,
     qc_output: Path,
 ) -> None:
-    _, vcf_contigs = _read_vcf_header(vcf_path)
+    sample_ids, vcf_contigs = _read_vcf_header(vcf_path)
     if not vcf_contigs:
         raise ValueError("VCF header does not declare contigs")
     if chromosome not in vcf_contigs:
         raise ValueError(f"Requested chromosome is absent from VCF: {chromosome}")
 
+    _validate_maximum_gvs_maf(maximum_gvs_maf)
+    vat_schema = VatSchema.read_json(vat_schema_path)
+    build_annotation_classes(consequence_classes, vat_schema.lof is not None)
     features = [feature for feature in _read_features(features_path) if feature.chrom == chromosome]
     shared_samples = set(read_nonempty_lines(shared_samples_path))
     ac_classes = build_ac_classes(exact_ac, cumulative_ac_max)
-    regions = merge_tss_windows(features, max_distance)
-    _write_regions(regions_output, regions)
+    chunks = build_query_chunks(features, max_distance, annotation_chunk_size_bp)
+    _write_query_chunks(regions_output, chunks)
 
-    qc = {
+    qc: dict[str, int | float | str] = {
         "alt_alleles": 0,
+        "annotation_chunk_count": len(chunks),
+        "above_maf_threshold_alleles": 0,
+        "baseline_emitted_keys": 0,
         "boundary_variant_feature_pairs": 0,
         "chromosome": chromosome,
         "classified_alt_alleles": 0,
+        "configured_consequence_annotations": 0,
+        "consequence_emitted_keys": 0,
+        "consequence_terms_parsed": 0,
+        "converted_gvs_max_af_values": 0,
         "emitted_keys": 0,
         "extracted_records": 0,
         "feature_count": len(features),
-        "merged_region_count": len(regions),
+        "gene_matched_variant_feature_pairs": 0,
+        "gene_unmatched_variant_feature_pairs": 0,
+        "inconsistent_frequency_alleles": 0,
+        "loftee_emitted_keys": 0,
+        "loftee_hc_values": 0,
+        "loftee_lc_values": 0,
+        "loftee_missing_values": 0,
+        "loftee_unrecognized_values": 0,
+        "merged_region_count": len(merge_tss_windows(features, max_distance)),
+        "missing_frequency_alleles": 0,
         "missing_genotypes": 0,
+        "non_numeric_frequency_alleles": 0,
+        "observed_raw_gvs_max_af": "none",
+        "out_of_range_frequency_alleles": 0,
+        "recognized_consequence_terms": 0,
         "tabix_query_count": 0,
+        "unique_vat_allele_gene_pairs": 0,
+        "unique_vat_alleles": 0,
+        "unknown_consequence_rows": 0,
+        "unknown_consequence_terms": 0,
+        "vat_joined_alt_alleles": 0,
+        "vat_rows": 0,
+        "vat_tabix_query_count": 0,
+        "vat_unmatched_alt_alleles": 0,
         "variant_feature_pairs": 0,
+        "vcf_tabix_query_count": 0,
     }
     _initialize_variant_qc(qc)  # type: ignore[arg-type]
     if not features:
@@ -235,23 +303,68 @@ def classify_chromosome(
         return
 
     feature_index = FeatureTssIndex(features)
+    configured_consequence_set = frozenset(consequence_classes)
     with MinimumDistanceStore(carrier_output.parent) as minimum_distances:
-        sample_ids = _stream_tabix_records(
-            vcf_path,
-            regions_output,
-            chromosome,
-            feature_index,
-            max_distance,
-            shared_samples,
-            ac_classes,
-            minimum_distances,
-            qc,
-        )
-        if sample_ids is None:
-            raise ValueError("Tabix output does not contain a VCF header")
+        for chunk in chunks:
+            with VatChunkStore(
+                carrier_output.parent,
+                vat_schema,
+                maximum_gvs_maf,
+                consequence_classes,
+            ) as annotations:
+                _stream_tabix_tsv(vat_path, chunk.tabix_region, annotations.ingest)
+                qc["vat_tabix_query_count"] += 1
+                _merge_annotation_qc(qc, annotations.finalize())
+
+                for fields in _stream_tabix_vcf(vcf_path, chunk.tabix_region):
+                    qc["extracted_records"] += 1
+                    alleles = parse_variant_alleles(
+                        fields, sample_ids, shared_samples, qc=qc  # type: ignore[arg-type]
+                    )
+                    qc["classified_alt_alleles"] += len(alleles)
+                    for allele in alleles:
+                        if allele.chrom != chromosome:
+                            raise ValueError(
+                                f"Tabix returned chromosome {allele.chrom} for requested "
+                                f"chromosome {chromosome}"
+                            )
+                        key = VariantKey(allele.chrom, allele.pos, allele.ref, allele.alt)
+                        if not annotations.has_allele(key):
+                            qc["vat_unmatched_alt_alleles"] += 1
+                            continue
+                        qc["vat_joined_alt_alleles"] += 1
+                        if annotations.qualifying_maf(key) is None:
+                            continue
+
+                        matched_features = feature_index.nearby(allele.pos, max_distance)
+                        qc["variant_feature_pairs"] += len(matched_features)
+                        for feature in matched_features:
+                            distance = abs(allele.pos - feature.tss)
+                            if distance == max_distance:
+                                qc["boundary_variant_feature_pairs"] += 1
+                            gene = normalize_gene_id(feature.feature_id)
+                            if annotations.has_gene_annotation(key, gene):
+                                qc["gene_matched_variant_feature_pairs"] += 1
+                            else:
+                                qc["gene_unmatched_variant_feature_pairs"] += 1
+                            annotation = annotations.gene_annotation(key, gene)
+                            _upsert_allele_carriers(
+                                minimum_distances,
+                                allele,
+                                feature,
+                                ac_classes,
+                                annotation,
+                                configured_consequence_set,
+                            )
+                qc["vcf_tabix_query_count"] += 1
 
         qc["emitted_keys"] = minimum_distances.count()
+        family_counts = minimum_distances.count_by_annotation_family()
+        qc["baseline_emitted_keys"] = family_counts.get("baseline", 0)
+        qc["consequence_emitted_keys"] = family_counts.get("consequence", 0)
+        qc["loftee_emitted_keys"] = family_counts.get("loftee", 0)
         minimum_distances.write_tsv(carrier_output, "sample")
+    qc["tabix_query_count"] = qc["vcf_tabix_query_count"]
     write_json(qc_output, qc)
 
 
@@ -296,75 +409,79 @@ def _read_vcf_header(path: Path) -> tuple[list[str], set[str]]:
     raise ValueError("VCF does not contain a #CHROM header")
 
 
-def _stream_tabix_records(
-    vcf_path: Path,
-    regions_path: Path,
-    chromosome: str,
-    feature_index: FeatureTssIndex,
-    max_distance: int,
-    shared_samples: set[str],
-    ac_classes: Sequence[AcClass],
-    minimum_distances: MinimumDistanceStore,
-    qc: dict[str, int | str],
-) -> list[str] | None:
-    command = ["tabix", "-h", "-R", str(regions_path), str(vcf_path)]
-    sample_ids: list[str] | None = None
+def _stream_tabix_tsv(
+    path: Path, region: str, consume: Callable[[Sequence[str]], None]
+) -> None:
+    command = ["tabix", str(path), region]
     with subprocess.Popen(command, stdout=subprocess.PIPE, text=True) as process:
         assert process.stdout is not None
         for raw_line in process.stdout:
             line = raw_line.rstrip("\r\n")
-            if not line:
+            if not line or line.startswith("#"):
                 continue
-            if line.startswith("#"):
-                if line.startswith("#CHROM"):
-                    header = line.split("\t")
-                    if len(header) < 9:
-                        raise ValueError("Tabix VCF header must contain fixed columns and FORMAT")
-                    sample_ids = header[9:]
-                continue
-            if sample_ids is None:
-                raise ValueError("Tabix record appeared before the VCF header")
-
-            fields = line.split("\t")
-            qc["extracted_records"] += 1
-            alleles = parse_variant_alleles(
-                fields, sample_ids, shared_samples, qc=qc  # type: ignore[arg-type]
-            )
-            qc["classified_alt_alleles"] += len(alleles)
-            for allele in alleles:
-                if allele.chrom != chromosome:
-                    raise ValueError(
-                        f"Tabix returned chromosome {allele.chrom} for requested chromosome {chromosome}"
-                    )
-                matched_features = feature_index.nearby(allele.pos, max_distance)
-                qc["variant_feature_pairs"] += len(matched_features)
-                matching_classes = [ac_class for ac_class in ac_classes if ac_class.contains(allele.ac)]
-                for feature in matched_features:
-                    distance = abs(allele.pos - feature.tss)
-                    if distance == max_distance:
-                        qc["boundary_variant_feature_pairs"] += 1
-                    for sample_id in allele.carriers:
-                        for ac_class in matching_classes:
-                            minimum_distances.upsert(
-                                sample_id,
-                                feature.feature_id,
-                                ac_class.label,
-                                "baseline",
-                                "all_rare_variants",
-                                distance,
-                            )
+            consume(line.split("\t"))
         if process.wait() != 0:
             raise subprocess.CalledProcessError(process.returncode, command)
 
-    qc["tabix_query_count"] = 1
-    return sample_ids
+
+def _stream_tabix_vcf(path: Path, region: str) -> Iterator[list[str]]:
+    command = ["tabix", str(path), region]
+    with subprocess.Popen(command, stdout=subprocess.PIPE, text=True) as process:
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            line = raw_line.rstrip("\r\n")
+            if line and not line.startswith("#"):
+                yield line.split("\t")
+        if process.wait() != 0:
+            raise subprocess.CalledProcessError(process.returncode, command)
 
 
-def _write_regions(path: Path, regions: Sequence[tuple[str, int, int]]) -> None:
+def _upsert_allele_carriers(
+    minimum_distances: MinimumDistanceStore,
+    allele: VariantAllele,
+    feature: FeatureTss,
+    ac_classes: Sequence[AcClass],
+    annotation: GeneAnnotation,
+    configured_consequences: frozenset[str],
+) -> None:
+    matching_classes = [ac_class for ac_class in ac_classes if ac_class.contains(allele.ac)]
+    distance = abs(allele.pos - feature.tss)
+    annotation_keys = [("baseline", "all_rare_variants")]
+    if annotation.consequence in configured_consequences:
+        annotation_keys.append(("consequence", annotation.consequence))
+    if annotation.loftee in {"HC", "LC"}:
+        annotation_keys.append(("loftee", annotation.loftee))
+    for sample_id in allele.carriers:
+        for ac_class in matching_classes:
+            for family, annotation_class in annotation_keys:
+                minimum_distances.upsert(
+                    sample_id,
+                    feature.feature_id,
+                    ac_class.label,
+                    family,
+                    annotation_class,
+                    distance,
+                )
+
+
+def _merge_annotation_qc(
+    aggregate: dict[str, int | float | str], chunk: dict[str, int | float | str]
+) -> None:
+    for key in _VAT_QC_SUM_KEYS:
+        aggregate[key] = int(aggregate[key]) + int(chunk[key])
+    observed = chunk["observed_raw_gvs_max_af"]
+    if observed != "none":
+        previous = aggregate["observed_raw_gvs_max_af"]
+        aggregate["observed_raw_gvs_max_af"] = (
+            float(observed) if previous == "none" else max(float(previous), float(observed))
+        )
+
+
+def _write_query_chunks(path: Path, chunks: Sequence[QueryChunk]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         handle.write("#chrom\tstart\tend\n")
-        for chrom, start, end in regions:
-            handle.write(f"{chrom}\t{start}\t{end}\n")
+        for chunk in chunks:
+            handle.write(f"{chunk.chromosome}\t{chunk.start - 1}\t{chunk.end}\n")
 
 
 def _read_first_nonempty_line(handle: TextIO, empty_message: str) -> list[str]:
@@ -502,3 +619,13 @@ def _initialize_variant_qc(qc: MutableMapping[str, int]) -> None:
 def _validate_max_distance(max_distance: int) -> None:
     if max_distance < 0:
         raise ValueError("Maximum distance must be non-negative")
+
+
+def _validate_maximum_gvs_maf(maximum_gvs_maf: float) -> None:
+    if (
+        isinstance(maximum_gvs_maf, bool)
+        or not isinstance(maximum_gvs_maf, (int, float))
+        or not math.isfinite(maximum_gvs_maf)
+        or not 0.0 <= maximum_gvs_maf <= 0.5
+    ):
+        raise ValueError("maximum_gvs_maf must be a finite number from 0 to 0.5")

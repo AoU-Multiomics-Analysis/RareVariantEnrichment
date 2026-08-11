@@ -1,3 +1,7 @@
 chrom	pos	ref	alt	rsid	gene_id	gene_symbol	transcript	is_canonical_transcript	consequence	aa_change	LoF	LoF_filter	LoF_flags	LoF_info	gvs_max_af	gvs_max_subpop
-chr1	10	A	G	.	ENSG00000100001.1	GENE1	ENST000001	1	missense_variant	p.Gly1Val	HC	.	.	.	0.001	global
-chr1	25	C	T	.	ENSG00000100002.2	GENE2	ENST000002	1	stop_gained	p.Gln2*	HC	.	.	.	0.0001	global
+chr1	100	A	C	rs100	ENSG000001.1	GENE1	ENST000001	true	missense_variant	p.Ala1Val	LC	.	.	.	0.001	afr
+chr1	100	A	C	rs100	ENSG000001.2	GENE1	ENST000002	false	stop_gained	p.Ala1Ter	HC	.	.	.	0.001	afr
+chr1	100	A	C	rs100	ENSG000099.1	NEIGHBOR	ENST000099	true	frameshift_variant	p.Gly2fs	HC	.	.	.	0.001	afr
+chr1	150	G	T	rs150	ENSG000002.1	GENE2	ENST000003	true	missense_variant	p.Gly2Val	.	.	.	.	0.020	eamr
+chr1	180	C	G	rs180	ENSG000002.1	GENE2	ENST000003	true	synonymous_variant	p.Gly2Gly	.	.	.	.	0.999	eas
+chr1	300	T	A	rs300	ENSG000003.1	GENE3	ENST000004	true	stop_lost	p.Ter3Gln	.	.	.	.	NA	sas

@@ -103,6 +103,16 @@ class MinimumDistanceStore:
         assert row is not None
         return int(row[0])
 
+    def count_by_annotation_family(self) -> dict[str, int]:
+        cursor = self.connection.execute(
+            """
+            SELECT annotation_family, count(*)
+            FROM carrier_minima
+            GROUP BY annotation_family
+            """
+        )
+        return {str(family): int(count) for family, count in cursor}
+
     def iter_feature(self, feature_id: str) -> Iterator[tuple[str, str, str, str, int]]:
         cursor = self.connection.execute(
             """

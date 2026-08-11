@@ -46,12 +46,17 @@ def test_miniature_pipeline_emits_hand_checked_threshold_combinations(
     chromosome_qc = tmp_path / "chr1.qc.json"
     classify_chromosome(
         prepared_fixture.vcf_gz,
+        prepared_fixture.vat_bgz,
+        prepared_fixture.vat_schema,
         feature_tsv,
         shared,
         "chr1",
         [1, 2],
         [1, 2],
+        ["stop_gained", "frameshift_variant", "missense_variant"],
+        0.01,
         100,
+        25,
         chromosome_carriers,
         regions,
         chromosome_qc,
@@ -59,9 +64,10 @@ def test_miniature_pipeline_emits_hand_checked_threshold_combinations(
 
     chromosome_summary = json.loads(chromosome_qc.read_text())
     assert chromosome_summary["missing_genotypes"] == 1
-    assert chromosome_summary["tabix_query_count"] == 1
-    assert "S1\tGENE4\tAC=1\tbaseline\tall_rare_variants\t0" in chromosome_carriers.read_text().splitlines()
+    assert chromosome_summary["tabix_query_count"] == chromosome_summary["annotation_chunk_count"]
+    assert "S1\tENSG000004.4\tAC=1\tbaseline\tall_rare_variants\t0" in chromosome_carriers.read_text().splitlines()
     assert prepared_fixture.vcf_tbi.is_file()
+    assert prepared_fixture.vat_tbi.is_file()
 
     all_carriers = tmp_path / "carriers.tsv"
     all_qc = tmp_path / "chromosome_qc.tsv"
@@ -81,13 +87,21 @@ def test_miniature_pipeline_emits_hand_checked_threshold_combinations(
         "absolute",
         enrichment,
         summary,
+        consequence_classes=["stop_gained", "frameshift_variant", "missense_variant"],
+        loftee_enabled=True,
     )
 
     rows = list(csv.DictReader(enrichment.open(), delimiter="\t"))
-    assert len(rows) == 2 * 4 * 2
+    assert len(rows) == 2 * 6 * 4 * 2
+    baseline_rows = [
+        row
+        for row in rows
+        if row["annotation_family"] == "baseline"
+        and row["annotation_class"] == "all_rare_variants"
+    ]
     by_key = {
         (row["z_threshold"], row["ac_class"], row["distance_bp"]): row
-        for row in rows
+        for row in baseline_rows
     }
     assert set(row["ac_class"] for row in rows) == {"AC=1", "AC=2", "AC<=1", "AC<=2"}
 
@@ -98,9 +112,8 @@ def test_miniature_pipeline_emits_hand_checked_threshold_combinations(
         exact_singletons["n10"],
         exact_singletons["n01"],
         exact_singletons["n00"],
-    ) == ("11", "3", "0", "0", "8")
-    assert float(exact_singletons["fisher_p_value"]) == pytest.approx(1 / 165)
-    assert float(exact_singletons["fisher_fdr_bh"]) == pytest.approx(0.019393939393939394)
+    ) == ("11", "1", "0", "2", "8")
+    assert float(exact_singletons["fisher_p_value"]) == pytest.approx(3 / 11)
 
     cumulative_doubletons = by_key[("2.0", "AC<=2", "100")]
     assert (
@@ -108,10 +121,7 @@ def test_miniature_pipeline_emits_hand_checked_threshold_combinations(
         cumulative_doubletons["n10"],
         cumulative_doubletons["n01"],
         cumulative_doubletons["n00"],
-    ) == ("3", "0", "4", "4")
-    assert float(cumulative_doubletons["fisher_fdr_bh"]) == pytest.approx(
-        0.3151515151515151
-    )
+    ) == ("2", "3", "1", "5")
 
     stricter_singletons = by_key[("3.0", "AC=1", "10")]
     assert (
@@ -119,10 +129,24 @@ def test_miniature_pipeline_emits_hand_checked_threshold_combinations(
         stricter_singletons["n10"],
         stricter_singletons["n01"],
         stricter_singletons["n00"],
-    ) == ("2", "0", "1", "8")
-    assert float(stricter_singletons["fisher_fdr_bh"]) == pytest.approx(
-        0.08727272727272727
-    )
+    ) == ("1", "0", "1", "9")
+
+    by_annotation = {
+        (
+            row["annotation_family"],
+            row["annotation_class"],
+            row["z_threshold"],
+            row["ac_class"],
+            row["distance_bp"],
+        ): row
+        for row in rows
+    }
+    stop_singletons = by_annotation[("consequence", "stop_gained", "2.0", "AC=1", "10")]
+    assert (stop_singletons["n11"], stop_singletons["n10"]) == ("1", "0")
+    assert by_annotation[("loftee", "HC", "2.0", "AC=1", "10")]["n11"] == "1"
+    assert by_annotation[("consequence", "frameshift_variant", "2.0", "AC=1", "10")][
+        "n11"
+    ] == "0"
     assert all(
         0.0 <= float(row["fisher_p_value"]) <= float(row["fisher_fdr_bh"]) <= 1.0
         for row in rows
@@ -130,7 +154,7 @@ def test_miniature_pipeline_emits_hand_checked_threshold_combinations(
 
     run_summary = json.loads(summary.read_text())
     assert run_summary["missing_z_observations"] == 1
-    assert run_summary["emitted_rows"] == 16
+    assert run_summary["emitted_rows"] == 96
 
 
 def test_pipeline_rejects_duplicate_normalized_z_thresholds_during_preparation(

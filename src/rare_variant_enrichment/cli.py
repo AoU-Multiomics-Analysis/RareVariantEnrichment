@@ -31,12 +31,17 @@ def build_parser() -> argparse.ArgumentParser:
     vat_parser.add_argument("--loftee-enabled-output", required=True, type=Path)
     classify_parser = subparsers.add_parser("classify-chromosome")
     classify_parser.add_argument("--vcf", required=True, type=Path)
+    classify_parser.add_argument("--vat", required=True, type=Path)
+    classify_parser.add_argument("--vat-schema", required=True, type=Path)
     classify_parser.add_argument("--features", required=True, type=Path)
     classify_parser.add_argument("--shared-samples", required=True, type=Path)
     classify_parser.add_argument("--chromosome", required=True)
     classify_parser.add_argument("--exact-ac", required=True, type=parse_csv_ints)
     classify_parser.add_argument("--cumulative-ac-max", required=True, type=parse_csv_ints)
+    classify_parser.add_argument("--consequence-classes", required=True, type=parse_csv_strings)
+    classify_parser.add_argument("--maximum-gvs-maf", required=True, type=float)
     classify_parser.add_argument("--max-distance", required=True, type=int)
+    classify_parser.add_argument("--annotation-chunk-size-bp", required=True, type=int)
     classify_parser.add_argument("--carrier-output", required=True, type=Path)
     classify_parser.add_argument("--regions-output", required=True, type=Path)
     classify_parser.add_argument("--qc-output", required=True, type=Path)
@@ -92,12 +97,17 @@ def main() -> int:
     elif args.command == "classify-chromosome":
         classify_chromosome(
             args.vcf,
+            args.vat,
+            args.vat_schema,
             args.features,
             args.shared_samples,
             args.chromosome,
             args.exact_ac,
             args.cumulative_ac_max,
+            args.consequence_classes,
+            args.maximum_gvs_maf,
             args.max_distance,
+            args.annotation_chunk_size_bp,
             args.carrier_output,
             args.regions_output,
             args.qc_output,
