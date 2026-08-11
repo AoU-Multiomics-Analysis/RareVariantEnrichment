@@ -68,6 +68,61 @@ print(json.dumps({
     return json.loads(result.stdout)
 
 
+def _parsed_workflow_wiring() -> dict[str, str | None]:
+    script = """
+import json
+import sys
+
+import WDL
+
+document = WDL.load(sys.argv[1])
+workflow = document.workflow
+
+def identifier(expression):
+    if not isinstance(expression, WDL.Expr.Get):
+        return None
+    if not isinstance(expression.expr, WDL.Expr.Ident):
+        return None
+    return expression.expr.name
+
+calls = {
+    item.name: item
+    for item in workflow.body
+    if isinstance(item, WDL.Tree.Call)
+}
+scatter = next(
+    item for item in workflow.body if isinstance(item, WDL.Tree.Scatter)
+)
+classify = next(
+    item for item in scatter.body if isinstance(item, WDL.Tree.Call)
+)
+calculate = calls["CalculateEnrichment"]
+print(json.dumps({
+    "prepare_vcf_chromosomes": identifier(
+        calls["PrepareVcfIndex"].inputs["chromosomes"]
+    ),
+    "prepare_phenotypes_chromosomes": identifier(
+        calls["PreparePhenotypes"].inputs["chromosomes"]
+    ),
+    "scatter_variable": scatter.variable,
+    "scatter_collection": identifier(scatter.expr),
+    "classify_chromosome": identifier(classify.inputs["chromosome"]),
+    "calculate_features_tsv": identifier(calculate.inputs["features_tsv"]),
+    "calculate_selected_chromosomes": identifier(
+        calculate.inputs["selected_chromosomes"]
+    ),
+}, sort_keys=True))
+"""
+    result = subprocess.run(
+        [*_miniwdl_python(), "-c", script, str(WORKFLOW)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
 def _rendered_task_shell_boundaries() -> dict[str, dict[str, object]]:
     script = r'''
 import json
@@ -157,6 +212,7 @@ print(json.dumps(rendered, sort_keys=True))
 
 
 def test_wdl_public_input_and_default_contract():
+    expected_autosomes = [f"chr{chromosome}" for chromosome in range(1, 23)]
     template_result = subprocess.run(
         [MINIWDL, "input_template", str(WORKFLOW)],
         text=True,
@@ -165,7 +221,6 @@ def test_wdl_public_input_and_default_contract():
     )
     assert template_result.returncode == 0, template_result.stderr
     assert json.loads(template_result.stdout) == {
-        "RareVariantEnrichment.chromosomes": ["String"],
         "RareVariantEnrichment.phenotype_bed": "File",
         "RareVariantEnrichment.rare_variant_vcf": "File",
     }
@@ -174,7 +229,10 @@ def test_wdl_public_input_and_default_contract():
         "phenotype_bed": {"type": "File", "default": None},
         "rare_variant_vcf": {"type": "File", "default": None},
         "rare_variant_vcf_tbi": {"type": "File?", "default": None},
-        "chromosomes": {"type": "Array[String]", "default": None},
+        "chromosomes": {
+            "type": "Array[String]",
+            "default": expected_autosomes,
+        },
         "z_thresholds": {"type": "Array[Float]", "default": [2.0, 3.0, 4.0, 5.0]},
         "exact_allele_counts": {"type": "Array[Int]", "default": [1, 2, 3, 4, 5]},
         "cumulative_allele_count_maxima": {
@@ -202,6 +260,27 @@ def test_wdl_public_input_and_default_contract():
         "max_retries": {"type": "Int", "default": 1},
         "publish_carrier_audit": {"type": "Boolean", "default": False},
     }
+
+
+def test_example_uses_default_autosomes():
+    inputs = json.loads(
+        (Path("examples") / "rare_variant_enrichment.inputs.json").read_text()
+    )
+    assert "RareVariantEnrichment.chromosomes" not in inputs
+
+
+def test_wdl_workflow_wires_chromosomes_and_prepared_features():
+    wiring = _parsed_workflow_wiring()
+    assert wiring == {
+        "prepare_vcf_chromosomes": "chromosomes",
+        "prepare_phenotypes_chromosomes": "chromosomes",
+        "scatter_variable": "chromosome",
+        "scatter_collection": "chromosomes",
+        "classify_chromosome": "chromosome",
+        "calculate_features_tsv": "PreparePhenotypes.features_tsv",
+        "calculate_selected_chromosomes": "chromosomes",
+    }
+    assert wiring["classify_chromosome"] == wiring["scatter_variable"]
 
 
 def test_wdl_materializes_shell_values_before_rendering_commands():
