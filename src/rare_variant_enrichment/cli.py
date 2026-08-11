@@ -38,7 +38,9 @@ def build_parser() -> argparse.ArgumentParser:
     classify_parser.add_argument("--chromosome", required=True)
     classify_parser.add_argument("--exact-ac", required=True, type=parse_csv_ints)
     classify_parser.add_argument("--cumulative-ac-max", required=True, type=parse_csv_ints)
-    classify_parser.add_argument("--consequence-classes", required=True, type=parse_csv_strings)
+    classify_parser.add_argument(
+        "--consequence-classes", required=True, type=parse_csv_consequences
+    )
     classify_parser.add_argument("--maximum-gvs-maf", required=True, type=float)
     classify_parser.add_argument("--max-distance", required=True, type=int)
     classify_parser.add_argument("--annotation-chunk-size-bp", required=True, type=int)
@@ -66,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     calculate_parser.add_argument("--output-json", required=True, type=Path)
     calculate_parser.add_argument("--phenotype-qc", type=Path)
     calculate_parser.add_argument("--chromosome-qc", type=Path)
+    calculate_parser.add_argument("--vat-schema", type=Path)
     calculate_parser.add_argument("--selected-chromosomes", type=parse_csv_strings)
     calculate_parser.add_argument("--container-image")
     calculate_parser.add_argument("--workflow-version", default="unknown")
@@ -75,7 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("generated", "supplied", "unknown"),
         default="unknown",
     )
-    calculate_parser.add_argument("--consequence-classes", type=parse_csv_strings, default=[])
+    calculate_parser.add_argument(
+        "--consequence-classes", type=parse_csv_consequences, default=[]
+    )
     calculate_parser.add_argument("--loftee-enabled", type=parse_boolean, default=False)
     calculate_parser.add_argument(
         "--vat-index-provenance",
@@ -148,6 +153,7 @@ def main() -> int:
             vat_index_provenance=args.vat_index_provenance,
             maximum_gvs_maf=args.maximum_gvs_maf,
             annotation_chunk_size_bp=args.annotation_chunk_size_bp,
+            vat_schema_path=args.vat_schema,
         )
     return 0
 
@@ -157,6 +163,12 @@ def parse_csv_strings(value: str) -> list[str]:
     if not values or any(not item for item in values):
         raise argparse.ArgumentTypeError("Expected a non-empty comma-separated list")
     return values
+
+
+def parse_csv_consequences(value: str) -> list[str]:
+    if value == "":
+        return []
+    return parse_csv_strings(value)
 
 
 def parse_csv_ints(value: str) -> list[int]:

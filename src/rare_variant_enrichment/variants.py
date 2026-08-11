@@ -20,6 +20,7 @@ from rare_variant_enrichment.storage import MinimumDistanceStore
 
 _VAT_QC_SUM_KEYS = (
     "vat_rows",
+    "duplicate_vat_rows",
     "unique_vat_alleles",
     "unique_vat_allele_gene_pairs",
     "converted_gvs_max_af_values",
@@ -265,6 +266,7 @@ def classify_chromosome(
         "consequence_emitted_keys": 0,
         "consequence_terms_parsed": 0,
         "converted_gvs_max_af_values": 0,
+        "duplicate_vat_rows": 0,
         "emitted_keys": 0,
         "extracted_records": 0,
         "feature_count": len(features),

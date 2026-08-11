@@ -7,6 +7,7 @@ import tomllib
 
 import pytest
 
+from rare_variant_enrichment.annotations import VatSchema
 from rare_variant_enrichment.statistics import (
     benjamini_hochberg,
     calculate_enrichment,
@@ -197,6 +198,18 @@ def test_calculate_enrichment_emits_configured_zero_carrier_annotation_rows_and_
     )
     output = tmp_path / "enrichment.tsv"
     summary_path = tmp_path / "enrichment.json"
+    vat_schema_path = tmp_path / "participant-S1-variant-rs123-row-schema.json"
+    vat_header = [
+        "chrom",
+        "pos",
+        "ref",
+        "alt",
+        "gene_id",
+        "consequence",
+        "gvs_max_af",
+        "LoF",
+    ]
+    VatSchema.from_header(vat_header).write_json(vat_schema_path)
 
     calculate_enrichment(
         bed,
@@ -215,6 +228,7 @@ def test_calculate_enrichment_emits_configured_zero_carrier_annotation_rows_and_
         vat_index_provenance="generated",
         maximum_gvs_maf=0.01,
         annotation_chunk_size_bp=10_000_000,
+        vat_schema_path=vat_schema_path,
     )
 
     rows = list(csv.DictReader(output.open(), delimiter="\t"))
@@ -259,8 +273,23 @@ def test_calculate_enrichment_emits_configured_zero_carrier_annotation_rows_and_
         "severity_order_version": "Ensembl release 116",
         "software_versions": None,
         "vat_index": "generated",
+        "vat_schema": {
+            "alt": 3,
+            "chromosome": 0,
+            "consequence": 5,
+            "gene_id": 4,
+            "gvs_max_af": 6,
+            "header": vat_header,
+            "lof": 7,
+            "lof_enabled": True,
+            "position": 1,
+            "ref": 2,
+        },
+        "vat_source": "variant_annotation_table",
         "vcf_index": "unknown",
     }
+    assert "participant-S1-variant-rs123-row-schema.json" not in summary_path.read_text()
+    assert "rs123" not in summary_path.read_text()
 
 
 @pytest.mark.parametrize(

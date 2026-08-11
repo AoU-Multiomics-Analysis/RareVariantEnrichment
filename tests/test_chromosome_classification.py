@@ -1,3 +1,4 @@
+import csv
 import json
 from io import StringIO
 from pathlib import Path
@@ -6,6 +7,7 @@ import shutil
 import pytest
 
 from rare_variant_enrichment.annotations import VatSchema
+from rare_variant_enrichment.aggregation import gather_outputs
 from rare_variant_enrichment.variants import classify_chromosome, parse_variant_alleles
 
 
@@ -124,6 +126,7 @@ def test_classification_streams_each_chunk_once_and_reduces_each_annotation_inde
         "S1\nS2\nS3\n",
     )
     vat_rows = Path("tests/fixtures/transcript_annotations.tsv").read_text().splitlines()[1:]
+    vat_rows.append(vat_rows[0])
     vat_rows.append(
         "chr1\t120\tA\tG\trs120\tENSG000001.9\tGENE1\tENST000120\ttrue\t"
         "missense_variant\tp.Ala2Val\tLC\t.\t.\t.\t0.002\tafr"
@@ -180,7 +183,8 @@ def test_classification_streams_each_chunk_once_and_reduces_each_annotation_inde
     assert summary["vat_tabix_query_count"] == 16
     assert summary["vcf_tabix_query_count"] == 16
     assert len(router.calls) == 32
-    assert summary["vat_rows"] == 7
+    assert summary["vat_rows"] == 8
+    assert summary["duplicate_vat_rows"] == 1
     assert summary["unique_vat_alleles"] == 5
     assert summary["vat_joined_alt_alleles"] == 5
     assert summary["vat_unmatched_alt_alleles"] == 1
@@ -197,6 +201,17 @@ def test_classification_streams_each_chunk_once_and_reduces_each_annotation_inde
     qc_text = qc_path.read_text()
     assert "ENSG" not in qc_text
     assert "rs100" not in qc_text
+
+    gathered_qc = tmp_path / "gathered_qc.tsv"
+    gather_outputs(
+        [carriers],
+        [qc_path],
+        tmp_path / "gathered_carriers.tsv",
+        gathered_qc,
+    )
+    with gathered_qc.open() as handle:
+        gathered_rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert gathered_rows[0]["duplicate_vat_rows"] == "1"
 
 
 def test_classify_chromosome_without_features_writes_zero_qc_without_tabix(

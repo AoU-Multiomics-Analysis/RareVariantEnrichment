@@ -177,6 +177,7 @@ def test_calculate_cli_dispatches_annotation_configuration_as_literal_data(
             "--tail", "absolute",
             "--output-tsv", "enrichment.tsv",
             "--output-json", "enrichment.json",
+            "--vat-schema", "vat-schema.json",
             "--consequence-classes", consequence,
             "--loftee-enabled", "true",
             "--vat-index-provenance", "supplied",
@@ -199,12 +200,79 @@ def test_calculate_cli_dispatches_annotation_configuration_as_literal_data(
         "vat_index_provenance": "supplied",
         "maximum_gvs_maf": 0.01,
         "annotation_chunk_size_bp": 500,
+        "vat_schema_path": Path("vat-schema.json"),
     }
     assert not marker.exists()
 
 
 def test_parse_csv_ints_decodes_empty_wdl_array():
     assert parse_csv_ints("") == []
+
+
+@pytest.mark.parametrize("command", ["classify-chromosome", "calculate"])
+def test_consequence_cli_options_decode_empty_wdl_array(command: str):
+    if command == "classify-chromosome":
+        arguments = [
+            command,
+            "--vcf", "variants.vcf.gz",
+            "--vat", "annotations.tsv.bgz",
+            "--vat-schema", "vat-schema.json",
+            "--features", "features.tsv",
+            "--shared-samples", "shared_samples.txt",
+            "--chromosome", "chr1",
+            "--exact-ac", "1",
+            "--cumulative-ac-max", "",
+            "--consequence-classes", "",
+            "--maximum-gvs-maf", "0.01",
+            "--max-distance", "1000",
+            "--annotation-chunk-size-bp", "10000000",
+            "--carrier-output", "carriers.tsv",
+            "--regions-output", "regions.bed",
+            "--qc-output", "qc.json",
+        ]
+    else:
+        arguments = [
+            command,
+            "--phenotype-bed", "phenotypes.bed",
+            "--shared-samples", "shared_samples.txt",
+            "--carriers", "carriers.tsv",
+            "--features", "features.tsv",
+            "--exact-ac", "1",
+            "--cumulative-ac-max", "",
+            "--z-thresholds", "2.0",
+            "--distance-thresholds", "1000",
+            "--tail", "absolute",
+            "--output-tsv", "enrichment.tsv",
+            "--output-json", "enrichment.json",
+            "--consequence-classes", "",
+        ]
+
+    parsed = build_parser().parse_args(arguments)
+
+    assert parsed.consequence_classes == []
+
+
+@pytest.mark.parametrize("value", [",stop_gained", "stop_gained,", "stop_gained,,missense_variant"])
+def test_consequence_cli_options_keep_nonempty_csv_validation(value: str):
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "calculate",
+                "--phenotype-bed", "phenotypes.bed",
+                "--shared-samples", "shared_samples.txt",
+                "--carriers", "carriers.tsv",
+                "--features", "features.tsv",
+                "--exact-ac", "1",
+                "--cumulative-ac-max", "",
+                "--z-thresholds", "2.0",
+                "--distance-thresholds", "1000",
+                "--tail", "absolute",
+                "--output-tsv", "enrichment.tsv",
+                "--output-json", "enrichment.json",
+                "--consequence-classes", value,
+            ]
+        )
 
 
 @pytest.mark.parametrize(

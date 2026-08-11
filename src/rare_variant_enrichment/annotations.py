@@ -124,7 +124,12 @@ class VatSchema:
         )
 
     def write_json(self, path: Path) -> None:
-        payload = {
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(self.as_dict(), handle, sort_keys=True)
+            handle.write("\n")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
             "header": list(self.header),
             "chromosome": self.chromosome,
             "position": self.position,
@@ -136,9 +141,6 @@ class VatSchema:
             "lof": self.lof,
             "lof_enabled": self.lof is not None,
         }
-        with path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, sort_keys=True)
-            handle.write("\n")
 
     @classmethod
     def read_json(cls, path: Path) -> VatSchema:

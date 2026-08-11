@@ -64,6 +64,31 @@ def test_chunk_store_collapses_transcripts_and_uses_hc_over_lc(tmp_path: Path):
         assert qc["unique_vat_allele_gene_pairs"] == 1
 
 
+def test_chunk_store_counts_only_exact_duplicate_transcript_rows(tmp_path: Path):
+    duplicate = row("ENSG000001.1", "missense_variant", "0.001", "LC")
+    with store(tmp_path) as chunk_store:
+        chunk_store.ingest(duplicate)
+        chunk_store.ingest(duplicate)
+        chunk_store.ingest(
+            row(
+                "ENSG000001.1",
+                "missense_variant",
+                "0.001",
+                "LC",
+                transcript="ENST000002",
+            )
+        )
+
+        qc = chunk_store.finalize()
+
+        assert qc["vat_rows"] == 3
+        assert qc["duplicate_vat_rows"] == 1
+        serialized_qc = repr(qc)
+        assert "ENST000001" not in serialized_qc
+        assert "ENSG000001" not in serialized_qc
+        assert "rsTest" not in serialized_qc
+
+
 def test_chunk_store_excludes_inconsistent_and_common_frequency(tmp_path: Path):
     with store(tmp_path) as chunk_store:
         chunk_store.ingest(row("ENSG1", "frameshift_variant", "0.001", "HC", position=100))
@@ -85,6 +110,26 @@ def test_chunk_store_excludes_inconsistent_and_common_frequency(tmp_path: Path):
         assert chunk_store.qualifying_maf(VariantKey("chr1", 200, "A", "C")) is None
         assert qc["inconsistent_frequency_alleles"] == 1
         assert qc["above_maf_threshold_alleles"] == 1
+
+
+def test_chunk_store_excludes_complementary_raw_frequency_values(tmp_path: Path):
+    """Comparing normalized MAF would incorrectly keep complementary raw AFs."""
+    with store(tmp_path) as chunk_store:
+        chunk_store.ingest(row("ENSG1", "missense_variant", "0.001", "HC"))
+        chunk_store.ingest(
+            row(
+                "ENSG1",
+                "missense_variant",
+                "0.999",
+                "HC",
+                transcript="ENST000002",
+            )
+        )
+
+        qc = chunk_store.finalize()
+
+        assert chunk_store.qualifying_maf(VariantKey("chr1", 100, "A", "C")) is None
+        assert qc["inconsistent_frequency_alleles"] == 1
 
 
 def test_chunk_store_reports_terminal_frequency_exclusions_per_allele(tmp_path: Path):

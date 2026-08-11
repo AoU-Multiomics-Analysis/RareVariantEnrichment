@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 import tempfile
@@ -59,6 +60,7 @@ class VatChunkStore:
         self._finalized = False
         self._qc: dict[str, int | float | str] | None = None
         self._vat_rows = 0
+        self._duplicate_vat_rows = 0
         self._observed_raw_gvs_max_af: float | None = None
         self._converted_gvs_max_af_values = 0
         self._consequence_terms_parsed = 0
@@ -105,6 +107,10 @@ class VatChunkStore:
                     term TEXT PRIMARY KEY,
                     row_count INTEGER NOT NULL
                 ) WITHOUT ROWID;
+
+                CREATE TABLE transcript_row (
+                    row_data TEXT PRIMARY KEY
+                ) WITHOUT ROWID;
                 """
             )
         except BaseException:
@@ -134,6 +140,13 @@ class VatChunkStore:
     def ingest(self, fields: Sequence[str]) -> None:
         self._require_ingestable()
         key = self._variant_key(fields)
+        serialized_row = json.dumps(list(fields), ensure_ascii=False, separators=(",", ":"))
+        inserted = self.connection.execute(
+            "INSERT OR IGNORE INTO transcript_row (row_data) VALUES (?)",
+            (serialized_row,),
+        )
+        if inserted.rowcount == 0:
+            self._duplicate_vat_rows += 1
         frequency_status, raw_af, maf, converted = self._frequency(fields[self.schema.gvs_max_af])
         self._vat_rows += 1
         if raw_af is not None:
@@ -234,6 +247,7 @@ class VatChunkStore:
 
         self._qc = {
             "vat_rows": self._vat_rows,
+            "duplicate_vat_rows": self._duplicate_vat_rows,
             "unique_vat_alleles": int(frequency_counts[0]),
             "unique_vat_allele_gene_pairs": int(pair_count[0]),
             "observed_raw_gvs_max_af": (
@@ -361,7 +375,7 @@ class VatChunkStore:
     ) -> None:
         existing = self.connection.execute(
             """
-            SELECT maf, status, converted FROM variant_frequency
+            SELECT raw_af, status, converted FROM variant_frequency
             WHERE chromosome = ? AND position = ? AND ref = ? AND alt = ?
             """,
             self._key_fields(key),
@@ -377,11 +391,11 @@ class VatChunkStore:
             )
             return
 
-        previous_maf, previous_status, previous_converted = existing
+        previous_raw_af, previous_status, previous_converted = existing
         if previous_status == "inconsistent":
             return
-        if status == "valid" and previous_maf is not None and maf is not None:
-            if abs(float(previous_maf) - maf) > _FREQUENCY_TOLERANCE:
+        if status == "valid" and previous_raw_af is not None and raw_af is not None:
+            if abs(float(previous_raw_af) - raw_af) > _FREQUENCY_TOLERANCE:
                 self.connection.execute(
                     """
                     UPDATE variant_frequency

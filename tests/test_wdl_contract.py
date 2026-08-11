@@ -137,6 +137,7 @@ print(json.dumps({
     "calculate_consequence_classes": identifier(
         calculate.inputs["consequence_classes"]
     ),
+    "calculate_vat_schema": identifier(calculate.inputs["vat_schema_json"]),
     "calculate_loftee_enabled": identifier(calculate.inputs["loftee_enabled"]),
     "calculate_vcf_index_provenance": identifier(
         calculate.inputs["vcf_index_provenance"]
@@ -160,7 +161,9 @@ print(json.dumps({
     return json.loads(result.stdout)
 
 
-def _rendered_task_shell_boundaries() -> dict[str, dict[str, object]]:
+def _rendered_task_shell_boundaries(
+    consequence_classes: list[str] | None = None,
+) -> dict[str, dict[str, object]]:
     script = r'''
 import json
 from pathlib import Path
@@ -178,6 +181,9 @@ dangerous_image = 'example.invalid/image"; touch IMAGE_INJECTION; echo "'
 dangerous_consequence = 'stop_gained; touch CONSEQUENCE_INJECTION'
 dangerous_vcf_provenance = 'supplied; touch VCF_PROVENANCE_INJECTION'
 dangerous_vat_provenance = 'generated; touch VAT_PROVENANCE_INJECTION'
+configured_consequences = (
+    [dangerous_consequence] if len(sys.argv) == 2 else json.loads(sys.argv[2])
+)
 
 def array(item_type, values):
     return WDL.Value.Array(item_type, values)
@@ -208,7 +214,7 @@ values = {
     "exact_allele_counts": array(WDL.Type.Int(), []),
     "cumulative_allele_count_maxima": array(WDL.Type.Int(), [WDL.Value.Int(1)]),
     "consequence_classes": array(
-        WDL.Type.String(), [WDL.Value.String(dangerous_consequence)]
+        WDL.Type.String(), [WDL.Value.String(value) for value in configured_consequences]
     ),
     "maximum_gvs_maf": WDL.Value.Float(0.01),
     "annotation_chunk_size_bp": WDL.Value.Int(500),
@@ -251,8 +257,11 @@ with tempfile.TemporaryDirectory() as temporary_directory:
 
 print(json.dumps(rendered, sort_keys=True))
 '''
+    command = [*_miniwdl_python(), "-c", script, str(WORKFLOW)]
+    if consequence_classes is not None:
+        command.append(json.dumps(consequence_classes))
     result = subprocess.run(
-        [*_miniwdl_python(), "-c", script, str(WORKFLOW)],
+        command,
         text=True,
         capture_output=True,
         check=False,
@@ -365,6 +374,7 @@ def test_wdl_workflow_wires_chromosomes_and_prepared_features():
         "calculate_features_tsv": "PreparePhenotypes.features_tsv",
         "calculate_selected_chromosomes": "chromosomes",
         "calculate_consequence_classes": "consequence_classes",
+        "calculate_vat_schema": "PrepareVatIndex.vat_schema_json",
         "calculate_loftee_enabled": "PrepareVatIndex.loftee_enabled",
         "calculate_vcf_index_provenance": "PrepareVcfIndex.index_provenance",
         "calculate_vat_index_provenance": "PrepareVatIndex.index_provenance",
@@ -448,6 +458,18 @@ def test_wdl_materializes_shell_values_before_rendering_commands():
     classify_command = rendered["ClassifyChromosome"]["command"]
     assert '--vat annotations.tsv.bgz' in classify_command
     assert 'ln -s "/tmp/annotation table.tsv.bgz.tbi" annotations.tsv.bgz.tbi' in classify_command
+    calculate_command = rendered["CalculateEnrichment"]["command"]
+    assert '--vat-schema "/tmp/vat_schema.json"' in calculate_command
+
+
+def test_wdl_materializes_empty_consequence_arrays_for_both_consumers():
+    rendered = _rendered_task_shell_boundaries([])
+
+    for task_name in ("ClassifyChromosome", "CalculateEnrichment"):
+        assert rendered[task_name]["generated_files"]["consequence_classes_file"] == []
+        assert '--consequence-classes "$consequence_classes_csv"' in rendered[task_name][
+            "command"
+        ]
 
 
 def test_wdl_exposes_qc_provenance_optional_audit_and_required_retry_runtime():
@@ -482,6 +504,7 @@ def test_wdl_exposes_qc_provenance_optional_audit_and_required_retry_runtime():
         "loftee_enabled": "Boolean",
         "index_provenance": "String",
     }
+    assert contract["task_inputs"]["CalculateEnrichment"]["vat_schema_json"] == "File"
     assert all(
         "maxRetries" in runtime_keys
         for runtime_keys in contract["runtime_keys"].values()

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -204,3 +205,31 @@ def test_gather_allows_empty_feature_chromosomes_when_no_eligible_alt_alleles_ex
         "chr1\t0\t0",
         "chr2\t0\t0",
     ]
+
+
+@pytest.mark.parametrize(
+    ("counter", "value"),
+    [
+        ("classified_alt_alleles", 0.5),
+        ("vat_joined_alt_alleles", 1.0),
+        ("classified_alt_alleles", True),
+        ("vat_joined_alt_alleles", "1"),
+        ("classified_alt_alleles", -1),
+    ],
+)
+def test_gather_rejects_non_integer_zero_match_counters(
+    tmp_path: Path, counter: str, value: object
+):
+    carrier = tmp_path / "chr1.tsv"
+    carrier.write_text(carrier_header)
+    qc = tmp_path / "chr1.json"
+    payload = {
+        "chromosome": "chr1",
+        "classified_alt_alleles": 1,
+        "vat_joined_alt_alleles": 1,
+        counter: value,
+    }
+    qc.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match=rf"QC {counter} must be a non-negative integer"):
+        gather_outputs([carrier], [qc], tmp_path / "all.tsv", tmp_path / "qc.tsv")

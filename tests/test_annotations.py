@@ -74,6 +74,23 @@ def test_vat_schema_round_trips_and_rejects_duplicate_json_keys(tmp_path: Path):
         VatSchema.read_json(path)
 
 
+def test_vat_schema_exposes_canonical_resolved_manifest():
+    schema = VatSchema.from_header(MTTOVCF_HEADER)
+
+    assert schema.as_dict() == {
+        "alt": 3,
+        "chromosome": 0,
+        "consequence": 9,
+        "gene_id": 5,
+        "gvs_max_af": 15,
+        "header": MTTOVCF_HEADER,
+        "lof": 11,
+        "lof_enabled": True,
+        "position": 1,
+        "ref": 2,
+    }
+
+
 def test_schema_and_annotation_value_types_are_immutable():
     schema = VatSchema.from_header(MTTOVCF_HEADER)
     variant = VariantKey("chr1", 10, "A", "C")

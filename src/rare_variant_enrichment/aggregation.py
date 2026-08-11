@@ -137,12 +137,12 @@ def _validate_qc_cell(key: str, value: object, path: Path) -> None:
     raise ValueError(f"QC JSON values must be scalar TSV values: {path}")
 
 
-def _sum_qc_counter(qc_records: Sequence[dict[str, object]], counter: str) -> int | float:
-    total: int | float = 0
+def _sum_qc_counter(qc_records: Sequence[dict[str, object]], counter: str) -> int:
+    total = 0
     for record in qc_records:
         value = record.get(counter, 0)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-            raise ValueError(f"QC {counter} must be a non-negative number")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"QC {counter} must be a non-negative integer")
         total += value
     return total
 

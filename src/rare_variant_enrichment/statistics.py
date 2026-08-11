@@ -12,6 +12,7 @@ from rare_variant_enrichment.aggregation import _iter_carrier_file
 from rare_variant_enrichment.annotations import (
     ENSEMBL_SEVERITY_ORDER_VERSION,
     AnnotationClass,
+    VatSchema,
     build_annotation_classes,
 )
 from rare_variant_enrichment.io import open_text, read_nonempty_lines, write_json
@@ -192,6 +193,7 @@ def calculate_enrichment(
     vat_index_provenance: str = "unknown",
     maximum_gvs_maf: float = 0.01,
     annotation_chunk_size_bp: int = 10_000_000,
+    vat_schema_path: Path | None = None,
 ) -> None:
     thresholds = _validate_statistics_thresholds(z_thresholds)
     distances = _validate_distances(distance_thresholds)
@@ -210,6 +212,11 @@ def calculate_enrichment(
         raise ValueError("index_provenance must be generated, supplied, or unknown")
     _validate_annotation_calculation_configuration(
         vat_index_provenance, maximum_gvs_maf, annotation_chunk_size_bp
+    )
+    vat_schema = (
+        VatSchema.read_json(vat_schema_path).as_dict()
+        if vat_schema_path is not None
+        else None
     )
 
     shared_samples = read_nonempty_lines(shared_samples_path)
@@ -435,6 +442,8 @@ def calculate_enrichment(
                 },
                 "severity_order_version": ENSEMBL_SEVERITY_ORDER_VERSION,
                 "vat_index": vat_index_provenance,
+                "vat_schema": vat_schema,
+                "vat_source": "variant_annotation_table",
                 "vcf_index": index_provenance,
             },
         }

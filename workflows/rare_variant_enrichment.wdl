@@ -400,6 +400,7 @@ task CalculateEnrichment {
         File features_tsv
         File phenotype_qc_json
         File chromosome_qc_tsv
+        File vat_schema_json
         Array[String] selected_chromosomes
         Array[Int] exact_allele_counts
         Array[Int] cumulative_allele_count_maxima
@@ -497,6 +498,7 @@ task CalculateEnrichment {
             --output-json enrichment.json \
             --phenotype-qc "~{phenotype_qc_json}" \
             --chromosome-qc "~{chromosome_qc_tsv}" \
+            --vat-schema "~{vat_schema_json}" \
             --selected-chromosomes "$selected_chromosomes_csv" \
             --container-image "$container_image" \
             --workflow-version "$workflow_version" \
@@ -670,6 +672,7 @@ workflow RareVariantEnrichment {
             features_tsv = PreparePhenotypes.features_tsv,
             phenotype_qc_json = PreparePhenotypes.phenotype_qc_json,
             chromosome_qc_tsv = GatherCarrierPairs.chromosome_qc_tsv,
+            vat_schema_json = PrepareVatIndex.vat_schema_json,
             selected_chromosomes = chromosomes,
             exact_allele_counts = exact_allele_counts,
             cumulative_allele_count_maxima = cumulative_allele_count_maxima,

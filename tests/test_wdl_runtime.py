@@ -56,10 +56,42 @@ def test_required_runtime_mode_fails_instead_of_skipping_missing_prerequisites(
 
 
 @pytest.mark.parametrize(
-    ("exact_ac", "cumulative_ac_max", "expected_kind", "supply_indexes"),
+    (
+        "exact_ac",
+        "cumulative_ac_max",
+        "expected_kind",
+        "supply_indexes",
+        "consequence_classes",
+        "expected_annotations",
+    ),
     [
-        ([1, 2], [], "exact", False),
-        ([], [1, 2], "cumulative", True),
+        (
+            [1, 2],
+            [],
+            "exact",
+            False,
+            [],
+            {
+                ("baseline", "all_rare_variants"),
+                ("loftee", "HC"),
+                ("loftee", "LC"),
+            },
+        ),
+        (
+            [],
+            [1, 2],
+            "cumulative",
+            True,
+            ["stop_gained", "frameshift_variant", "missense_variant"],
+            {
+                ("baseline", "all_rare_variants"),
+                ("consequence", "stop_gained"),
+                ("consequence", "frameshift_variant"),
+                ("consequence", "missense_variant"),
+                ("loftee", "HC"),
+                ("loftee", "LC"),
+            },
+        ),
     ],
     ids=["exact-only-generated-index", "cumulative-only-supplied-index"],
 )
@@ -70,6 +102,8 @@ def test_wdl_runs_single_ac_family_and_optional_index_modes(
     cumulative_ac_max: list[int],
     expected_kind: str,
     supply_indexes: bool,
+    consequence_classes: list[str],
+    expected_annotations: set[tuple[str, str]],
 ):
     miniwdl = _require_wdl_runtime()
     inputs = {
@@ -83,11 +117,7 @@ def test_wdl_runs_single_ac_family_and_optional_index_modes(
         "RareVariantEnrichment.exact_allele_counts": exact_ac,
         "RareVariantEnrichment.cumulative_allele_count_maxima": cumulative_ac_max,
         "RareVariantEnrichment.distance_thresholds_bp": [10, 100],
-        "RareVariantEnrichment.consequence_classes": [
-            "stop_gained",
-            "frameshift_variant",
-            "missense_variant",
-        ],
+        "RareVariantEnrichment.consequence_classes": consequence_classes,
         "RareVariantEnrichment.maximum_gvs_maf": 0.01,
         "RareVariantEnrichment.annotation_chunk_size_bp": 25,
         "RareVariantEnrichment.outlier_tail": "absolute",
@@ -139,21 +169,16 @@ def test_wdl_runs_single_ac_family_and_optional_index_modes(
     outputs = json.loads(outputs_path.read_text())["outputs"]
     enrichment_path = Path(outputs["RareVariantEnrichment.enrichment_tsv"])
     rows = list(csv.DictReader(enrichment_path.open(), delimiter="\t"))
-    assert len(rows) == 2 * 6 * 2 * 2
+    assert len(rows) == 2 * len(expected_annotations) * 2 * 2
     assert {row["z_threshold"] for row in rows} == {"2.0", "3.0"}
     assert {row["distance_bp"] for row in rows} == {"10", "100"}
     assert {row["ac_kind"] for row in rows} == {expected_kind}
     assert {row["ac_class"] for row in rows} == {
         f"AC{'=' if expected_kind == 'exact' else '<='}{value}" for value in (1, 2)
     }
-    assert {(row["annotation_family"], row["annotation_class"]) for row in rows} == {
-        ("baseline", "all_rare_variants"),
-        ("consequence", "stop_gained"),
-        ("consequence", "frameshift_variant"),
-        ("consequence", "missense_variant"),
-        ("loftee", "HC"),
-        ("loftee", "LC"),
-    }
+    assert {
+        (row["annotation_family"], row["annotation_class"]) for row in rows
+    } == expected_annotations
     assert Path(
         outputs["RareVariantEnrichment.generated_or_validated_vcf_tbi"]
     ).is_file()
@@ -178,6 +203,10 @@ def test_wdl_runs_single_ac_family_and_optional_index_modes(
     )
     assert summary["provenance"]["max_retries"] == 2
     assert summary["provenance"]["selected_chromosomes"] == ["chr1"]
+    assert summary["provenance"]["vat_schema"] == json.loads(
+        Path(outputs["RareVariantEnrichment.vat_schema_json"]).read_text()
+    )
+    assert summary["provenance"]["vat_source"] == "variant_annotation_table"
     phenotype_qc = json.loads(
         Path(outputs["RareVariantEnrichment.phenotype_qc_json"]).read_text()
     )
