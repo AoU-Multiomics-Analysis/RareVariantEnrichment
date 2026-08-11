@@ -7,7 +7,14 @@ from rare_variant_enrichment.io import open_text
 from rare_variant_enrichment.storage import MinimumDistanceStore
 
 
-CARRIER_HEADER = ("sample_id", "feature_id", "ac_class", "minimum_distance_bp")
+CARRIER_HEADER = (
+    "sample_id",
+    "feature_id",
+    "ac_class",
+    "annotation_family",
+    "annotation_class",
+    "minimum_distance_bp",
+)
 
 
 def gather_outputs(
@@ -24,12 +31,30 @@ def gather_outputs(
 
     with MinimumDistanceStore(carrier_output.parent) as minimum_distances:
         for path in carrier_paths:
-            for sample_id, feature_id, ac_class, distance in _iter_carrier_file(path):
-                minimum_distances.upsert(sample_id, feature_id, ac_class, distance)
+            for (
+                sample_id,
+                feature_id,
+                ac_class,
+                annotation_family,
+                annotation_class,
+                distance,
+            ) in _iter_carrier_file(path):
+                minimum_distances.upsert(
+                    sample_id,
+                    feature_id,
+                    ac_class,
+                    annotation_family,
+                    annotation_class,
+                    distance,
+                )
         qc_records = [_read_qc_file(path) for path in qc_paths]
         chromosomes = [record["chromosome"] for record in qc_records]
         if len(chromosomes) != len(set(chromosomes)):
             raise ValueError("QC inputs must contain unique chromosomes")
+        classified_alt_alleles = _sum_qc_counter(qc_records, "classified_alt_alleles")
+        vat_joined_alt_alleles = _sum_qc_counter(qc_records, "vat_joined_alt_alleles")
+        if classified_alt_alleles > 0 and vat_joined_alt_alleles == 0:
+            raise ValueError("No queried VCF ALT alleles matched VAT allele keys")
         minimum_distances.write_tsv(carrier_output, "feature")
     _write_qc(qc_output, qc_records)
 
@@ -48,9 +73,16 @@ def _iter_carrier_file(path: Path):
                 raise ValueError(f"Carrier TSV line {line_number} is blank: {path}")
             fields = raw_line.rstrip("\r\n").split("\t")
             if len(fields) != len(CARRIER_HEADER):
-                raise ValueError(f"Carrier TSV line {line_number} must have four columns: {path}")
-            sample_id, feature_id, ac_class, distance_text = fields
-            if not sample_id or not feature_id or not ac_class:
+                raise ValueError(f"Carrier TSV line {line_number} must have six columns: {path}")
+            (
+                sample_id,
+                feature_id,
+                ac_class,
+                annotation_family,
+                annotation_class,
+                distance_text,
+            ) = fields
+            if not all((sample_id, feature_id, ac_class, annotation_family, annotation_class)):
                 raise ValueError(f"Carrier TSV line {line_number} has empty key fields: {path}")
             try:
                 distance = int(distance_text)
@@ -63,7 +95,7 @@ def _iter_carrier_file(path: Path):
                     f"Carrier TSV line {line_number} minimum_distance_bp must be a non-negative integer: {path}"
                 )
 
-            yield sample_id, feature_id, ac_class, distance
+            yield sample_id, feature_id, ac_class, annotation_family, annotation_class, distance
 
 
 def _read_qc_file(path: Path) -> dict[str, object]:
@@ -103,6 +135,16 @@ def _validate_qc_cell(key: str, value: object, path: Path) -> None:
     if isinstance(value, float) and math.isfinite(value):
         return
     raise ValueError(f"QC JSON values must be scalar TSV values: {path}")
+
+
+def _sum_qc_counter(qc_records: Sequence[dict[str, object]], counter: str) -> int:
+    total = 0
+    for record in qc_records:
+        value = record.get(counter, 0)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"QC {counter} must be a non-negative integer")
+        total += value
+    return total
 
 
 def _write_qc(path: Path, qc_records: Sequence[dict[str, object]]) -> None:

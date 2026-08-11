@@ -5,10 +5,11 @@ from pathlib import Path
 from rare_variant_enrichment.aggregation import gather_outputs
 from rare_variant_enrichment.phenotypes import prepare_phenotypes
 from rare_variant_enrichment.statistics import calculate_enrichment
+from rare_variant_enrichment.vat import prepare_vat
 from rare_variant_enrichment.variants import classify_chromosome
 
 
-COMMANDS = ("prepare-phenotypes", "classify-chromosome", "gather", "calculate")
+COMMANDS = ("prepare-phenotypes", "prepare-vat", "classify-chromosome", "gather", "calculate")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,14 +24,26 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--feature-output", required=True, type=Path)
     prepare_parser.add_argument("--sample-output", required=True, type=Path)
     prepare_parser.add_argument("--qc-output", required=True, type=Path)
+    vat_parser = subparsers.add_parser("prepare-vat")
+    vat_parser.add_argument("--vat", required=True, type=Path)
+    vat_parser.add_argument("--chromosomes", required=True, type=parse_csv_strings)
+    vat_parser.add_argument("--schema-output", required=True, type=Path)
+    vat_parser.add_argument("--loftee-enabled-output", required=True, type=Path)
     classify_parser = subparsers.add_parser("classify-chromosome")
     classify_parser.add_argument("--vcf", required=True, type=Path)
+    classify_parser.add_argument("--vat", required=True, type=Path)
+    classify_parser.add_argument("--vat-schema", required=True, type=Path)
     classify_parser.add_argument("--features", required=True, type=Path)
     classify_parser.add_argument("--shared-samples", required=True, type=Path)
     classify_parser.add_argument("--chromosome", required=True)
     classify_parser.add_argument("--exact-ac", required=True, type=parse_csv_ints)
     classify_parser.add_argument("--cumulative-ac-max", required=True, type=parse_csv_ints)
+    classify_parser.add_argument(
+        "--consequence-classes", required=True, type=parse_csv_consequences
+    )
+    classify_parser.add_argument("--maximum-gvs-maf", required=True, type=float)
     classify_parser.add_argument("--max-distance", required=True, type=int)
+    classify_parser.add_argument("--annotation-chunk-size-bp", required=True, type=int)
     classify_parser.add_argument("--carrier-output", required=True, type=Path)
     classify_parser.add_argument("--regions-output", required=True, type=Path)
     classify_parser.add_argument("--qc-output", required=True, type=Path)
@@ -55,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     calculate_parser.add_argument("--output-json", required=True, type=Path)
     calculate_parser.add_argument("--phenotype-qc", type=Path)
     calculate_parser.add_argument("--chromosome-qc", type=Path)
+    calculate_parser.add_argument("--vat-schema", type=Path)
     calculate_parser.add_argument("--selected-chromosomes", type=parse_csv_strings)
     calculate_parser.add_argument("--container-image")
     calculate_parser.add_argument("--workflow-version", default="unknown")
@@ -64,6 +78,17 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("generated", "supplied", "unknown"),
         default="unknown",
     )
+    calculate_parser.add_argument(
+        "--consequence-classes", type=parse_csv_consequences, default=[]
+    )
+    calculate_parser.add_argument("--loftee-enabled", type=parse_boolean, default=False)
+    calculate_parser.add_argument(
+        "--vat-index-provenance",
+        choices=("generated", "supplied", "unknown"),
+        default="unknown",
+    )
+    calculate_parser.add_argument("--maximum-gvs-maf", type=float, default=0.01)
+    calculate_parser.add_argument("--annotation-chunk-size-bp", type=int, default=10_000_000)
     return parser
 
 
@@ -80,15 +105,23 @@ def main() -> int:
             args.sample_output,
             args.qc_output,
         )
+    elif args.command == "prepare-vat":
+        schema = prepare_vat(args.vat, args.chromosomes, args.schema_output)
+        args.loftee_enabled_output.write_text("true\n" if schema.lof is not None else "false\n")
     elif args.command == "classify-chromosome":
         classify_chromosome(
             args.vcf,
+            args.vat,
+            args.vat_schema,
             args.features,
             args.shared_samples,
             args.chromosome,
             args.exact_ac,
             args.cumulative_ac_max,
+            args.consequence_classes,
+            args.maximum_gvs_maf,
             args.max_distance,
+            args.annotation_chunk_size_bp,
             args.carrier_output,
             args.regions_output,
             args.qc_output,
@@ -115,6 +148,12 @@ def main() -> int:
             workflow_version=args.workflow_version,
             max_retries=args.max_retries,
             index_provenance=args.index_provenance,
+            consequence_classes=args.consequence_classes,
+            loftee_enabled=args.loftee_enabled,
+            vat_index_provenance=args.vat_index_provenance,
+            maximum_gvs_maf=args.maximum_gvs_maf,
+            annotation_chunk_size_bp=args.annotation_chunk_size_bp,
+            vat_schema_path=args.vat_schema,
         )
     return 0
 
@@ -126,6 +165,12 @@ def parse_csv_strings(value: str) -> list[str]:
     return values
 
 
+def parse_csv_consequences(value: str) -> list[str]:
+    if value == "":
+        return []
+    return parse_csv_strings(value)
+
+
 def parse_csv_ints(value: str) -> list[int]:
     if value == "":
         return []
@@ -133,6 +178,14 @@ def parse_csv_ints(value: str) -> list[int]:
         return [int(item) for item in parse_csv_strings(value)]
     except ValueError as error:
         raise argparse.ArgumentTypeError("Expected comma-separated integers") from error
+
+
+def parse_boolean(value: str) -> bool:
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise argparse.ArgumentTypeError("Expected true or false")
 
 
 def parse_csv_floats(value: str) -> list[float]:

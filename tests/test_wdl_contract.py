@@ -56,6 +56,14 @@ document = WDL.load(sys.argv[1])
 print(json.dumps({
     "outputs": {declaration.name: str(declaration.type) for declaration in document.workflow.outputs},
     "runtime_keys": {task.name: sorted(task.runtime) for task in document.tasks},
+    "task_inputs": {
+        task.name: {declaration.name: str(declaration.type) for declaration in task.inputs}
+        for task in document.tasks
+    },
+    "task_outputs": {
+        task.name: {declaration.name: str(declaration.type) for declaration in task.outputs}
+        for task in document.tasks
+    },
 }, sort_keys=True))
 """
     result = subprocess.run(
@@ -93,13 +101,20 @@ calls = {
 scatter = next(
     item for item in workflow.body if isinstance(item, WDL.Tree.Scatter)
 )
+scatters = [
+    item for item in workflow.body if isinstance(item, WDL.Tree.Scatter)
+]
 classify = next(
     item for item in scatter.body if isinstance(item, WDL.Tree.Call)
 )
 calculate = calls["CalculateEnrichment"]
 print(json.dumps({
+    "scatter_count": len(scatters),
     "prepare_vcf_chromosomes": identifier(
         calls["PrepareVcfIndex"].inputs["chromosomes"]
+    ),
+    "prepare_vat_chromosomes": identifier(
+        calls["PrepareVatIndex"].inputs["chromosomes"]
     ),
     "prepare_phenotypes_chromosomes": identifier(
         calls["PreparePhenotypes"].inputs["chromosomes"]
@@ -107,9 +122,32 @@ print(json.dumps({
     "scatter_variable": scatter.variable,
     "scatter_collection": identifier(scatter.expr),
     "classify_chromosome": identifier(classify.inputs["chromosome"]),
+    "classify_vat": identifier(classify.inputs["variant_annotation_table"]),
+    "classify_vat_tbi": identifier(classify.inputs["variant_annotation_table_tbi"]),
+    "classify_vat_schema": identifier(classify.inputs["vat_schema_json"]),
+    "classify_consequence_classes": identifier(classify.inputs["consequence_classes"]),
+    "classify_maximum_gvs_maf": identifier(classify.inputs["maximum_gvs_maf"]),
+    "classify_annotation_chunk_size_bp": identifier(
+        classify.inputs["annotation_chunk_size_bp"]
+    ),
     "calculate_features_tsv": identifier(calculate.inputs["features_tsv"]),
     "calculate_selected_chromosomes": identifier(
         calculate.inputs["selected_chromosomes"]
+    ),
+    "calculate_consequence_classes": identifier(
+        calculate.inputs["consequence_classes"]
+    ),
+    "calculate_vat_schema": identifier(calculate.inputs["vat_schema_json"]),
+    "calculate_loftee_enabled": identifier(calculate.inputs["loftee_enabled"]),
+    "calculate_vcf_index_provenance": identifier(
+        calculate.inputs["vcf_index_provenance"]
+    ),
+    "calculate_vat_index_provenance": identifier(
+        calculate.inputs["vat_index_provenance"]
+    ),
+    "calculate_maximum_gvs_maf": identifier(calculate.inputs["maximum_gvs_maf"]),
+    "calculate_annotation_chunk_size_bp": identifier(
+        calculate.inputs["annotation_chunk_size_bp"]
     ),
 }, sort_keys=True))
 """
@@ -123,7 +161,9 @@ print(json.dumps({
     return json.loads(result.stdout)
 
 
-def _rendered_task_shell_boundaries() -> dict[str, dict[str, object]]:
+def _rendered_task_shell_boundaries(
+    consequence_classes: list[str] | None = None,
+) -> dict[str, dict[str, object]]:
     script = r'''
 import json
 from pathlib import Path
@@ -138,6 +178,12 @@ dangerous_tail = 'absolute"; touch TAIL_INJECTION; echo "'
 dangerous_carrier = '/tmp/carrier input; touch CARRIER_INJECTION'
 dangerous_qc = '/tmp/qc input; touch QC_INJECTION'
 dangerous_image = 'example.invalid/image"; touch IMAGE_INJECTION; echo "'
+dangerous_consequence = 'stop_gained; touch CONSEQUENCE_INJECTION'
+dangerous_vcf_provenance = 'supplied; touch VCF_PROVENANCE_INJECTION'
+dangerous_vat_provenance = 'generated; touch VAT_PROVENANCE_INJECTION'
+configured_consequences = (
+    [dangerous_consequence] if len(sys.argv) == 2 else json.loads(sys.argv[2])
+)
 
 def array(item_type, values):
     return WDL.Value.Array(item_type, values)
@@ -149,6 +195,9 @@ class TestStdLib(WDL.StdLib.Base):
 values = {
     "rare_variant_vcf": WDL.Value.File("/tmp/rare variants.vcf.gz"),
     "rare_variant_vcf_tbi": WDL.Value.File("/tmp/rare variants.vcf.gz.tbi"),
+    "variant_annotation_table": WDL.Value.File("/tmp/annotation table.tsv.bgz"),
+    "variant_annotation_table_tbi": WDL.Value.File("/tmp/annotation table.tsv.bgz.tbi"),
+    "vat_schema_json": WDL.Value.File("/tmp/vat_schema.json"),
     "chromosomes": array(WDL.Type.String(), [WDL.Value.String(dangerous_chromosome)]),
     "docker_image": WDL.Value.String(dangerous_image),
     "cpu": WDL.Value.Int(1),
@@ -164,6 +213,11 @@ values = {
     "chromosome": WDL.Value.String(dangerous_chromosome),
     "exact_allele_counts": array(WDL.Type.Int(), []),
     "cumulative_allele_count_maxima": array(WDL.Type.Int(), [WDL.Value.Int(1)]),
+    "consequence_classes": array(
+        WDL.Type.String(), [WDL.Value.String(value) for value in configured_consequences]
+    ),
+    "maximum_gvs_maf": WDL.Value.Float(0.01),
+    "annotation_chunk_size_bp": WDL.Value.Int(500),
     "maximum_distance_bp": WDL.Value.Int(1000),
     "carrier_pairs": array(WDL.Type.File(), [WDL.Value.File(dangerous_carrier)]),
     "chromosome_qc": array(WDL.Type.File(), [WDL.Value.File(dangerous_qc)]),
@@ -174,8 +228,10 @@ values = {
     "selected_chromosomes": array(
         WDL.Type.String(), [WDL.Value.String(dangerous_chromosome)]
     ),
-    "index_provenance": WDL.Value.String("supplied"),
-    "workflow_version": WDL.Value.String("0.2.0"),
+    "loftee_enabled": WDL.Value.Boolean(True),
+    "vcf_index_provenance": WDL.Value.String(dangerous_vcf_provenance),
+    "vat_index_provenance": WDL.Value.String(dangerous_vat_provenance),
+    "workflow_version": WDL.Value.String("0.3.0"),
     "max_retries": WDL.Value.Int(2),
 }
 
@@ -201,8 +257,11 @@ with tempfile.TemporaryDirectory() as temporary_directory:
 
 print(json.dumps(rendered, sort_keys=True))
 '''
+    command = [*_miniwdl_python(), "-c", script, str(WORKFLOW)]
+    if consequence_classes is not None:
+        command.append(json.dumps(consequence_classes))
     result = subprocess.run(
-        [*_miniwdl_python(), "-c", script, str(WORKFLOW)],
+        command,
         text=True,
         capture_output=True,
         check=False,
@@ -223,12 +282,16 @@ def test_wdl_public_input_and_default_contract():
     assert json.loads(template_result.stdout) == {
         "RareVariantEnrichment.phenotype_bed": "File",
         "RareVariantEnrichment.rare_variant_vcf": "File",
+        "RareVariantEnrichment.variant_annotation_table": "File",
     }
 
-    assert _parsed_workflow_inputs() == {
+    inputs = _parsed_workflow_inputs()
+    assert inputs == {
         "phenotype_bed": {"type": "File", "default": None},
         "rare_variant_vcf": {"type": "File", "default": None},
         "rare_variant_vcf_tbi": {"type": "File?", "default": None},
+        "variant_annotation_table": {"type": "File", "default": None},
+        "variant_annotation_table_tbi": {"type": "File?", "default": None},
         "chromosomes": {
             "type": "Array[String]",
             "default": expected_autosomes,
@@ -239,9 +302,29 @@ def test_wdl_public_input_and_default_contract():
             "type": "Array[Int]",
             "default": [1, 2, 3, 5, 10],
         },
+        "consequence_classes": {
+            "type": "Array[String]",
+            "default": [
+                "splice_acceptor_variant",
+                "splice_donor_variant",
+                "stop_gained",
+                "frameshift_variant",
+                "stop_lost",
+                "start_lost",
+                "inframe_insertion",
+                "inframe_deletion",
+                "missense_variant",
+                "protein_altering_variant",
+                "splice_region_variant",
+                "synonymous_variant",
+                "coding_sequence_variant",
+            ],
+        },
+        "maximum_gvs_maf": {"type": "Float", "default": 0.01},
+        "annotation_chunk_size_bp": {"type": "Int", "default": 10000000},
         "distance_thresholds_bp": {
             "type": "Array[Int]",
-            "default": [1000, 10000, 100000, 1000000],
+            "default": [10000, 100000],
         },
         "outlier_tail": {"type": "String", "default": "absolute"},
         "docker_image": {
@@ -260,6 +343,9 @@ def test_wdl_public_input_and_default_contract():
         "max_retries": {"type": "Int", "default": 1},
         "publish_carrier_audit": {"type": "Boolean", "default": False},
     }
+    assert inputs["exact_allele_counts"]["default"] == [1, 2, 3, 4, 5]
+    assert inputs["cumulative_allele_count_maxima"]["default"] == [1, 2, 3, 5, 10]
+    assert inputs["distance_thresholds_bp"]["default"] == [10_000, 100_000]
 
 
 def test_example_uses_default_autosomes():
@@ -272,13 +358,28 @@ def test_example_uses_default_autosomes():
 def test_wdl_workflow_wires_chromosomes_and_prepared_features():
     wiring = _parsed_workflow_wiring()
     assert wiring == {
+        "scatter_count": 1,
         "prepare_vcf_chromosomes": "chromosomes",
+        "prepare_vat_chromosomes": "chromosomes",
         "prepare_phenotypes_chromosomes": "chromosomes",
         "scatter_variable": "chromosome",
         "scatter_collection": "chromosomes",
         "classify_chromosome": "chromosome",
+        "classify_vat": "PrepareVatIndex.vat",
+        "classify_vat_tbi": "PrepareVatIndex.vat_tbi",
+        "classify_vat_schema": "PrepareVatIndex.vat_schema_json",
+        "classify_consequence_classes": "consequence_classes",
+        "classify_maximum_gvs_maf": "maximum_gvs_maf",
+        "classify_annotation_chunk_size_bp": "annotation_chunk_size_bp",
         "calculate_features_tsv": "PreparePhenotypes.features_tsv",
         "calculate_selected_chromosomes": "chromosomes",
+        "calculate_consequence_classes": "consequence_classes",
+        "calculate_vat_schema": "PrepareVatIndex.vat_schema_json",
+        "calculate_loftee_enabled": "PrepareVatIndex.loftee_enabled",
+        "calculate_vcf_index_provenance": "PrepareVcfIndex.index_provenance",
+        "calculate_vat_index_provenance": "PrepareVatIndex.index_provenance",
+        "calculate_maximum_gvs_maf": "maximum_gvs_maf",
+        "calculate_annotation_chunk_size_bp": "annotation_chunk_size_bp",
     }
     assert wiring["classify_chromosome"] == wiring["scatter_variable"]
 
@@ -290,19 +391,36 @@ def test_wdl_materializes_shell_values_before_rendering_commands():
     dangerous_carrier = "/tmp/carrier input; touch CARRIER_INJECTION"
     dangerous_qc = "/tmp/qc input; touch QC_INJECTION"
     dangerous_image = 'example.invalid/image"; touch IMAGE_INJECTION; echo "'
+    dangerous_consequence = "stop_gained; touch CONSEQUENCE_INJECTION"
+    dangerous_vcf_provenance = "supplied; touch VCF_PROVENANCE_INJECTION"
+    dangerous_vat_provenance = "generated; touch VAT_PROVENANCE_INJECTION"
 
     payloads_by_task = {
         "PrepareVcfIndex": [dangerous_chromosome],
+        "PrepareVatIndex": [dangerous_chromosome],
         "PreparePhenotypes": [dangerous_chromosome, dangerous_tail],
-        "ClassifyChromosome": [dangerous_chromosome],
+        "ClassifyChromosome": [dangerous_chromosome, dangerous_consequence],
         "GatherCarrierPairs": [dangerous_carrier, dangerous_qc],
-        "CalculateEnrichment": [dangerous_tail, dangerous_chromosome, dangerous_image],
+        "CalculateEnrichment": [
+            dangerous_tail,
+            dangerous_chromosome,
+            dangerous_image,
+            dangerous_consequence,
+            dangerous_vcf_provenance,
+            dangerous_vat_provenance,
+        ],
     }
     expected_files_by_task = {
         "PrepareVcfIndex": [[dangerous_chromosome]],
+        "PrepareVatIndex": [[dangerous_chromosome]],
         "PreparePhenotypes": [[dangerous_chromosome], ["2.000000"], [dangerous_tail]],
         "DetermineMaximumDistance": [["1000"]],
-        "ClassifyChromosome": [[dangerous_chromosome], [], ["1"]],
+        "ClassifyChromosome": [
+            [dangerous_chromosome],
+            [],
+            ["1"],
+            [dangerous_consequence],
+        ],
         "GatherCarrierPairs": [[dangerous_carrier], [dangerous_qc]],
         "CalculateEnrichment": [
             [],
@@ -312,8 +430,13 @@ def test_wdl_materializes_shell_values_before_rendering_commands():
             [dangerous_tail],
             [dangerous_chromosome],
             [dangerous_image],
-            ["supplied"],
-            ["0.2.0"],
+            [dangerous_vcf_provenance],
+            [dangerous_vat_provenance],
+            [dangerous_consequence],
+            ["true"],
+            ["0.010000"],
+            ["500"],
+            ["0.3.0"],
         ],
     }
 
@@ -326,6 +449,28 @@ def test_wdl_materializes_shell_values_before_rendering_commands():
         for expected_file in expected_files:
             assert expected_file in generated_files
 
+    prepare_vat_command = rendered["PrepareVatIndex"]["command"]
+    assert 'ln -s "/tmp/annotation table.tsv.bgz" annotations.tsv.bgz' in prepare_vat_command
+    assert (
+        'ln -s "/tmp/annotation table.tsv.bgz.tbi" annotations.tsv.bgz.tbi'
+        in prepare_vat_command
+    )
+    classify_command = rendered["ClassifyChromosome"]["command"]
+    assert '--vat annotations.tsv.bgz' in classify_command
+    assert 'ln -s "/tmp/annotation table.tsv.bgz.tbi" annotations.tsv.bgz.tbi' in classify_command
+    calculate_command = rendered["CalculateEnrichment"]["command"]
+    assert '--vat-schema "/tmp/vat_schema.json"' in calculate_command
+
+
+def test_wdl_materializes_empty_consequence_arrays_for_both_consumers():
+    rendered = _rendered_task_shell_boundaries([])
+
+    for task_name in ("ClassifyChromosome", "CalculateEnrichment"):
+        assert rendered[task_name]["generated_files"]["consequence_classes_file"] == []
+        assert '--consequence-classes "$consequence_classes_csv"' in rendered[task_name][
+            "command"
+        ]
+
 
 def test_wdl_exposes_qc_provenance_optional_audit_and_required_retry_runtime():
     contract = _parsed_outputs_and_runtime_keys()
@@ -335,10 +480,31 @@ def test_wdl_exposes_qc_provenance_optional_audit_and_required_retry_runtime():
         "chromosome_query_regions": "Array[File]",
         "enrichment_json": "File",
         "enrichment_tsv": "File",
+        "generated_or_validated_vat_tbi": "File",
         "generated_or_validated_vcf_tbi": "File",
         "phenotype_qc_json": "File",
+        "vat_index_provenance": "String",
+        "vat_schema_json": "File",
         "vcf_index_provenance": "String",
     }
+    assert contract["task_inputs"]["PrepareVatIndex"] == {
+        "variant_annotation_table": "File",
+        "variant_annotation_table_tbi": "File?",
+        "chromosomes": "Array[String]",
+        "docker_image": "String",
+        "cpu": "Int",
+        "memory_gb": "Int",
+        "disk_gb": "Int",
+        "max_retries": "Int",
+    }
+    assert contract["task_outputs"]["PrepareVatIndex"] == {
+        "vat": "File",
+        "vat_tbi": "File",
+        "vat_schema_json": "File",
+        "loftee_enabled": "Boolean",
+        "index_provenance": "String",
+    }
+    assert contract["task_inputs"]["CalculateEnrichment"]["vat_schema_json"] == "File"
     assert all(
         "maxRetries" in runtime_keys
         for runtime_keys in contract["runtime_keys"].values()

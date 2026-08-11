@@ -3,7 +3,9 @@ import pytest
 from rare_variant_enrichment.variants import (
     FeatureTssIndex,
     FeatureTss,
+    QueryChunk,
     build_ac_classes,
+    build_query_chunks,
     merge_tss_windows,
     nearby_features,
     parse_variant_alleles,
@@ -180,3 +182,39 @@ def test_tss_windows_preserve_nonoverlapping_chromosomes_and_bed_boundaries():
         ("chr2", 0, 11),
     ]
     assert nearby_features(features, 21, 10) == [FeatureTss("chr1", 31, "G2")]
+
+
+def test_query_chunks_split_merged_windows_without_overlap():
+    features = [
+        FeatureTss("chr1", 10, "ENSG1.1"),
+        FeatureTss("chr1", 25, "ENSG2.2"),
+    ]
+
+    chunks = build_query_chunks(features, max_distance=10, chunk_size_bp=10)
+
+    assert chunks == [
+        QueryChunk("chr1", 1, 10),
+        QueryChunk("chr1", 11, 20),
+        QueryChunk("chr1", 21, 30),
+        QueryChunk("chr1", 31, 35),
+    ]
+    assert [chunk.tabix_region for chunk in chunks] == [
+        "chr1:1-10",
+        "chr1:11-20",
+        "chr1:21-30",
+        "chr1:31-35",
+    ]
+    assert all(left.end + 1 == right.start for left, right in zip(chunks, chunks[1:]))
+
+
+@pytest.mark.parametrize("chunk_size_bp", [0, -1, True])
+def test_query_chunks_reject_invalid_chunk_sizes(chunk_size_bp: int):
+    with pytest.raises(ValueError, match=r"^annotation_chunk_size_bp must be a positive integer$"):
+        build_query_chunks([FeatureTss("chr1", 10, "ENSG1")], 10, chunk_size_bp)
+
+
+def test_query_chunks_reject_features_from_multiple_chromosomes():
+    features = [FeatureTss("chr1", 10, "ENSG1"), FeatureTss("chr2", 20, "ENSG2")]
+
+    with pytest.raises(ValueError, match=r"^Query chunks require features from one chromosome$"):
+        build_query_chunks(features, max_distance=10, chunk_size_bp=10)
