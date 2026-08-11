@@ -52,8 +52,8 @@ def test_classify_chromosome_extracts_once_and_keeps_minimum_distance(tmp_path: 
     )
 
     rows = carriers.read_text().splitlines()
-    assert "S1\tGENE1\tAC=1\t0" in rows
-    assert "S2\tGENE1\tAC=2\t50" in rows
+    assert "S1\tGENE1\tAC=1\tbaseline\tall_rare_variants\t0" in rows
+    assert "S2\tGENE1\tAC=2\tbaseline\tall_rare_variants\t50" in rows
     qc = json.loads(qc_path.read_text())
     assert qc["tabix_query_count"] == 1
 
@@ -79,7 +79,9 @@ def test_classify_chromosome_without_features_writes_empty_outputs_without_tabix
         vcf, features, samples, "chr1", [1], [1], 100, carriers, regions, qc_path
     )
 
-    assert carriers.read_text() == "sample_id\tfeature_id\tac_class\tminimum_distance_bp\n"
+    assert carriers.read_text() == (
+        "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp\n"
+    )
     assert regions.read_text() == "#chrom\tstart\tend\n"
     assert json.loads(qc_path.read_text()) == {
         "alt_alleles": 0,
@@ -171,8 +173,8 @@ def test_classify_chromosome_processes_streamed_record_without_htslib(
     )
 
     assert carriers.read_text().splitlines() == [
-        "sample_id\tfeature_id\tac_class\tminimum_distance_bp",
-        "S1\tGENE1\tAC=1\t0",
+        "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp",
+        "S1\tGENE1\tAC=1\tbaseline\tall_rare_variants\t0",
     ]
     assert json.loads(qc_path.read_text())["extracted_records"] == 1
 

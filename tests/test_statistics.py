@@ -43,8 +43,9 @@ def test_calculate_enrichment_counts_distance_specific_carriers(tmp_path: Path):
     samples.write_text("S1\nS2\nS3\nS4\n")
     carriers = tmp_path / "carriers.tsv"
     carriers.write_text(
-        "sample_id\tfeature_id\tac_class\tminimum_distance_bp\n"
-        "S1\tGENE1\tAC=1\t10\nS2\tGENE1\tAC=1\t100\n"
+        "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp\n"
+        "S1\tGENE1\tAC=1\tbaseline\tall_rare_variants\t10\n"
+        "S2\tGENE1\tAC=1\tbaseline\tall_rare_variants\t100\n"
     )
     output = tmp_path / "enrichment.tsv"
     summary = tmp_path / "summary.json"
@@ -70,6 +71,8 @@ def test_calculate_enrichment_counts_distance_specific_carriers(tmp_path: Path):
     assert reader.fieldnames == [
         "z_threshold",
         "tail",
+        "annotation_family",
+        "annotation_class",
         "ac_class",
         "ac_kind",
         "ac_value",
@@ -105,6 +108,102 @@ def test_calculate_enrichment_counts_distance_specific_carriers(tmp_path: Path):
     assert "screening" in json.loads(summary.read_text())["statistical_limitation"].lower()
 
 
+def test_calculate_enrichment_stratifies_annotations_with_one_global_bh_correction(
+    tmp_path: Path,
+):
+    bed = tmp_path / "phenotypes.bed"
+    bed.write_text(
+        "#chr\tstart\tend\tgene_id\tS1\tS2\tS3\tS4\tS5\tS6\n"
+        "chr1\t99\t100\tGENE1\t3\t3\t3\t0\t0\t0\n"
+    )
+    samples = tmp_path / "samples.txt"
+    samples.write_text("S1\nS2\nS3\nS4\nS5\nS6\n")
+    carriers = tmp_path / "carriers.tsv"
+    carriers.write_text(
+        "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp\n"
+        "S1\tGENE1\tAC=1\tbaseline\tall_rare_variants\t0\n"
+        "S4\tGENE1\tAC=1\tbaseline\tall_rare_variants\t0\n"
+        "S1\tGENE1\tAC=1\tconsequence\tstop_gained\t0\n"
+        "S2\tGENE1\tAC=1\tconsequence\tstop_gained\t0\n"
+        "S4\tGENE1\tAC=1\tconsequence\tmissense_variant\t0\n"
+        "S5\tGENE1\tAC=1\tconsequence\tmissense_variant\t0\n"
+    )
+    features = tmp_path / "features.tsv"
+    features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
+    output = tmp_path / "enrichment.tsv"
+
+    calculate_enrichment(
+        bed,
+        samples,
+        carriers,
+        features,
+        [1],
+        [],
+        [2.0],
+        [0],
+        "absolute",
+        output,
+        tmp_path / "summary.json",
+        consequence_classes=["stop_gained", "missense_variant"],
+    )
+
+    rows = list(csv.DictReader(output.open(), delimiter="\t"))
+    by_annotation = {
+        (row["annotation_family"], row["annotation_class"]): row for row in rows
+    }
+    assert list(by_annotation) == [
+        ("baseline", "all_rare_variants"),
+        ("consequence", "stop_gained"),
+        ("consequence", "missense_variant"),
+    ]
+    assert {
+        annotation: (row["n11"], row["n10"], row["n01"], row["n00"])
+        for annotation, row in by_annotation.items()
+    } == {
+        ("baseline", "all_rare_variants"): ("1", "2", "1", "2"),
+        ("consequence", "stop_gained"): ("2", "1", "0", "3"),
+        ("consequence", "missense_variant"): ("0", "3", "2", "1"),
+    }
+    assert {
+        annotation: float(row["fisher_fdr_bh"]) for annotation, row in by_annotation.items()
+    } == pytest.approx(
+        {
+            ("baseline", "all_rare_variants"): 1.0,
+            ("consequence", "stop_gained"): 0.6,
+            ("consequence", "missense_variant"): 0.6,
+        }
+    )
+
+
+def test_calculate_enrichment_rejects_unconfigured_carrier_annotation(tmp_path: Path):
+    bed = tmp_path / "phenotypes.bed"
+    bed.write_text("#chr\tstart\tend\tgene_id\tS1\nchr1\t99\t100\tGENE1\t3\n")
+    samples = tmp_path / "samples.txt"
+    samples.write_text("S1\n")
+    carriers = tmp_path / "carriers.tsv"
+    carriers.write_text(
+        "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp\n"
+        "S1\tGENE1\tAC=1\tconsequence\tstop_gained\t0\n"
+    )
+    features = tmp_path / "features.tsv"
+    features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
+
+    with pytest.raises(ValueError, match="Carrier annotation class is not configured"):
+        calculate_enrichment(
+            bed,
+            samples,
+            carriers,
+            features,
+            [1],
+            [],
+            [2.0],
+            [0],
+            "absolute",
+            tmp_path / "enrichment.tsv",
+            tmp_path / "summary.json",
+        )
+
+
 def test_calculate_enrichment_uses_exact_prepared_feature_set(tmp_path: Path):
     bed = tmp_path / "phenotypes.bed"
     bed.write_text(
@@ -117,7 +216,9 @@ def test_calculate_enrichment_uses_exact_prepared_feature_set(tmp_path: Path):
     samples = tmp_path / "samples.txt"
     samples.write_text("S1\nS2\n")
     carriers = tmp_path / "carriers.tsv"
-    carriers.write_text("sample_id\tfeature_id\tac_class\tminimum_distance_bp\n")
+    carriers.write_text(
+        "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp\n"
+    )
     output = tmp_path / "enrichment.tsv"
     summary = tmp_path / "summary.json"
 
@@ -150,7 +251,9 @@ def test_calculate_enrichment_embeds_counts_and_reproducibility_provenance(
     samples = tmp_path / "samples.txt"
     samples.write_text("S1\n")
     carriers = tmp_path / "carriers.tsv"
-    carriers.write_text("sample_id\tfeature_id\tac_class\tminimum_distance_bp\n")
+    carriers.write_text(
+        "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp\n"
+    )
     phenotype_qc = tmp_path / "phenotype_qc.json"
     phenotype_qc.write_text(
         json.dumps(
@@ -220,8 +323,9 @@ def test_calculate_enrichment_emits_literal_zero_carrier_and_missing_value_table
     samples.write_text("S1\nS2\nS3\nS4\n")
     carriers = tmp_path / "carriers.tsv"
     carriers.write_text(
-        "sample_id\tfeature_id\tac_class\tminimum_distance_bp\n"
-        "S1\tGENE1\tAC=1\t50\nS2\tGENE1\tAC=1\t100\n"
+        "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp\n"
+        "S1\tGENE1\tAC=1\tbaseline\tall_rare_variants\t50\n"
+        "S2\tGENE1\tAC=1\tbaseline\tall_rare_variants\t100\n"
     )
     output = tmp_path / "enrichment.tsv"
     summary_path = tmp_path / "summary.json"
@@ -279,7 +383,9 @@ def test_calculate_enrichment_uses_na_when_a_rate_denominator_is_zero(tmp_path: 
     samples = tmp_path / "samples.txt"
     samples.write_text("S1\n")
     carriers = tmp_path / "carriers.tsv"
-    carriers.write_text("sample_id\tfeature_id\tac_class\tminimum_distance_bp\n")
+    carriers.write_text(
+        "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp\n"
+    )
     features = tmp_path / "features.tsv"
     features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
 
@@ -324,7 +430,9 @@ def test_calculate_enrichment_rejects_duplicate_configuration_values(
     samples = tmp_path / "samples.txt"
     samples.write_text("S1\n")
     carriers = tmp_path / "carriers.tsv"
-    carriers.write_text("sample_id\tfeature_id\tac_class\tminimum_distance_bp\n")
+    carriers.write_text(
+        "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp\n"
+    )
     features = tmp_path / "features.tsv"
     features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
 
@@ -351,8 +459,8 @@ def test_calculate_cli_dispatches_all_arguments(tmp_path: Path):
     samples.write_text("S1\n")
     carriers = tmp_path / "carriers.tsv"
     carriers.write_text(
-        "sample_id\tfeature_id\tac_class\tminimum_distance_bp\n"
-        "S1\tGENE1\tAC=1\t0\n"
+        "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp\n"
+        "S1\tGENE1\tAC=1\tbaseline\tall_rare_variants\t0\n"
     )
     output = tmp_path / "enrichment.tsv"
     summary = tmp_path / "summary.json"

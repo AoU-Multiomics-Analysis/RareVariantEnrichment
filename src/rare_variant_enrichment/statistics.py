@@ -9,6 +9,7 @@ from typing import Sequence
 
 from rare_variant_enrichment import __version__
 from rare_variant_enrichment.aggregation import _iter_carrier_file
+from rare_variant_enrichment.annotations import AnnotationClass, build_annotation_classes
 from rare_variant_enrichment.io import open_text, read_nonempty_lines, write_json
 from rare_variant_enrichment.phenotypes import (
     _parse_phenotype_value,
@@ -25,6 +26,8 @@ from rare_variant_enrichment.storage import MinimumDistanceStore
 ENRICHMENT_HEADER = (
     "z_threshold",
     "tail",
+    "annotation_family",
+    "annotation_class",
     "ac_class",
     "ac_kind",
     "ac_value",
@@ -173,6 +176,8 @@ def calculate_enrichment(
     output_tsv: Path,
     output_json: Path,
     *,
+    consequence_classes: Sequence[str] = (),
+    loftee_enabled: bool = False,
     phenotype_qc_path: Path | None = None,
     chromosome_qc_path: Path | None = None,
     selected_chromosomes: Sequence[str] | None = None,
@@ -180,10 +185,14 @@ def calculate_enrichment(
     workflow_version: str = "unknown",
     max_retries: int = 0,
     index_provenance: str = "unknown",
+    vat_index_provenance: str = "unknown",
+    maximum_gvs_maf: float = 0.01,
+    annotation_chunk_size_bp: int = 10_000_000,
 ) -> None:
     thresholds = _validate_statistics_thresholds(z_thresholds)
     distances = _validate_distances(distance_thresholds)
     ac_classes = _validate_ac_classes(exact_ac, cumulative_ac_max)
+    annotation_classes = build_annotation_classes(consequence_classes, loftee_enabled)
     if tail not in {"absolute", "positive", "negative"}:
         raise ValueError(f"Unsupported tail mode: {tail}")
     if isinstance(max_retries, bool) or not isinstance(max_retries, int) or max_retries < 0:
@@ -201,9 +210,19 @@ def calculate_enrichment(
         raise ValueError("At least one selected feature is required")
 
     class_indexes = {ac_class.label: index for index, ac_class in enumerate(ac_classes)}
-    carrier_counts = [[0 for _ in distances] for _ in ac_classes]
-    carrier_outlier_counts = [
+    annotation_indexes = {
+        (annotation.family, annotation.label): index
+        for index, annotation in enumerate(annotation_classes)
+    }
+    carrier_counts = [
         [[0 for _ in distances] for _ in ac_classes]
+        for _ in annotation_classes
+    ]
+    carrier_outlier_counts = [
+        [
+            [[0 for _ in distances] for _ in ac_classes]
+            for _ in annotation_classes
+        ]
         for _ in thresholds
     ]
     outlier_counts = [0 for _ in thresholds]
@@ -214,14 +233,34 @@ def calculate_enrichment(
     unselected_feature_count = 0
 
     with MinimumDistanceStore(output_tsv.parent) as carrier_minima:
-        for sample_id, feature_id, ac_label, distance in _iter_carrier_file(carriers_path):
+        for (
+            sample_id,
+            feature_id,
+            ac_label,
+            annotation_family,
+            annotation_class,
+            distance,
+        ) in _iter_carrier_file(carriers_path):
             if sample_id not in shared_sample_set:
                 raise ValueError(f"Carrier sample is absent from shared samples: {sample_id}")
             if feature_id not in selected_features:
                 raise ValueError(f"Carrier feature is absent from selected features: {feature_id}")
             if ac_label not in class_indexes:
                 raise ValueError(f"Carrier AC class is not configured: {ac_label}")
-            carrier_minima.upsert(sample_id, feature_id, ac_label, distance)
+            annotation_key = (annotation_family, annotation_class)
+            if annotation_key not in annotation_indexes:
+                raise ValueError(
+                    "Carrier annotation class is not configured: "
+                    f"{annotation_family}/{annotation_class}"
+                )
+            carrier_minima.upsert(
+                sample_id,
+                feature_id,
+                ac_label,
+                annotation_family,
+                annotation_class,
+                distance,
+            )
 
         carrier_key_count = carrier_minima.count()
         features_with_carriers = carrier_minima.distinct_feature_count()
@@ -285,25 +324,30 @@ def calculate_enrichment(
                         if classify_outlier(value, threshold, tail):
                             outlier_counts[threshold_index] += 1
 
-                for sample_id, ac_label, minimum_distance in carrier_minima.iter_feature(
-                    feature_id
-                ):
+                for (
+                    sample_id,
+                    ac_label,
+                    annotation_family,
+                    annotation_class,
+                    minimum_distance,
+                ) in carrier_minima.iter_feature(feature_id):
                     value = shared_values[shared_sample_indexes[sample_id]]
                     if value is None:
                         continue
                     class_index = class_indexes[ac_label]
+                    annotation_index = annotation_indexes[(annotation_family, annotation_class)]
                     outlier_flags = [
                         classify_outlier(value, threshold, tail) for threshold in thresholds
                     ]
                     for distance_index, distance_threshold in enumerate(distances):
                         if minimum_distance > distance_threshold:
                             continue
-                        carrier_counts[class_index][distance_index] += 1
+                        carrier_counts[annotation_index][class_index][distance_index] += 1
                         for threshold_index, is_outlier in enumerate(outlier_flags):
                             if is_outlier:
-                                carrier_outlier_counts[threshold_index][class_index][
-                                    distance_index
-                                ] += 1
+                                carrier_outlier_counts[threshold_index][annotation_index][
+                                    class_index
+                                ][distance_index] += 1
 
     missing_selected_features = sorted(set(selected_features) - seen_selected_features)
     if missing_selected_features:
@@ -316,6 +360,7 @@ def calculate_enrichment(
         thresholds,
         distances,
         ac_classes,
+        annotation_classes,
         tail,
         total_observations,
         outlier_counts,
@@ -499,59 +544,65 @@ def _build_rows(
     thresholds: Sequence[float],
     distances: Sequence[int],
     ac_classes: Sequence[AcClass],
+    annotation_classes: Sequence[AnnotationClass],
     tail: str,
     total_observations: int,
     outlier_counts: Sequence[int],
-    carrier_counts: Sequence[Sequence[int]],
-    carrier_outlier_counts: Sequence[Sequence[Sequence[int]]],
+    carrier_counts: Sequence[Sequence[Sequence[int]]],
+    carrier_outlier_counts: Sequence[Sequence[Sequence[Sequence[int]]]],
 ) -> list[list[str]]:
     rows: list[list[str]] = []
     p_values: list[float] = []
     for threshold_index, threshold in enumerate(thresholds):
         outlier_observations = outlier_counts[threshold_index]
         nonoutlier_observations = total_observations - outlier_observations
-        for class_index, ac_class in enumerate(ac_classes):
-            for distance_index, distance in enumerate(distances):
-                n11 = carrier_outlier_counts[threshold_index][class_index][distance_index]
-                n10 = outlier_observations - n11
-                n01 = carrier_counts[class_index][distance_index] - n11
-                n00 = nonoutlier_observations - n01
-                outlier_rate = _divide_or_none(n11, outlier_observations)
-                nonoutlier_rate = _divide_or_none(n01, nonoutlier_observations)
-                rate_ratio = (
-                    None
-                    if outlier_rate is None or nonoutlier_rate in {None, 0.0}
-                    else outlier_rate / nonoutlier_rate
-                )
-                odds_ratio = _divide_or_none(n11 * n00, n10 * n01)
-                corrected_odds_ratio = (
-                    (n11 + 0.5) * (n00 + 0.5) / ((n10 + 0.5) * (n01 + 0.5))
-                )
-                fisher_p = fisher_exact_two_sided(n11, n10, n01, n00)
-                p_values.append(fisher_p)
-                rows.append(
-                    [
-                        str(threshold),
-                        tail,
-                        ac_class.label,
-                        ac_class.kind,
-                        str(ac_class.value),
-                        str(distance),
-                        str(total_observations),
-                        str(outlier_observations),
-                        str(nonoutlier_observations),
-                        str(n11),
-                        str(n10),
-                        str(n01),
-                        str(n00),
-                        _format_statistic(outlier_rate),
-                        _format_statistic(nonoutlier_rate),
-                        _format_statistic(rate_ratio),
-                        _format_statistic(odds_ratio),
-                        _format_statistic(corrected_odds_ratio),
-                        str(fisher_p),
+        for annotation_index, annotation in enumerate(annotation_classes):
+            for class_index, ac_class in enumerate(ac_classes):
+                for distance_index, distance in enumerate(distances):
+                    n11 = carrier_outlier_counts[threshold_index][annotation_index][class_index][
+                        distance_index
                     ]
-                )
+                    n10 = outlier_observations - n11
+                    n01 = carrier_counts[annotation_index][class_index][distance_index] - n11
+                    n00 = nonoutlier_observations - n01
+                    outlier_rate = _divide_or_none(n11, outlier_observations)
+                    nonoutlier_rate = _divide_or_none(n01, nonoutlier_observations)
+                    rate_ratio = (
+                        None
+                        if outlier_rate is None or nonoutlier_rate in {None, 0.0}
+                        else outlier_rate / nonoutlier_rate
+                    )
+                    odds_ratio = _divide_or_none(n11 * n00, n10 * n01)
+                    corrected_odds_ratio = (
+                        (n11 + 0.5) * (n00 + 0.5) / ((n10 + 0.5) * (n01 + 0.5))
+                    )
+                    fisher_p = fisher_exact_two_sided(n11, n10, n01, n00)
+                    p_values.append(fisher_p)
+                    rows.append(
+                        [
+                            str(threshold),
+                            tail,
+                            annotation.family,
+                            annotation.label,
+                            ac_class.label,
+                            ac_class.kind,
+                            str(ac_class.value),
+                            str(distance),
+                            str(total_observations),
+                            str(outlier_observations),
+                            str(nonoutlier_observations),
+                            str(n11),
+                            str(n10),
+                            str(n01),
+                            str(n00),
+                            _format_statistic(outlier_rate),
+                            _format_statistic(nonoutlier_rate),
+                            _format_statistic(rate_ratio),
+                            _format_statistic(odds_ratio),
+                            _format_statistic(corrected_odds_ratio),
+                            str(fisher_p),
+                        ]
+                    )
 
     for row, adjusted_p in zip(rows, benjamini_hochberg(p_values), strict=True):
         row.append(str(adjusted_p))

@@ -346,7 +346,12 @@ def _stream_tabix_records(
                     for sample_id in allele.carriers:
                         for ac_class in matching_classes:
                             minimum_distances.upsert(
-                                sample_id, feature.feature_id, ac_class.label, distance
+                                sample_id,
+                                feature.feature_id,
+                                ac_class.label,
+                                "baseline",
+                                "all_rare_variants",
+                                distance,
                             )
         if process.wait() != 0:
             raise subprocess.CalledProcessError(process.returncode, command)

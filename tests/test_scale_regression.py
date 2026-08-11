@@ -20,9 +20,13 @@ def test_fisher_wide_support_uses_constant_python_memory():
 def test_gather_reduction_has_bounded_python_heap(tmp_path: Path):
     carrier = tmp_path / "chr1.tsv"
     with carrier.open("w", encoding="utf-8") as handle:
-        handle.write("sample_id\tfeature_id\tac_class\tminimum_distance_bp\n")
+        handle.write(
+            "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp\n"
+        )
         for index in range(40_000):
-            handle.write(f"S{index % 1000}\tG{index}\tAC=1\t{index % 100}\n")
+            handle.write(
+                f"S{index % 1000}\tG{index}\tAC=1\tbaseline\tall_rare_variants\t{index % 100}\n"
+            )
     qc = tmp_path / "chr1.json"
     qc.write_text('{"chromosome":"chr1","emitted_keys":40000}')
 
@@ -57,7 +61,9 @@ def test_calculation_streams_thirty_thousand_carrier_keys_with_bounded_heap(
     ) as bed_handle, carriers.open("w", encoding="utf-8") as carrier_handle:
         feature_handle.write("chrom\ttss\tfeature_id\n")
         bed_handle.write("#chr\tstart\tend\tgene_id\t" + "\t".join(sample_ids) + "\n")
-        carrier_handle.write("sample_id\tfeature_id\tac_class\tminimum_distance_bp\n")
+        carrier_handle.write(
+            "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp\n"
+        )
         values = ["3", *(["0"] * 999)]
         for feature_index in range(30):
             feature_id = f"G{feature_index}"
@@ -67,7 +73,9 @@ def test_calculation_streams_thirty_thousand_carrier_keys_with_bounded_heap(
                 f"chr1\t{tss - 1}\t{tss}\t{feature_id}\t" + "\t".join(values) + "\n"
             )
             for sample_id in sample_ids:
-                carrier_handle.write(f"{sample_id}\t{feature_id}\tAC=1\t0\n")
+                carrier_handle.write(
+                    f"{sample_id}\t{feature_id}\tAC=1\tbaseline\tall_rare_variants\t0\n"
+                )
 
     tracemalloc.start()
     try:

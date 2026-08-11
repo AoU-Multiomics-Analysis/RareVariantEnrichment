@@ -7,7 +7,14 @@ from rare_variant_enrichment.io import open_text
 from rare_variant_enrichment.storage import MinimumDistanceStore
 
 
-CARRIER_HEADER = ("sample_id", "feature_id", "ac_class", "minimum_distance_bp")
+CARRIER_HEADER = (
+    "sample_id",
+    "feature_id",
+    "ac_class",
+    "annotation_family",
+    "annotation_class",
+    "minimum_distance_bp",
+)
 
 
 def gather_outputs(
@@ -24,8 +31,22 @@ def gather_outputs(
 
     with MinimumDistanceStore(carrier_output.parent) as minimum_distances:
         for path in carrier_paths:
-            for sample_id, feature_id, ac_class, distance in _iter_carrier_file(path):
-                minimum_distances.upsert(sample_id, feature_id, ac_class, distance)
+            for (
+                sample_id,
+                feature_id,
+                ac_class,
+                annotation_family,
+                annotation_class,
+                distance,
+            ) in _iter_carrier_file(path):
+                minimum_distances.upsert(
+                    sample_id,
+                    feature_id,
+                    ac_class,
+                    annotation_family,
+                    annotation_class,
+                    distance,
+                )
         qc_records = [_read_qc_file(path) for path in qc_paths]
         chromosomes = [record["chromosome"] for record in qc_records]
         if len(chromosomes) != len(set(chromosomes)):
@@ -48,9 +69,16 @@ def _iter_carrier_file(path: Path):
                 raise ValueError(f"Carrier TSV line {line_number} is blank: {path}")
             fields = raw_line.rstrip("\r\n").split("\t")
             if len(fields) != len(CARRIER_HEADER):
-                raise ValueError(f"Carrier TSV line {line_number} must have four columns: {path}")
-            sample_id, feature_id, ac_class, distance_text = fields
-            if not sample_id or not feature_id or not ac_class:
+                raise ValueError(f"Carrier TSV line {line_number} must have six columns: {path}")
+            (
+                sample_id,
+                feature_id,
+                ac_class,
+                annotation_family,
+                annotation_class,
+                distance_text,
+            ) = fields
+            if not all((sample_id, feature_id, ac_class, annotation_family, annotation_class)):
                 raise ValueError(f"Carrier TSV line {line_number} has empty key fields: {path}")
             try:
                 distance = int(distance_text)
@@ -63,7 +91,7 @@ def _iter_carrier_file(path: Path):
                     f"Carrier TSV line {line_number} minimum_distance_bp must be a non-negative integer: {path}"
                 )
 
-            yield sample_id, feature_id, ac_class, distance
+            yield sample_id, feature_id, ac_class, annotation_family, annotation_class, distance
 
 
 def _read_qc_file(path: Path) -> dict[str, object]:

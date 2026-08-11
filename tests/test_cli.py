@@ -62,7 +62,10 @@ def test_prepare_vat_cli_dispatches_paths_and_chromosomes_unchanged(tmp_path: Pa
 
 def test_gather_cli_writes_aggregated_outputs(tmp_path: Path):
     carrier = tmp_path / "chr1.tsv"
-    carrier.write_text("sample_id\tfeature_id\tac_class\tminimum_distance_bp\nS1\tGENE1\tAC=1\t4\n")
+    carrier.write_text(
+        "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp\n"
+        "S1\tGENE1\tAC=1\tbaseline\tall_rare_variants\t4\n"
+    )
     qc = tmp_path / "chr1.json"
     qc.write_text('{"chromosome":"chr1","extracted_records":1}')
     carrier_output = tmp_path / "all.tsv"
@@ -89,7 +92,7 @@ def test_gather_cli_writes_aggregated_outputs(tmp_path: Path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert "S1\tGENE1\tAC=1\t4" in carrier_output.read_text().splitlines()
+    assert "S1\tGENE1\tAC=1\tbaseline\tall_rare_variants\t4" in carrier_output.read_text().splitlines()
     assert qc_output.read_text().splitlines() == ["chromosome\textracted_records", "chr1\t1"]
 
 

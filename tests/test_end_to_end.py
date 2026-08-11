@@ -60,7 +60,7 @@ def test_miniature_pipeline_emits_hand_checked_threshold_combinations(
     chromosome_summary = json.loads(chromosome_qc.read_text())
     assert chromosome_summary["missing_genotypes"] == 1
     assert chromosome_summary["tabix_query_count"] == 1
-    assert "S1\tGENE4\tAC=1\t0" in chromosome_carriers.read_text().splitlines()
+    assert "S1\tGENE4\tAC=1\tbaseline\tall_rare_variants\t0" in chromosome_carriers.read_text().splitlines()
     assert prepared_fixture.vcf_tbi.is_file()
 
     all_carriers = tmp_path / "carriers.tsv"
@@ -182,7 +182,7 @@ def test_pipeline_rejects_boolean_z_thresholds_consistently(stage: str, tmp_path
         else:
             carriers = tmp_path / "carriers.tsv"
             carriers.write_text(
-                "sample_id\tfeature_id\tac_class\tminimum_distance_bp\n"
+                "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp\n"
             )
             features = tmp_path / "features.tsv"
             features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
