@@ -188,11 +188,19 @@ def test_wdl_runs_single_ac_family_and_optional_index_modes(
         assert Path(audit_output).is_file()
 
     by_key = {
-        (row["z_threshold"], row["ac_class"], row["distance_bp"]): row
+        (
+            row["z_threshold"],
+            row["annotation_family"],
+            row["annotation_class"],
+            row["ac_class"],
+            row["distance_bp"],
+        ): row
         for row in rows
     }
     expected_class = "AC=1" if expected_kind == "exact" else "AC<=1"
-    hand_checked = by_key[("2.0", expected_class, "10")]
+    hand_checked = by_key[
+        ("2.0", "baseline", "all_rare_variants", expected_class, "10")
+    ]
     assert (
         hand_checked["total_observations"],
         hand_checked["n11"],
