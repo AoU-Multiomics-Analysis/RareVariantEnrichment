@@ -5,10 +5,11 @@ from pathlib import Path
 from rare_variant_enrichment.aggregation import gather_outputs
 from rare_variant_enrichment.phenotypes import prepare_phenotypes
 from rare_variant_enrichment.statistics import calculate_enrichment
+from rare_variant_enrichment.vat import prepare_vat
 from rare_variant_enrichment.variants import classify_chromosome
 
 
-COMMANDS = ("prepare-phenotypes", "classify-chromosome", "gather", "calculate")
+COMMANDS = ("prepare-phenotypes", "prepare-vat", "classify-chromosome", "gather", "calculate")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,6 +24,11 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--feature-output", required=True, type=Path)
     prepare_parser.add_argument("--sample-output", required=True, type=Path)
     prepare_parser.add_argument("--qc-output", required=True, type=Path)
+    vat_parser = subparsers.add_parser("prepare-vat")
+    vat_parser.add_argument("--vat", required=True, type=Path)
+    vat_parser.add_argument("--chromosomes", required=True, type=parse_csv_strings)
+    vat_parser.add_argument("--schema-output", required=True, type=Path)
+    vat_parser.add_argument("--loftee-enabled-output", required=True, type=Path)
     classify_parser = subparsers.add_parser("classify-chromosome")
     classify_parser.add_argument("--vcf", required=True, type=Path)
     classify_parser.add_argument("--features", required=True, type=Path)
@@ -80,6 +86,9 @@ def main() -> int:
             args.sample_output,
             args.qc_output,
         )
+    elif args.command == "prepare-vat":
+        schema = prepare_vat(args.vat, args.chromosomes, args.schema_output)
+        args.loftee_enabled_output.write_text("true\n" if schema.lof is not None else "false\n")
     elif args.command == "classify-chromosome":
         classify_chromosome(
             args.vcf,

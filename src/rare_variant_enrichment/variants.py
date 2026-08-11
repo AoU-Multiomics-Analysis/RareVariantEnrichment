@@ -36,6 +36,17 @@ class FeatureTss:
     feature_id: str
 
 
+@dataclass(frozen=True, order=True)
+class QueryChunk:
+    chromosome: str
+    start: int
+    end: int
+
+    @property
+    def tabix_region(self) -> str:
+        return f"{self.chromosome}:{self.start}-{self.end}"
+
+
 class FeatureTssIndex:
     """One-time positional index for repeated inclusive TSS-window lookups."""
 
@@ -137,6 +148,39 @@ def merge_tss_windows(
             merged[-1] = (previous_chrom, previous_start, max(previous_end, end))
         else:
             merged.append((chrom, start, end))
+    return merged
+
+
+def build_query_chunks(
+    features: Sequence[FeatureTss], max_distance: int, chunk_size_bp: int
+) -> list[QueryChunk]:
+    _validate_max_distance(max_distance)
+    if isinstance(chunk_size_bp, bool) or not isinstance(chunk_size_bp, int) or chunk_size_bp < 1:
+        raise ValueError("annotation_chunk_size_bp must be a positive integer")
+    chromosomes = {feature.chrom for feature in features}
+    if len(chromosomes) > 1:
+        raise ValueError("Query chunks require features from one chromosome")
+    windows = sorted(
+        (feature.chrom, max(1, feature.tss - max_distance), feature.tss + max_distance)
+        for feature in features
+    )
+    return [
+        QueryChunk(chromosome, chunk_start, min(end, chunk_start + chunk_size_bp - 1))
+        for chromosome, start, end in _merge_inclusive_windows(windows)
+        for chunk_start in range(start, end + 1, chunk_size_bp)
+    ]
+
+
+def _merge_inclusive_windows(
+    windows: Sequence[tuple[str, int, int]],
+) -> list[tuple[str, int, int]]:
+    merged: list[tuple[str, int, int]] = []
+    for chromosome, start, end in windows:
+        if merged and merged[-1][0] == chromosome and start <= merged[-1][2]:
+            previous_chromosome, previous_start, previous_end = merged[-1]
+            merged[-1] = (previous_chromosome, previous_start, max(previous_end, end))
+        else:
+            merged.append((chromosome, start, end))
     return merged
 
 

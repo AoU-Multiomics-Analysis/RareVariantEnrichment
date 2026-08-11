@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from rare_variant_enrichment.annotations import VatSchema
+from rare_variant_enrichment import cli
 from rare_variant_enrichment.cli import build_parser, parse_csv_ints
 
 
@@ -15,8 +17,47 @@ def test_cli_lists_workflow_subcommands():
         check=False,
     )
     assert result.returncode == 0
-    for command in ("prepare-phenotypes", "classify-chromosome", "gather", "calculate"):
+    for command in ("prepare-phenotypes", "prepare-vat", "classify-chromosome", "gather", "calculate"):
         assert command in result.stdout
+
+
+def test_prepare_vat_cli_dispatches_paths_and_chromosomes_unchanged(tmp_path: Path, monkeypatch):
+    vat = tmp_path / "annotations.tsv.bgz"
+    schema_output = tmp_path / "schema.json"
+    loftee_enabled_output = tmp_path / "loftee_enabled.txt"
+    chromosomes = ["chr1", "chrX"]
+    schema = VatSchema.from_header(
+        ["chrom", "pos", "ref", "alt", "gene_id", "consequence", "gvs_max_af", "LoF"]
+    )
+    received: list[object] = []
+
+    def fake_prepare_vat(
+        received_vat: Path, received_chromosomes: list[str], received_schema_output: Path
+    ) -> VatSchema:
+        received.extend([received_vat, received_chromosomes, received_schema_output])
+        return schema
+
+    monkeypatch.setattr(cli, "prepare_vat", fake_prepare_vat)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "prepare-vat",
+            "--vat",
+            str(vat),
+            "--chromosomes",
+            "chr1,chrX",
+            "--schema-output",
+            str(schema_output),
+            "--loftee-enabled-output",
+            str(loftee_enabled_output),
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received == [vat, chromosomes, schema_output]
+    assert loftee_enabled_output.read_text() == "true\n"
 
 
 def test_gather_cli_writes_aggregated_outputs(tmp_path: Path):

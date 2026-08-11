@@ -1,0 +1,3 @@
+chrom	pos	ref	alt	rsid	gene_id	gene_symbol	transcript	is_canonical_transcript	consequence	aa_change	LoF	LoF_filter	LoF_flags	LoF_info	gvs_max_af	gvs_max_subpop
+chr1	10	A	G	.	ENSG00000100001.1	GENE1	ENST000001	1	missense_variant	p.Gly1Val	HC	.	.	.	0.001	global
+chr1	25	C	T	.	ENSG00000100002.2	GENE2	ENST000002	1	stop_gained	p.Gln2*	HC	.	.	.	0.0001	global
