@@ -1,15 +1,15 @@
 # VAT Annotation Enrichment Design
 
 **Date:** 2026-08-10
-**Status:** Proposed; approved in conversation and awaiting written-spec review
+**Status:** Approved in conversation; awaiting written-spec review
 
 ## Goal
 
 Extend the pooled rare-variant outlier enrichment workflow so it can test
 gene-matched functional variant classes from the All of Us Variant Annotation
-Table (VAT). The extension must preserve the existing z-score, allele-count,
-and TSS-distance analyses while keeping memory bounded for cohort-scale VCF and
-VAT inputs.
+Table (VAT). The extension must preserve the existing z-score and allele-count
+analyses, replace the broad distance grid with fixed 10 kb and 100 kb TSS
+windows, and keep memory bounded for cohort-scale VCF and VAT inputs.
 
 The first annotation release will test exact coding consequence terms and
 LoFTEE confidence classes. It will also use `gvs_max_af` as a second rarity
@@ -18,25 +18,22 @@ the enrichment analysis even if they are present in the rare-variant VCF.
 
 ## Source data and row granularity
 
-The workflow accepts a bgzipped, coordinate-sorted VAT TSV plus an optional
-tabix index. The official VAT contains one row per variant-transcript
-combination, but the workflow must also accept pre-collapsed VAT derivatives
-with one row per variant or variant-gene pair.
+The workflow accepts the bgzipped, coordinate-sorted transcript annotation TSV
+emitted by the merged MTtoVCF workflow, plus an optional tabix index. This file
+has one row per retained variant-transcript combination and the exact columns:
 
-Header discovery will recognize both official VAT coordinate names and the
-aliases used by the SuSiE annotation code:
+```text
+chrom, pos, ref, alt, rsid, gene_id, gene_symbol, transcript,
+is_canonical_transcript, consequence, aa_change, LoF, LoF_filter,
+LoF_flags, LoF_info, gvs_max_af, gvs_max_subpop
+```
 
-| Meaning | Official name | Accepted alias |
-|---|---|---|
-| Chromosome | `contig` | `chrom` |
-| Position | `position` | `pos` |
-| Reference allele | `ref_allele` | `ref` |
-| Alternate allele | `alt_allele` | `alt` |
-
-`gene_id`, `consequence`, and `gvs_max_af` are required. `LoF` is optional
-because it is not guaranteed by the published VAT schema. If `LoF` is absent,
-the workflow runs consequence and baseline enrichment but emits no LoFTEE
-strata. Missing or ambiguous required aliases fail schema validation.
+`chrom`, `pos`, `ref`, `alt`, `gene_id`, `consequence`, and `gvs_max_af` are
+required. `LoF` is also expected from MTtoVCF; if it is absent, the workflow
+runs consequence and baseline enrichment but emits no LoFTEE strata. Missing
+or duplicate required columns fail schema validation. Intergenic rows with a
+missing `gene_id` remain eligible to establish variant-level frequency state
+but cannot contribute a gene-matched consequence or LoFTEE class.
 
 The allele join key is the exact `(chromosome, position, reference,
 alternate)` tuple. A multiallelic VCF record is split logically into one key
@@ -54,8 +51,9 @@ for an overlapping neighboring gene must not classify the tested gene.
 
 For each `(variant allele, normalized gene_id)`:
 
-1. Union all consequence terms across every matching VAT row and every element
-   of each row's `consequence` array.
+1. Union all consequence terms across every matching transcript row. A scalar
+   term is expected from MTtoVCF; common delimiter-separated encodings are also
+   accepted defensively.
 2. Select exactly one most-severe term using the documented Ensembl consequence
    ordering, from more severe to less severe.
 3. Assign `LoFTEE=HC` if any matching row has `LoF=HC`; otherwise assign
@@ -145,6 +143,20 @@ runtime, retry, and carrier-audit inputs remain in effect. The VAT input is
 required for the annotation-enabled workflow revision. The optional index
 follows the same supplied-versus-generated pattern as the VCF index.
 
+The existing threshold inputs remain configurable, with these defaults:
+
+```wdl
+Array[Float] z_thresholds = [2.0, 3.0, 4.0, 5.0]
+Array[Int] exact_allele_counts = [1, 2, 3, 4, 5]
+Array[Int] cumulative_allele_count_maxima = [1, 2, 3, 5, 10]
+Array[Int] distance_thresholds_bp = [10000, 100000]
+```
+
+`distance_thresholds_bp` is retained for backward compatibility, but its
+values are interpreted as inclusive fixed cis windows. The default analysis
+therefore emits independent 10 kb and 100 kb strata and no longer emits the
+previous 1 kb or 1 Mb strata.
+
 ## Workflow architecture
 
 ### 1. PrepareVatIndex
@@ -159,14 +171,16 @@ unsorted file fails with a clear error rather than triggering an implicit
 whole-file sort. The task records whether the index was supplied or generated
 and emits the generated or validated index.
 
-### 2. PreparePhenotypes and maximum windows
+### 2. PreparePhenotypes and fixed cis windows
 
 Retain the existing phenotype preparation and one-base TSS interpretation.
 Normalize a second internal copy of each feature ID for VAT gene matching while
 preserving the original versioned feature ID in carrier and result interfaces.
 
-Build the union of all TSS windows at the largest requested distance. Smaller
-distance thresholds are not queried separately.
+Build the union of all TSS windows at the largest requested distance. With the
+defaults, each chromosome is extracted once over the 100 kb union and the
+10 kb stratum is derived later from exact minimum distance. Smaller windows are
+not queried separately.
 
 ### 3. Chunked chromosome classification
 
@@ -229,11 +243,14 @@ As before, the sample-level audit is published only with explicit opt-in.
 Extend the existing pooled calculation across:
 
 ```text
-z threshold x AC class x distance x annotation family x annotation class
+z threshold x AC class x cis window x annotation family x annotation class
 ```
 
 For each combination, a gene-sample observation is a carrier if at least one
-qualifying carrier key has `minimum_distance_bp` at or below the threshold.
+qualifying carrier key has `minimum_distance_bp` at or below the inclusive
+window boundary. Exact AC classes (`AC=1` through `AC=5`) and cumulative
+classes (`AC<=1`, `AC<=2`, `AC<=3`, `AC<=5`, and `AC<=10`) are tested
+independently at both default windows.
 Construct the same pooled 2x2 table and retain the existing observation,
 outlier-tail, rate-ratio, odds-ratio, Fisher exact, and screening-statistic
 limitations.
@@ -250,8 +267,9 @@ Extend `rare_variant_enrichment.tsv` with:
   or `LC`.
 
 All existing threshold, AC definition, distance, cell-count, carrier-rate,
-effect-size, p-value, and FDR columns remain. Stable sorting includes annotation
-family and class.
+effect-size, p-value, and FDR columns remain. The existing distance column
+records the cis-window boundary (`10000` or `100000` by default), avoiding an
+output-schema migration. Stable sorting includes annotation family and class.
 
 Extend the JSON provenance/QC output with VAT path metadata, resolved schema,
 MAF threshold, chunk size, severity-order version, configured consequence
@@ -271,7 +289,7 @@ Per-chromosome and gathered annotation QC includes:
 - observed raw `gvs_max_af` maximum and values converted from above 0.5;
 - missing, non-numeric, out-of-range, inconsistent, and above-threshold
   frequency exclusions;
-- consequence arrays parsed, recognized terms, unknown terms, and configured
+- consequence values parsed, recognized terms, unknown terms, and configured
   classes selected;
 - HC, LC, missing, and unrecognized LoFTEE values;
 - baseline, consequence, and LoFTEE carrier keys emitted; and
@@ -289,9 +307,10 @@ variant-level VAT data into ordinary QC outputs.
 
 Unit tests will cover:
 
-- official and SuSiE-style header aliases;
+- the exact MTtoVCF transcript-annotation header and required-column failures;
 - versioned Ensembl gene normalization and gene-specific matching;
-- supported consequence-array encodings, null arrays, and duplicate terms;
+- scalar and defensive delimiter-separated consequence encodings, missing
+  values, and duplicate terms;
 - full severity ordering and most-severe collapse across transcript rows;
 - HC-over-LC LoFTEE collapse and absent `LoF` behavior;
 - AF-to-MAF conversion, inclusive 1% filtering, invalid values, and
@@ -301,9 +320,9 @@ Unit tests will cover:
 
 Integration and WDL tests will cover:
 
-- one-row-per-transcript and pre-collapsed VAT fixtures;
+- one-row-per-transcript MTtoVCF annotation fixtures;
 - generated and supplied generic VAT tabix indexes;
-- non-overlapping chunk boundaries and exact maximum-distance boundaries;
+- non-overlapping chunk boundaries and inclusive 10 kb/100 kb boundaries;
 - each covered genomic position being queried once rather than once per gene or
   threshold;
 - a hand-checkable baseline, consequence, and LoFTEE enrichment result;
@@ -327,3 +346,4 @@ workflow.
 - [All of Us Variant Annotation Table schema](https://support.researchallofus.org/hc/en-us/articles/4615256690836-Variant-Annotation-Table)
 - [Ensembl calculated consequence severity order](https://www.ensembl.org/info/genome/variation/prediction/predicted_data.html)
 - [Existing SuSiE VAT loading workflow](https://github.com/AoU-Multiomics-Analysis/susieR/blob/main/workflows/AnnotateSusie.wdl)
+- [MTtoVCF transcript annotation output](https://github.com/AoU-Multiomics-Analysis/MTtoVCF)
