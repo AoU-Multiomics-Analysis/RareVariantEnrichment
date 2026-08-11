@@ -159,6 +159,8 @@ def _validate_thresholds(z_thresholds: Sequence[float]) -> list[float]:
         raise ValueError("At least one z-score threshold is required")
     thresholds: list[float] = []
     for threshold in z_thresholds:
+        if isinstance(threshold, bool):
+            raise ValueError("z-score thresholds must be finite numeric values")
         try:
             numeric_threshold = float(threshold)
         except (TypeError, ValueError) as error:
@@ -166,6 +168,8 @@ def _validate_thresholds(z_thresholds: Sequence[float]) -> list[float]:
         if not math.isfinite(numeric_threshold):
             raise ValueError("z-score thresholds must be finite numeric values")
         thresholds.append(numeric_threshold)
+    if len(thresholds) != len(set(thresholds)):
+        raise ValueError("z-score thresholds must be unique")
     return thresholds
 
 

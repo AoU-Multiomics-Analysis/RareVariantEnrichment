@@ -37,8 +37,8 @@ task PrepareVcfIndex {
     >>>
 
     output {
-        File vcf = "variants.vcf.gz"
-        File vcf_tbi = "variants.vcf.gz.tbi"
+        File vcf = rare_variant_vcf
+        File vcf_tbi = if defined(rare_variant_vcf_tbi) then select_first([rare_variant_vcf_tbi]) else "variants.vcf.gz.tbi"
         File vcf_samples = "vcf_samples.txt"
     }
 

@@ -1,4 +1,4 @@
 version: 1.2
 workflows:
-  - subclass: WDL 
-    primaryDescriptorPath: <Path> 
+  - subclass: WDL
+    primaryDescriptorPath: /workflows/rare_variant_enrichment.wdl
