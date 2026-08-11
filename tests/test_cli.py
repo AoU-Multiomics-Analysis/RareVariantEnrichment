@@ -104,6 +104,8 @@ def test_ac_cli_options_allow_one_empty_family(
             "shared_samples.txt",
             "--carriers",
             "carriers.tsv",
+            "--features",
+            "features.tsv",
             *common,
             "--z-thresholds",
             "2.0",

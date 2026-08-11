@@ -9,6 +9,7 @@ task PrepareVcfIndex {
         Int cpu
         Int memory_gb
         Int disk_gb
+        Int max_retries
     }
 
     File chromosomes_file = write_lines(chromosomes)
@@ -19,8 +20,10 @@ task PrepareVcfIndex {
         ln -s "~{rare_variant_vcf}" variants.vcf.gz
         if [[ "~{defined(rare_variant_vcf_tbi)}" == "true" ]]; then
             ln -s "~{select_first([rare_variant_vcf_tbi, rare_variant_vcf])}" variants.vcf.gz.tbi
+            printf 'supplied\n' > index_provenance.txt
         else
             tabix -p vcf variants.vcf.gz
+            printf 'generated\n' > index_provenance.txt
         fi
 
         tabix -l variants.vcf.gz > indexed_contigs.txt
@@ -40,6 +43,7 @@ task PrepareVcfIndex {
         File vcf = rare_variant_vcf
         File vcf_tbi = if defined(rare_variant_vcf_tbi) then select_first([rare_variant_vcf_tbi]) else "variants.vcf.gz.tbi"
         File vcf_samples = "vcf_samples.txt"
+        String index_provenance = read_string("index_provenance.txt")
     }
 
     runtime {
@@ -47,6 +51,7 @@ task PrepareVcfIndex {
         cpu: cpu
         memory: "~{memory_gb} GB"
         disks: "local-disk ~{disk_gb} HDD"
+        maxRetries: max_retries
     }
 }
 
@@ -61,6 +66,7 @@ task PreparePhenotypes {
         Int cpu
         Int memory_gb
         Int disk_gb
+        Int max_retries
     }
 
     File chromosomes_file = write_lines(chromosomes)
@@ -110,6 +116,7 @@ task PreparePhenotypes {
         cpu: cpu
         memory: "~{memory_gb} GB"
         disks: "local-disk ~{disk_gb} HDD"
+        maxRetries: max_retries
     }
 }
 
@@ -120,6 +127,7 @@ task DetermineMaximumDistance {
         Int cpu
         Int memory_gb
         Int disk_gb
+        Int max_retries
     }
 
     File distance_thresholds_file = write_lines(distance_thresholds_bp)
@@ -154,6 +162,7 @@ task DetermineMaximumDistance {
         cpu: cpu
         memory: "~{memory_gb} GB"
         disks: "local-disk ~{disk_gb} HDD"
+        maxRetries: max_retries
     }
 }
 
@@ -171,6 +180,7 @@ task ClassifyChromosome {
         Int cpu
         Int memory_gb
         Int disk_gb
+        Int max_retries
     }
 
     File chromosome_file = write_lines([chromosome])
@@ -225,6 +235,7 @@ task ClassifyChromosome {
         cpu: cpu
         memory: "~{memory_gb} GB"
         disks: "local-disk ~{disk_gb} HDD"
+        maxRetries: max_retries
     }
 }
 
@@ -236,6 +247,7 @@ task GatherCarrierPairs {
         Int cpu
         Int memory_gb
         Int disk_gb
+        Int max_retries
     }
 
     File carrier_pairs_file = write_lines(carrier_pairs)
@@ -268,6 +280,36 @@ task GatherCarrierPairs {
         cpu: cpu
         memory: "~{memory_gb} GB"
         disks: "local-disk ~{disk_gb} HDD"
+        maxRetries: max_retries
+    }
+}
+
+task PublishCarrierAudit {
+    input {
+        File source_carrier_minimum_distances_tsv
+        String docker_image
+        Int cpu
+        Int memory_gb
+        Int disk_gb
+        Int max_retries
+    }
+
+    command <<<
+        set -euo pipefail
+
+        cp "~{source_carrier_minimum_distances_tsv}" carrier_minimum_distances.tsv
+    >>>
+
+    output {
+        File carrier_minimum_distances_tsv = "carrier_minimum_distances.tsv"
+    }
+
+    runtime {
+        docker: docker_image
+        cpu: cpu
+        memory: "~{memory_gb} GB"
+        disks: "local-disk ~{disk_gb} HDD"
+        maxRetries: max_retries
     }
 }
 
@@ -276,15 +318,22 @@ task CalculateEnrichment {
         File phenotype_bed
         File shared_samples
         File carrier_minimum_distances_tsv
+        File features_tsv
+        File phenotype_qc_json
+        File chromosome_qc_tsv
+        Array[String] selected_chromosomes
         Array[Int] exact_allele_counts
         Array[Int] cumulative_allele_count_maxima
         Array[Float] z_thresholds
         Array[Int] distance_thresholds_bp
         String outlier_tail
+        String index_provenance
+        String workflow_version
         String docker_image
         Int cpu
         Int memory_gb
         Int disk_gb
+        Int max_retries
     }
 
     File exact_allele_counts_file = write_lines(exact_allele_counts)
@@ -292,6 +341,10 @@ task CalculateEnrichment {
     File z_thresholds_file = write_lines(z_thresholds)
     File distance_thresholds_bp_file = write_lines(distance_thresholds_bp)
     File outlier_tail_file = write_lines([outlier_tail])
+    File selected_chromosomes_file = write_lines(selected_chromosomes)
+    File container_image_file = write_lines([docker_image])
+    File index_provenance_file = write_lines([index_provenance])
+    File workflow_version_file = write_lines([workflow_version])
 
     command <<<
         set -euo pipefail
@@ -318,23 +371,39 @@ task CalculateEnrichment {
             distance_thresholds_bp+=("$value")
         done < "~{distance_thresholds_bp_file}"
         IFS= read -r outlier_tail < "~{outlier_tail_file}"
+        selected_chromosomes=()
+        while IFS= read -r value; do
+            selected_chromosomes+=("$value")
+        done < "~{selected_chromosomes_file}"
+        IFS= read -r container_image < "~{container_image_file}"
+        IFS= read -r index_provenance < "~{index_provenance_file}"
+        IFS= read -r workflow_version < "~{workflow_version_file}"
 
         exact_allele_counts_csv="$(join_by_comma "${exact_allele_counts[@]}")"
         cumulative_allele_count_maxima_csv="$(join_by_comma "${cumulative_allele_count_maxima[@]}")"
         z_thresholds_csv="$(join_by_comma "${z_thresholds[@]}")"
         distance_thresholds_bp_csv="$(join_by_comma "${distance_thresholds_bp[@]}")"
+        selected_chromosomes_csv="$(join_by_comma "${selected_chromosomes[@]}")"
 
         rare-variant-enrichment calculate \
             --phenotype-bed "~{phenotype_bed}" \
             --shared-samples "~{shared_samples}" \
             --carriers "~{carrier_minimum_distances_tsv}" \
+            --features "~{features_tsv}" \
             --exact-ac "$exact_allele_counts_csv" \
             --cumulative-ac-max "$cumulative_allele_count_maxima_csv" \
             --z-thresholds "$z_thresholds_csv" \
             --distance-thresholds "$distance_thresholds_bp_csv" \
             --tail "$outlier_tail" \
             --output-tsv enrichment.tsv \
-            --output-json enrichment.json
+            --output-json enrichment.json \
+            --phenotype-qc "~{phenotype_qc_json}" \
+            --chromosome-qc "~{chromosome_qc_tsv}" \
+            --selected-chromosomes "$selected_chromosomes_csv" \
+            --container-image "$container_image" \
+            --workflow-version "$workflow_version" \
+            --max-retries "~{max_retries}" \
+            --index-provenance "$index_provenance"
     >>>
 
     output {
@@ -347,6 +416,7 @@ task CalculateEnrichment {
         cpu: cpu
         memory: "~{memory_gb} GB"
         disks: "local-disk ~{disk_gb} HDD"
+        maxRetries: max_retries
     }
 }
 
@@ -371,7 +441,11 @@ workflow RareVariantEnrichment {
         Int gather_cpu = 2
         Int gather_memory_gb = 16
         Int gather_disk_gb = 50
+        Int max_retries = 1
+        Boolean publish_carrier_audit = false
     }
+
+    String workflow_version = "0.2.0"
 
     call PrepareVcfIndex {
         input:
@@ -381,7 +455,8 @@ workflow RareVariantEnrichment {
             docker_image = docker_image,
             cpu = prepare_cpu,
             memory_gb = prepare_memory_gb,
-            disk_gb = prepare_disk_gb
+            disk_gb = prepare_disk_gb,
+            max_retries = max_retries
     }
 
     call PreparePhenotypes {
@@ -394,7 +469,8 @@ workflow RareVariantEnrichment {
             docker_image = docker_image,
             cpu = prepare_cpu,
             memory_gb = prepare_memory_gb,
-            disk_gb = prepare_disk_gb
+            disk_gb = prepare_disk_gb,
+            max_retries = max_retries
     }
 
     call DetermineMaximumDistance {
@@ -403,7 +479,8 @@ workflow RareVariantEnrichment {
             docker_image = docker_image,
             cpu = prepare_cpu,
             memory_gb = prepare_memory_gb,
-            disk_gb = prepare_disk_gb
+            disk_gb = prepare_disk_gb,
+            max_retries = max_retries
     }
 
     scatter (chromosome in chromosomes) {
@@ -420,7 +497,8 @@ workflow RareVariantEnrichment {
                 docker_image = docker_image,
                 cpu = scatter_cpu,
                 memory_gb = scatter_memory_gb,
-                disk_gb = scatter_disk_gb
+                disk_gb = scatter_disk_gb,
+                max_retries = max_retries
         }
     }
 
@@ -431,7 +509,20 @@ workflow RareVariantEnrichment {
             docker_image = docker_image,
             cpu = gather_cpu,
             memory_gb = gather_memory_gb,
-            disk_gb = gather_disk_gb
+            disk_gb = gather_disk_gb,
+            max_retries = max_retries
+    }
+
+    if (publish_carrier_audit) {
+        call PublishCarrierAudit {
+            input:
+                source_carrier_minimum_distances_tsv = GatherCarrierPairs.carrier_minimum_distances_tsv,
+                docker_image = docker_image,
+                cpu = gather_cpu,
+                memory_gb = gather_memory_gb,
+                disk_gb = gather_disk_gb,
+                max_retries = max_retries
+        }
     }
 
     call CalculateEnrichment {
@@ -439,23 +530,32 @@ workflow RareVariantEnrichment {
             phenotype_bed = phenotype_bed,
             shared_samples = PreparePhenotypes.shared_samples,
             carrier_minimum_distances_tsv = GatherCarrierPairs.carrier_minimum_distances_tsv,
+            features_tsv = PreparePhenotypes.features_tsv,
+            phenotype_qc_json = PreparePhenotypes.phenotype_qc_json,
+            chromosome_qc_tsv = GatherCarrierPairs.chromosome_qc_tsv,
+            selected_chromosomes = chromosomes,
             exact_allele_counts = exact_allele_counts,
             cumulative_allele_count_maxima = cumulative_allele_count_maxima,
             z_thresholds = z_thresholds,
             distance_thresholds_bp = distance_thresholds_bp,
             outlier_tail = outlier_tail,
+            index_provenance = PrepareVcfIndex.index_provenance,
+            workflow_version = workflow_version,
             docker_image = docker_image,
             cpu = gather_cpu,
             memory_gb = gather_memory_gb,
-            disk_gb = gather_disk_gb
+            disk_gb = gather_disk_gb,
+            max_retries = max_retries
     }
 
     output {
         File enrichment_tsv = CalculateEnrichment.enrichment_tsv
         File enrichment_json = CalculateEnrichment.enrichment_json
         File chromosome_qc_tsv = GatherCarrierPairs.chromosome_qc_tsv
-        File carrier_minimum_distances_tsv = GatherCarrierPairs.carrier_minimum_distances_tsv
+        File? carrier_minimum_distances_tsv = PublishCarrierAudit.carrier_minimum_distances_tsv
         File generated_or_validated_vcf_tbi = PrepareVcfIndex.vcf_tbi
         Array[File] chromosome_query_regions = ClassifyChromosome.query_regions_bed
+        File phenotype_qc_json = PreparePhenotypes.phenotype_qc_json
+        String vcf_index_provenance = PrepareVcfIndex.index_provenance
     }
 }

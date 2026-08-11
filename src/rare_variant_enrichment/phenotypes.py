@@ -30,6 +30,8 @@ def prepare_phenotypes(
 ) -> None:
     selected_chromosomes = _validate_chromosomes(chromosomes)
     thresholds = _validate_thresholds(z_thresholds)
+    if any(threshold < 0 for threshold in thresholds):
+        raise ValueError("z-score thresholds must be non-negative")
     if tail not in {"absolute", "positive", "negative"}:
         raise ValueError(f"Unsupported tail mode: {tail}")
 
@@ -47,15 +49,20 @@ def prepare_phenotypes(
 
         shared_columns = [index for index, sample in enumerate(bed_samples) if sample in vcf_sample_set]
         bed_sample_set = set(bed_samples)
-        bed_only_samples = [sample for sample in bed_samples if sample not in vcf_sample_set]
-        vcf_only_samples = [sample for sample in vcf_samples if sample not in bed_sample_set]
+        bed_only_sample_count = sum(
+            sample not in vcf_sample_set for sample in bed_samples
+        )
+        vcf_only_sample_count = sum(
+            sample not in bed_sample_set for sample in vcf_samples
+        )
 
         sample_output.write_text("\n".join(shared_samples) + "\n")
         non_missing_observations = 0
         outlier_observations = {str(threshold): 0 for threshold in thresholds}
         seen_features: set[str] = set()
         seen_chromosomes: set[str] = set()
-        feature_count = 0
+        input_feature_count = 0
+        selected_feature_count = 0
 
         with feature_output.open("w", encoding="utf-8") as feature_handle:
             feature_handle.write("chrom\ttss\tfeature_id\n")
@@ -76,13 +83,14 @@ def prepare_phenotypes(
                     raise ValueError(f"Duplicate feature ID: {feature_id}")
                 seen_features.add(feature_id)
                 seen_chromosomes.add(chrom)
+                input_feature_count += 1
 
                 values = [_parse_phenotype_value(value, line_number) for value in fields[4:]]
                 if chrom not in selected_chromosomes:
                     continue
 
                 feature_handle.write(f"{chrom}\t{end}\t{feature_id}\n")
-                feature_count += 1
+                selected_feature_count += 1
                 for column_index in shared_columns:
                     value = values[column_index]
                     if value is None:
@@ -99,12 +107,21 @@ def prepare_phenotypes(
     write_json(
         qc_output,
         {
-            "bed_only_samples": bed_only_samples,
-            "feature_count": feature_count,
+            "bed_only_sample_count": bed_only_sample_count,
+            "bed_sample_count": len(bed_samples),
+            "feature_count": selected_feature_count,
+            "input_feature_count": input_feature_count,
+            "missing_z_observations": (
+                selected_feature_count * len(shared_samples) - non_missing_observations
+            ),
             "non_missing_observations": non_missing_observations,
             "outlier_observations": outlier_observations,
+            "selected_chromosomes": selected_chromosomes,
+            "selected_feature_count": selected_feature_count,
             "shared_sample_count": len(shared_samples),
-            "vcf_only_samples": vcf_only_samples,
+            "unselected_feature_count": input_feature_count - selected_feature_count,
+            "vcf_only_sample_count": vcf_only_sample_count,
+            "vcf_sample_count": len(vcf_samples),
         },
     )
 

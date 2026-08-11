@@ -45,6 +45,29 @@ print(json.dumps(inputs, sort_keys=True))
     return json.loads(result.stdout)
 
 
+def _parsed_outputs_and_runtime_keys() -> dict[str, object]:
+    script = """
+import json
+import sys
+
+import WDL
+
+document = WDL.load(sys.argv[1])
+print(json.dumps({
+    "outputs": {declaration.name: str(declaration.type) for declaration in document.workflow.outputs},
+    "runtime_keys": {task.name: sorted(task.runtime) for task in document.tasks},
+}, sort_keys=True))
+"""
+    result = subprocess.run(
+        [*_miniwdl_python(), "-c", script, str(WORKFLOW)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
 def _rendered_task_shell_boundaries() -> dict[str, dict[str, object]]:
     script = r'''
 import json
@@ -59,6 +82,7 @@ dangerous_chromosome = 'chr1"; touch CHROMOSOME_INJECTION; echo "'
 dangerous_tail = 'absolute"; touch TAIL_INJECTION; echo "'
 dangerous_carrier = '/tmp/carrier input; touch CARRIER_INJECTION'
 dangerous_qc = '/tmp/qc input; touch QC_INJECTION'
+dangerous_image = 'example.invalid/image"; touch IMAGE_INJECTION; echo "'
 
 def array(item_type, values):
     return WDL.Value.Array(item_type, values)
@@ -71,7 +95,7 @@ values = {
     "rare_variant_vcf": WDL.Value.File("/tmp/rare variants.vcf.gz"),
     "rare_variant_vcf_tbi": WDL.Value.File("/tmp/rare variants.vcf.gz.tbi"),
     "chromosomes": array(WDL.Type.String(), [WDL.Value.String(dangerous_chromosome)]),
-    "docker_image": WDL.Value.String("example.invalid/image:latest"),
+    "docker_image": WDL.Value.String(dangerous_image),
     "cpu": WDL.Value.Int(1),
     "memory_gb": WDL.Value.Int(1),
     "disk_gb": WDL.Value.Int(1),
@@ -89,6 +113,15 @@ values = {
     "carrier_pairs": array(WDL.Type.File(), [WDL.Value.File(dangerous_carrier)]),
     "chromosome_qc": array(WDL.Type.File(), [WDL.Value.File(dangerous_qc)]),
     "carrier_minimum_distances_tsv": WDL.Value.File("/tmp/carriers.tsv"),
+    "source_carrier_minimum_distances_tsv": WDL.Value.File("/tmp/carriers.tsv"),
+    "phenotype_qc_json": WDL.Value.File("/tmp/phenotype_qc.json"),
+    "chromosome_qc_tsv": WDL.Value.File("/tmp/chromosome_qc.tsv"),
+    "selected_chromosomes": array(
+        WDL.Type.String(), [WDL.Value.String(dangerous_chromosome)]
+    ),
+    "index_provenance": WDL.Value.String("supplied"),
+    "workflow_version": WDL.Value.String("0.2.0"),
+    "max_retries": WDL.Value.Int(2),
 }
 
 rendered = {}
@@ -166,6 +199,8 @@ def test_wdl_public_input_and_default_contract():
         "gather_cpu": {"type": "Int", "default": 2},
         "gather_memory_gb": {"type": "Int", "default": 16},
         "gather_disk_gb": {"type": "Int", "default": 50},
+        "max_retries": {"type": "Int", "default": 1},
+        "publish_carrier_audit": {"type": "Boolean", "default": False},
     }
 
 
@@ -175,13 +210,14 @@ def test_wdl_materializes_shell_values_before_rendering_commands():
     dangerous_tail = 'absolute"; touch TAIL_INJECTION; echo "'
     dangerous_carrier = "/tmp/carrier input; touch CARRIER_INJECTION"
     dangerous_qc = "/tmp/qc input; touch QC_INJECTION"
+    dangerous_image = 'example.invalid/image"; touch IMAGE_INJECTION; echo "'
 
     payloads_by_task = {
         "PrepareVcfIndex": [dangerous_chromosome],
         "PreparePhenotypes": [dangerous_chromosome, dangerous_tail],
         "ClassifyChromosome": [dangerous_chromosome],
         "GatherCarrierPairs": [dangerous_carrier, dangerous_qc],
-        "CalculateEnrichment": [dangerous_tail],
+        "CalculateEnrichment": [dangerous_tail, dangerous_chromosome, dangerous_image],
     }
     expected_files_by_task = {
         "PrepareVcfIndex": [[dangerous_chromosome]],
@@ -189,7 +225,17 @@ def test_wdl_materializes_shell_values_before_rendering_commands():
         "DetermineMaximumDistance": [["1000"]],
         "ClassifyChromosome": [[dangerous_chromosome], [], ["1"]],
         "GatherCarrierPairs": [[dangerous_carrier], [dangerous_qc]],
-        "CalculateEnrichment": [[], ["1"], ["2.000000"], ["1000"], [dangerous_tail]],
+        "CalculateEnrichment": [
+            [],
+            ["1"],
+            ["2.000000"],
+            ["1000"],
+            [dangerous_tail],
+            [dangerous_chromosome],
+            [dangerous_image],
+            ["supplied"],
+            ["0.2.0"],
+        ],
     }
 
     for task_name, payloads in payloads_by_task.items():
@@ -200,3 +246,21 @@ def test_wdl_materializes_shell_values_before_rendering_commands():
         generated_files = list(rendered[task_name]["generated_files"].values())
         for expected_file in expected_files:
             assert expected_file in generated_files
+
+
+def test_wdl_exposes_qc_provenance_optional_audit_and_required_retry_runtime():
+    contract = _parsed_outputs_and_runtime_keys()
+    assert contract["outputs"] == {
+        "carrier_minimum_distances_tsv": "File?",
+        "chromosome_qc_tsv": "File",
+        "chromosome_query_regions": "Array[File]",
+        "enrichment_json": "File",
+        "enrichment_tsv": "File",
+        "generated_or_validated_vcf_tbi": "File",
+        "phenotype_qc_json": "File",
+        "vcf_index_provenance": "String",
+    }
+    assert all(
+        "maxRetries" in runtime_keys
+        for runtime_keys in contract["runtime_keys"].values()
+    )

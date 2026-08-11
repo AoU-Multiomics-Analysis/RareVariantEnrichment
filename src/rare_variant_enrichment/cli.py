@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     calculate_parser.add_argument("--phenotype-bed", required=True, type=Path)
     calculate_parser.add_argument("--shared-samples", required=True, type=Path)
     calculate_parser.add_argument("--carriers", required=True, type=Path)
+    calculate_parser.add_argument("--features", required=True, type=Path)
     calculate_parser.add_argument("--exact-ac", required=True, type=parse_csv_ints)
     calculate_parser.add_argument("--cumulative-ac-max", required=True, type=parse_csv_ints)
     calculate_parser.add_argument("--z-thresholds", required=True, type=parse_csv_floats)
@@ -52,6 +53,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     calculate_parser.add_argument("--output-tsv", required=True, type=Path)
     calculate_parser.add_argument("--output-json", required=True, type=Path)
+    calculate_parser.add_argument("--phenotype-qc", type=Path)
+    calculate_parser.add_argument("--chromosome-qc", type=Path)
+    calculate_parser.add_argument("--selected-chromosomes", type=parse_csv_strings)
+    calculate_parser.add_argument("--container-image")
+    calculate_parser.add_argument("--workflow-version", default="unknown")
+    calculate_parser.add_argument("--max-retries", type=int, default=0)
+    calculate_parser.add_argument(
+        "--index-provenance",
+        choices=("generated", "supplied", "unknown"),
+        default="unknown",
+    )
     return parser
 
 
@@ -88,6 +100,7 @@ def main() -> int:
             args.phenotype_bed,
             args.shared_samples,
             args.carriers,
+            args.features,
             args.exact_ac,
             args.cumulative_ac_max,
             args.z_thresholds,
@@ -95,6 +108,13 @@ def main() -> int:
             args.tail,
             args.output_tsv,
             args.output_json,
+            phenotype_qc_path=args.phenotype_qc,
+            chromosome_qc_path=args.chromosome_qc,
+            selected_chromosomes=args.selected_chromosomes,
+            container_image=args.container_image,
+            workflow_version=args.workflow_version,
+            max_retries=args.max_retries,
+            index_provenance=args.index_provenance,
         )
     return 0
 

@@ -31,5 +31,7 @@
   "RareVariantEnrichment.cumulative_allele_count_maxima": [1, 2, 3, 5, 10],
   "RareVariantEnrichment.distance_thresholds_bp": [1000, 10000, 100000, 1000000],
   "RareVariantEnrichment.outlier_tail": "absolute",
-  "RareVariantEnrichment.docker_image": "ghcr.io/aou-multiomics-analysis/rarevariantenrichment:main"
+  "RareVariantEnrichment.docker_image": "ghcr.io/aou-multiomics-analysis/rarevariantenrichment:main",
+  "RareVariantEnrichment.max_retries": 1,
+  "RareVariantEnrichment.publish_carrier_audit": false
 }

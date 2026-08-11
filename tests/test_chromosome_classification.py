@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from rare_variant_enrichment.variants import classify_chromosome
+from rare_variant_enrichment.variants import classify_chromosome, parse_variant_alleles
 
 
 class _TabixProcess:
@@ -83,13 +83,24 @@ def test_classify_chromosome_without_features_writes_empty_outputs_without_tabix
     assert regions.read_text() == "#chrom\tstart\tend\n"
     assert json.loads(qc_path.read_text()) == {
         "alt_alleles": 0,
+        "boundary_variant_feature_pairs": 0,
         "chromosome": "chr1",
+        "classified_alt_alleles": 0,
+        "complete_genotype_calls": 0,
         "emitted_keys": 0,
         "extracted_records": 0,
         "feature_count": 0,
+        "fully_missing_genotype_calls": 0,
+        "genotype_ac_fallback_alt_alleles": 0,
+        "info_ac_alt_alleles": 0,
+        "info_genotype_ac_compared_alt_alleles": 0,
+        "info_genotype_ac_mismatch_alt_alleles": 0,
+        "info_genotype_ac_unchecked_alt_alleles": 0,
         "merged_region_count": 0,
         "missing_genotypes": 0,
+        "partial_genotype_calls": 0,
         "tabix_query_count": 0,
+        "unavailable_ac_alt_alleles": 0,
         "variant_feature_pairs": 0,
     }
 
@@ -164,6 +175,66 @@ def test_classify_chromosome_processes_streamed_record_without_htslib(
         "S1\tGENE1\tAC=1\t0",
     ]
     assert json.loads(qc_path.read_text())["extracted_records"] == 1
+
+
+def test_chromosome_qc_exposes_ac_sources_call_states_and_boundary_pairs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    vcf = tmp_path / "variants.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##contig=<ID=chr1>\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\tS3\n"
+    )
+    features = tmp_path / "features.tsv"
+    features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
+    samples = tmp_path / "shared_samples.txt"
+    samples.write_text("S1\nS2\nS3\n")
+    tabix_output = (
+        "##fileformat=VCFv4.2\n"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\tS3\n"
+        "chr1\t110\t.\tA\tC,G\t.\tPASS\tAC=.,2\tGT\t1/.\t0/2\t0/2\n"
+    )
+    monkeypatch.setattr(
+        "rare_variant_enrichment.variants.subprocess.Popen",
+        lambda *_args, **_kwargs: _TabixProcess(tabix_output),
+    )
+    qc_path = tmp_path / "qc.json"
+
+    classify_chromosome(
+        vcf,
+        features,
+        samples,
+        "chr1",
+        [1, 2],
+        [],
+        10,
+        tmp_path / "carriers.tsv",
+        tmp_path / "regions.bed",
+        qc_path,
+    )
+
+    qc = json.loads(qc_path.read_text())
+    assert qc["info_ac_alt_alleles"] == 1
+    assert qc["genotype_ac_fallback_alt_alleles"] == 1
+    assert qc["unavailable_ac_alt_alleles"] == 0
+    assert qc["partial_genotype_calls"] == 1
+    assert qc["fully_missing_genotype_calls"] == 0
+    assert qc["boundary_variant_feature_pairs"] == 2
+
+
+def test_committed_vcf_fixture_declares_fields_and_has_concordant_info_ac():
+    lines = Path("tests/fixtures/rare_variants.vcf").read_text().splitlines()
+    assert any(line.startswith("##INFO=<ID=AC,Number=A,Type=Integer") for line in lines)
+    assert any(line.startswith("##FORMAT=<ID=GT,Number=1,Type=String") for line in lines)
+    sample_ids = next(line for line in lines if line.startswith("#CHROM")).split("\t")[9:]
+    qc: dict[str, int] = {}
+    for line in lines:
+        if line.startswith("#"):
+            continue
+        parse_variant_alleles(line.split("\t"), sample_ids, set(sample_ids), qc=qc)
+
+    assert qc["info_genotype_ac_mismatch_alt_alleles"] == 0
 
 
 def test_classify_chromosome_rejects_vcf_without_contig_metadata(tmp_path: Path):

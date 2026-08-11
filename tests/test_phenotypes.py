@@ -39,8 +39,13 @@ def test_prepare_phenotypes_uses_tss_end_and_shared_samples(tmp_path: Path):
     assert sample_output.read_text().splitlines() == ["S1", "S3"]
     qc = json.loads(qc_output.read_text())
     assert qc["shared_sample_count"] == 2
-    assert qc["bed_only_samples"] == ["S2"]
-    assert qc["vcf_only_samples"] == ["S4"]
+    assert qc["bed_only_sample_count"] == 1
+    assert qc["vcf_only_sample_count"] == 1
+    assert qc["bed_sample_count"] == 3
+    assert qc["vcf_sample_count"] == 3
+    assert qc["selected_chromosomes"] == ["chr1", "chr2"]
+    assert "bed_only_samples" not in qc
+    assert "vcf_only_samples" not in qc
     assert qc["non_missing_observations"] == 3
 
 
@@ -88,6 +93,25 @@ def test_prepare_phenotypes_rejects_non_finite_or_non_numeric_thresholds(
                            tmp_path / "f.tsv", tmp_path / "s.txt", tmp_path / "q.json")
 
 
+def test_prepare_phenotypes_rejects_negative_z_threshold(tmp_path: Path):
+    bed = tmp_path / "phenotypes.bed"
+    bed.write_text("#chr\tstart\tend\tgene_id\tS1\nchr1\t0\t1\tGENE1\t1.0\n")
+    samples = tmp_path / "samples.txt"
+    samples.write_text("S1\n")
+
+    with pytest.raises(ValueError, match="z-score thresholds must be non-negative"):
+        prepare_phenotypes(
+            bed,
+            samples,
+            ["chr1"],
+            [-1.0],
+            "absolute",
+            tmp_path / "f.tsv",
+            tmp_path / "s.txt",
+            tmp_path / "q.json",
+        )
+
+
 def test_prepare_phenotypes_streams_gzip_and_counts_shared_observations(tmp_path: Path):
     bed = tmp_path / "phenotypes.bed.gz"
     with gzip.open(bed, "wt") as handle:
@@ -111,6 +135,10 @@ def test_prepare_phenotypes_streams_gzip_and_counts_shared_observations(tmp_path
     qc = json.loads(qc_output.read_text())
     assert qc["non_missing_observations"] == 1
     assert qc["outlier_observations"] == {"2.0": 1}
+    assert qc["input_feature_count"] == 3
+    assert qc["selected_feature_count"] == 2
+    assert qc["unselected_feature_count"] == 1
+    assert qc["missing_z_observations"] == 1
 
 
 def test_prepare_phenotypes_rejects_missing_requested_chromosome(tmp_path: Path):

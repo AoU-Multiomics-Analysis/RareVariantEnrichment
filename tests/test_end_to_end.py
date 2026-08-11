@@ -37,7 +37,7 @@ def test_miniature_pipeline_emits_hand_checked_threshold_combinations(
 
     assert shared.read_text().splitlines() == ["S1", "S2", "S3"]
     phenotype_summary = json.loads(phenotype_qc.read_text())
-    assert phenotype_summary["bed_only_samples"] == ["S4"]
+    assert phenotype_summary["bed_only_sample_count"] == 1
     assert phenotype_summary["non_missing_observations"] == 11
     assert phenotype_summary["outlier_observations"] == {"2.0": 3, "3.0": 2}
 
@@ -73,6 +73,7 @@ def test_miniature_pipeline_emits_hand_checked_threshold_combinations(
         prepared_fixture.bed,
         shared,
         all_carriers,
+        feature_tsv,
         [1, 2],
         [1, 2],
         [2.0, 3.0],
@@ -183,10 +184,13 @@ def test_pipeline_rejects_boolean_z_thresholds_consistently(stage: str, tmp_path
             carriers.write_text(
                 "sample_id\tfeature_id\tac_class\tminimum_distance_bp\n"
             )
+            features = tmp_path / "features.tsv"
+            features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
             calculate_enrichment(
                 bed,
                 samples,
                 carriers,
+                features,
                 [1],
                 [],
                 [True],

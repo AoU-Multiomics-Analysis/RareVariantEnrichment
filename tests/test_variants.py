@@ -1,6 +1,7 @@
 import pytest
 
 from rare_variant_enrichment.variants import (
+    FeatureTssIndex,
     FeatureTss,
     build_ac_classes,
     merge_tss_windows,
@@ -41,6 +42,85 @@ def test_multiallelic_record_assigns_ac_and_carriers_per_alt():
     ]
 
 
+def test_info_ac_dot_falls_back_to_genotypes_and_records_source_qc():
+    fields = "chr1\t100\t.\tA\tC\t.\tPASS\tAC=.\tGT\t0/1\t0/0".split("\t")
+    qc: dict[str, int] = {}
+
+    alleles = parse_variant_alleles(
+        fields, ["S1", "S2"], {"S1", "S2"}, qc=qc
+    )
+
+    assert [(allele.ac, allele.carriers) for allele in alleles] == [(1, ("S1",))]
+    assert qc["info_ac_alt_alleles"] == 0
+    assert qc["genotype_ac_fallback_alt_alleles"] == 1
+    assert qc["unavailable_ac_alt_alleles"] == 0
+
+
+def test_multiallelic_info_ac_falls_back_per_alt():
+    fields = "chr1\t100\t.\tA\tC,G\t.\tPASS\tAC=.,2\tGT\t0/1\t0/2\t0/2".split("\t")
+    qc: dict[str, int] = {}
+
+    alleles = parse_variant_alleles(
+        fields, ["S1", "S2", "S3"], {"S1", "S2", "S3"}, qc=qc
+    )
+
+    assert [(allele.alt, allele.ac, allele.carriers) for allele in alleles] == [
+        ("C", 1, ("S1",)),
+        ("G", 2, ("S2", "S3")),
+    ]
+    assert qc["info_ac_alt_alleles"] == 1
+    assert qc["genotype_ac_fallback_alt_alleles"] == 1
+
+
+def test_negative_info_ac_is_rejected():
+    fields = "chr1\t100\t.\tA\tC\t.\tPASS\tAC=-1\tGT\t0/1".split("\t")
+
+    with pytest.raises(ValueError, match="INFO/AC values must be non-negative"):
+        parse_variant_alleles(fields, ["S1"], {"S1"})
+
+
+def test_info_ac_is_authoritative_and_complete_genotype_disagreement_is_counted():
+    fields = "chr1\t100\t.\tA\tC\t.\tPASS\tAC=2\tGT\t0/1\t0/0".split("\t")
+    qc: dict[str, int] = {}
+
+    allele = parse_variant_alleles(
+        fields, ["S1", "S2"], {"S1", "S2"}, qc=qc
+    )[0]
+
+    assert allele.ac == 2
+    assert allele.carriers == ("S1",)
+    assert qc["info_genotype_ac_compared_alt_alleles"] == 1
+    assert qc["info_genotype_ac_mismatch_alt_alleles"] == 1
+
+
+def test_partial_calls_count_known_alt_alleles_but_fully_missing_calls_do_not():
+    fields = "chr1\t100\t.\tA\tC\t.\tPASS\t.\tGT\t1/.\t./.\t0/0".split("\t")
+    qc: dict[str, int] = {}
+
+    allele = parse_variant_alleles(
+        fields, ["S1", "S2", "S3"], {"S1", "S2", "S3"}, qc=qc
+    )[0]
+
+    assert allele.ac == 1
+    assert allele.carriers == ("S1",)
+    assert qc["partial_genotype_calls"] == 1
+    assert qc["fully_missing_genotype_calls"] == 1
+    assert qc["missing_genotypes"] == 2
+
+
+def test_fully_missing_calls_leave_missing_info_ac_unavailable():
+    fields = "chr1\t100\t.\tA\tC\t.\tPASS\t.\tGT\t./.\t.".split("\t")
+    qc: dict[str, int] = {}
+
+    alleles = parse_variant_alleles(
+        fields, ["S1", "S2"], {"S1", "S2"}, qc=qc
+    )
+
+    assert alleles == []
+    assert qc["fully_missing_genotype_calls"] == 2
+    assert qc["unavailable_ac_alt_alleles"] == 1
+
+
 def test_genotypes_supply_global_ac_but_only_shared_carriers():
     fields = "chr1\t100\t.\tA\tC\t.\tPASS\t.\tGT\t0/1\t1/1\t./.\t0/1".split("\t")
 
@@ -73,6 +153,18 @@ def test_windows_merge_and_distance_boundary_is_inclusive():
 
     assert merge_tss_windows(features, 10) == [("chr1", 89, 130)]
     assert [feature.feature_id for feature in nearby_features(features, 110, 10)] == ["G1", "G2"]
+
+
+def test_feature_tss_index_returns_only_bisected_interval_candidates():
+    features = [
+        FeatureTss("chr1", 10_000 + offset * 100, f"G{offset}")
+        for offset in reversed(range(200))
+    ]
+    index = FeatureTssIndex(features)
+
+    matches = index.nearby(15_050, 50)
+
+    assert [feature.feature_id for feature in matches] == ["G50", "G51"]
 
 
 def test_tss_windows_preserve_nonoverlapping_chromosomes_and_bed_boundaries():

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Sequence
 
 from rare_variant_enrichment.io import open_text
+from rare_variant_enrichment.storage import MinimumDistanceStore
 
 
 CARRIER_HEADER = ("sample_id", "feature_id", "ac_class", "minimum_distance_bp")
@@ -21,22 +22,19 @@ def gather_outputs(
     if not carrier_paths:
         raise ValueError("At least one carrier input and one QC input are required")
 
-    minimum_distances: dict[tuple[str, str, str], int] = {}
-    for path in carrier_paths:
-        _read_carrier_file(path, minimum_distances)
-
-    qc_records = [_read_qc_file(path) for path in qc_paths]
-    chromosomes = [record["chromosome"] for record in qc_records]
-    if len(chromosomes) != len(set(chromosomes)):
-        raise ValueError("QC inputs must contain unique chromosomes")
-
-    _write_carriers(carrier_output, minimum_distances)
+    with MinimumDistanceStore(carrier_output.parent) as minimum_distances:
+        for path in carrier_paths:
+            for sample_id, feature_id, ac_class, distance in _iter_carrier_file(path):
+                minimum_distances.upsert(sample_id, feature_id, ac_class, distance)
+        qc_records = [_read_qc_file(path) for path in qc_paths]
+        chromosomes = [record["chromosome"] for record in qc_records]
+        if len(chromosomes) != len(set(chromosomes)):
+            raise ValueError("QC inputs must contain unique chromosomes")
+        minimum_distances.write_tsv(carrier_output, "feature")
     _write_qc(qc_output, qc_records)
 
 
-def _read_carrier_file(
-    path: Path, minimum_distances: dict[tuple[str, str, str], int]
-) -> None:
+def _iter_carrier_file(path: Path):
     with open_text(path) as handle:
         try:
             header = next(handle).rstrip("\r\n").split("\t")
@@ -65,10 +63,7 @@ def _read_carrier_file(
                     f"Carrier TSV line {line_number} minimum_distance_bp must be a non-negative integer: {path}"
                 )
 
-            key = (sample_id, feature_id, ac_class)
-            previous_distance = minimum_distances.get(key)
-            if previous_distance is None or distance < previous_distance:
-                minimum_distances[key] = distance
+            yield sample_id, feature_id, ac_class, distance
 
 
 def _read_qc_file(path: Path) -> dict[str, object]:
@@ -108,17 +103,6 @@ def _validate_qc_cell(key: str, value: object, path: Path) -> None:
     if isinstance(value, float) and math.isfinite(value):
         return
     raise ValueError(f"QC JSON values must be scalar TSV values: {path}")
-
-
-def _write_carriers(
-    path: Path, minimum_distances: dict[tuple[str, str, str], int]
-) -> None:
-    with path.open("w", encoding="utf-8") as handle:
-        handle.write("\t".join(CARRIER_HEADER) + "\n")
-        for (sample_id, feature_id, ac_class), distance in sorted(
-            minimum_distances.items(), key=lambda item: (item[0][1], item[0][0], item[0][2])
-        ):
-            handle.write(f"{sample_id}\t{feature_id}\t{ac_class}\t{distance}\n")
 
 
 def _write_qc(path: Path, qc_records: Sequence[dict[str, object]]) -> None:

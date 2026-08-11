@@ -48,11 +48,14 @@ def test_calculate_enrichment_counts_distance_specific_carriers(tmp_path: Path):
     )
     output = tmp_path / "enrichment.tsv"
     summary = tmp_path / "summary.json"
+    features = tmp_path / "features.tsv"
+    features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
 
     calculate_enrichment(
         bed,
         samples,
         carriers,
+        features,
         [1],
         [],
         [2.0],
@@ -102,6 +105,109 @@ def test_calculate_enrichment_counts_distance_specific_carriers(tmp_path: Path):
     assert "screening" in json.loads(summary.read_text())["statistical_limitation"].lower()
 
 
+def test_calculate_enrichment_uses_exact_prepared_feature_set(tmp_path: Path):
+    bed = tmp_path / "phenotypes.bed"
+    bed.write_text(
+        "#chr\tstart\tend\tgene_id\tS1\tS2\n"
+        "chr1\t99\t100\tGENE1\t3\t0\n"
+        "chr2\t199\t200\tGENE2\t3\t0\n"
+    )
+    selected_features = tmp_path / "features.tsv"
+    selected_features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
+    samples = tmp_path / "samples.txt"
+    samples.write_text("S1\nS2\n")
+    carriers = tmp_path / "carriers.tsv"
+    carriers.write_text("sample_id\tfeature_id\tac_class\tminimum_distance_bp\n")
+    output = tmp_path / "enrichment.tsv"
+    summary = tmp_path / "summary.json"
+
+    calculate_enrichment(
+        bed,
+        samples,
+        carriers,
+        selected_features,
+        [1],
+        [],
+        [2.0],
+        [100],
+        "absolute",
+        output,
+        summary,
+    )
+
+    row = next(csv.DictReader(output.open(), delimiter="\t"))
+    assert (row["total_observations"], row["outlier_observations"]) == ("2", "1")
+    assert json.loads(summary.read_text())["feature_count"] == 1
+
+
+def test_calculate_enrichment_embeds_counts_and_reproducibility_provenance(
+    tmp_path: Path,
+):
+    bed = tmp_path / "phenotypes.bed"
+    bed.write_text("#chr\tstart\tend\tgene_id\tS1\nchr1\t99\t100\tGENE1\t3\n")
+    selected_features = tmp_path / "features.tsv"
+    selected_features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
+    samples = tmp_path / "samples.txt"
+    samples.write_text("S1\n")
+    carriers = tmp_path / "carriers.tsv"
+    carriers.write_text("sample_id\tfeature_id\tac_class\tminimum_distance_bp\n")
+    phenotype_qc = tmp_path / "phenotype_qc.json"
+    phenotype_qc.write_text(
+        json.dumps(
+            {
+                "bed_only_sample_count": 2,
+                "shared_sample_count": 1,
+                "vcf_only_sample_count": 3,
+                "selected_chromosomes": ["chr1"],
+            }
+        )
+    )
+    chromosome_qc = tmp_path / "chromosome_qc.tsv"
+    chromosome_qc.write_text(
+        "chromosome\talt_alleles\tboundary_variant_feature_pairs\tinfo_ac_alt_alleles\n"
+        "chr1\t4\t2\t3\n"
+    )
+    output = tmp_path / "enrichment.tsv"
+    summary_path = tmp_path / "summary.json"
+
+    calculate_enrichment(
+        bed,
+        samples,
+        carriers,
+        selected_features,
+        [1],
+        [],
+        [2.0],
+        [100],
+        "absolute",
+        output,
+        summary_path,
+        phenotype_qc_path=phenotype_qc,
+        chromosome_qc_path=chromosome_qc,
+        selected_chromosomes=["chr1"],
+        container_image="example.invalid/rare-variant@sha256:abc",
+        workflow_version="0.2.0",
+        max_retries=2,
+        index_provenance="supplied",
+    )
+
+    summary = json.loads(summary_path.read_text())
+    assert summary["phenotype_qc"]["bed_only_sample_count"] == 2
+    assert summary["chromosome_qc"]["totals"] == {
+        "alt_alleles": 4,
+        "boundary_variant_feature_pairs": 2,
+        "info_ac_alt_alleles": 3,
+    }
+    provenance = summary["provenance"]
+    assert provenance["selected_chromosomes"] == ["chr1"]
+    assert provenance["container_image"].endswith("@sha256:abc")
+    assert provenance["max_retries"] == 2
+    assert provenance["vcf_index"] == "supplied"
+    assert provenance["software_versions"]["workflow"] == "0.2.0"
+    assert provenance["software_versions"]["rare_variant_enrichment"] == "0.2.0"
+    assert "S1" not in summary_path.read_text()
+
+
 def test_calculate_enrichment_emits_literal_zero_carrier_and_missing_value_table(
     tmp_path: Path,
 ):
@@ -119,11 +225,14 @@ def test_calculate_enrichment_emits_literal_zero_carrier_and_missing_value_table
     )
     output = tmp_path / "enrichment.tsv"
     summary_path = tmp_path / "summary.json"
+    features = tmp_path / "features.tsv"
+    features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
 
     calculate_enrichment(
         bed,
         samples,
         carriers,
+        features,
         [1, 2],
         [1],
         [2.0],
@@ -171,11 +280,14 @@ def test_calculate_enrichment_uses_na_when_a_rate_denominator_is_zero(tmp_path: 
     samples.write_text("S1\n")
     carriers = tmp_path / "carriers.tsv"
     carriers.write_text("sample_id\tfeature_id\tac_class\tminimum_distance_bp\n")
+    features = tmp_path / "features.tsv"
+    features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
 
     calculate_enrichment(
         bed,
         samples,
         carriers,
+        features,
         [1],
         [],
         [2.0],
@@ -213,12 +325,15 @@ def test_calculate_enrichment_rejects_duplicate_configuration_values(
     samples.write_text("S1\n")
     carriers = tmp_path / "carriers.tsv"
     carriers.write_text("sample_id\tfeature_id\tac_class\tminimum_distance_bp\n")
+    features = tmp_path / "features.tsv"
+    features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
 
     with pytest.raises(ValueError, match=message):
         calculate_enrichment(
             bed,
             samples,
             carriers,
+            features,
             exact_ac,
             cumulative_ac_max,
             z_thresholds,
@@ -241,6 +356,8 @@ def test_calculate_cli_dispatches_all_arguments(tmp_path: Path):
     )
     output = tmp_path / "enrichment.tsv"
     summary = tmp_path / "summary.json"
+    features = tmp_path / "features.tsv"
+    features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
 
     result = subprocess.run(
         [
@@ -254,6 +371,8 @@ def test_calculate_cli_dispatches_all_arguments(tmp_path: Path):
             str(samples),
             "--carriers",
             str(carriers),
+            "--features",
+            str(features),
             "--exact-ac",
             "1",
             "--cumulative-ac-max",

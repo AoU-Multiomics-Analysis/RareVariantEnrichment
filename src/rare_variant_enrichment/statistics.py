@@ -1,9 +1,14 @@
 import csv
+import json
 import math
+import platform
 from pathlib import Path
+import re
+import sqlite3
 from typing import Sequence
 
-from rare_variant_enrichment.aggregation import _read_carrier_file
+from rare_variant_enrichment import __version__
+from rare_variant_enrichment.aggregation import _iter_carrier_file
 from rare_variant_enrichment.io import open_text, read_nonempty_lines, write_json
 from rare_variant_enrichment.phenotypes import (
     _parse_phenotype_value,
@@ -14,6 +19,7 @@ from rare_variant_enrichment.phenotypes import (
     classify_outlier,
 )
 from rare_variant_enrichment.variants import AcClass, build_ac_classes
+from rare_variant_enrichment.storage import MinimumDistanceStore
 
 
 ENRICHMENT_HEADER = (
@@ -54,29 +60,91 @@ def fisher_exact_two_sided(n11: int, n10: int, n01: int, n00: int) -> float:
     if lower == upper:
         return 1.0
 
-    mode = min(upper, max(lower, ((row1 + 1) * (col1 + 1)) // (total + 2)))
-    relative_probabilities = [0.0] * (upper - lower + 1)
-    relative_probabilities[mode - lower] = 1.0
+    candidate_mode = min(upper, max(lower, ((row1 + 1) * (col1 + 1)) // (total + 2)))
+    mode = candidate_mode
+    observed_log_relative = _hypergeometric_log_relative(
+        mode, n11, row1, col1, total
+    )
+    inclusion_threshold = observed_log_relative + math.log1p(1e-12)
+    if 0.0 <= inclusion_threshold:
+        return 1.0
 
-    for x in range(mode, upper):
-        relative_probabilities[x + 1 - lower] = relative_probabilities[x - lower] * (
-            (col1 - x) * (row1 - x)
-            / ((x + 1) * (total - col1 - row1 + x + 1))
-        )
+    normalizer = 1.0
+    normalizer_compensation = 0.0
+    included = 0.0
+    included_compensation = 0.0
+
+    log_relative = 0.0
     for x in range(mode, lower, -1):
-        relative_probabilities[x - 1 - lower] = relative_probabilities[x - lower] * (
-            x * (total - col1 - row1 + x)
-            / ((col1 - x + 1) * (row1 - x + 1))
+        log_relative += _hypergeometric_log_ratio_down(x, row1, col1, total)
+        relative_probability = math.exp(log_relative)
+        normalizer, normalizer_compensation = _compensated_add(
+            normalizer, normalizer_compensation, relative_probability
         )
+        if log_relative <= inclusion_threshold:
+            included, included_compensation = _compensated_add(
+                included, included_compensation, relative_probability
+            )
+        if relative_probability == 0.0:
+            break
 
-    observed = relative_probabilities[n11 - lower]
-    normalizer = math.fsum(relative_probabilities)
-    p_value = math.fsum(
-        probability
-        for probability in relative_probabilities
-        if probability <= observed * (1.0 + 1e-12)
-    ) / normalizer
+    log_relative = 0.0
+    for x in range(mode, upper):
+        log_relative += _hypergeometric_log_ratio_up(x, row1, col1, total)
+        relative_probability = math.exp(log_relative)
+        normalizer, normalizer_compensation = _compensated_add(
+            normalizer, normalizer_compensation, relative_probability
+        )
+        if log_relative <= inclusion_threshold:
+            included, included_compensation = _compensated_add(
+                included, included_compensation, relative_probability
+            )
+        if relative_probability == 0.0:
+            break
+
+    p_value = included / normalizer
     return min(1.0, max(0.0, p_value))
+
+
+def _hypergeometric_log_relative(
+    mode: int, target: int, row1: int, col1: int, total: int
+) -> float:
+    relative = 0.0
+    if target < mode:
+        for x in range(mode, target, -1):
+            relative += _hypergeometric_log_ratio_down(x, row1, col1, total)
+            if relative < -800.0:
+                return float("-inf")
+    else:
+        for x in range(mode, target):
+            relative += _hypergeometric_log_ratio_up(x, row1, col1, total)
+            if relative < -800.0:
+                return float("-inf")
+    return relative
+
+
+def _hypergeometric_log_ratio_down(x: int, row1: int, col1: int, total: int) -> float:
+    return (
+        math.log(x)
+        + math.log(total - col1 - row1 + x)
+        - math.log(col1 - x + 1)
+        - math.log(row1 - x + 1)
+    )
+
+
+def _hypergeometric_log_ratio_up(x: int, row1: int, col1: int, total: int) -> float:
+    return (
+        math.log(col1 - x)
+        + math.log(row1 - x)
+        - math.log(x + 1)
+        - math.log(total - col1 - row1 + x + 1)
+    )
+
+
+def _compensated_add(total: float, compensation: float, value: float) -> tuple[float, float]:
+    adjusted = value - compensation
+    updated = total + adjusted
+    return updated, (updated - total) - adjusted
 
 
 def benjamini_hochberg(p_values: Sequence[float]) -> list[float]:
@@ -96,6 +164,7 @@ def calculate_enrichment(
     phenotype_bed: Path,
     shared_samples_path: Path,
     carriers_path: Path,
+    selected_features_path: Path,
     exact_ac: Sequence[int],
     cumulative_ac_max: Sequence[int],
     z_thresholds: Sequence[float],
@@ -103,36 +172,36 @@ def calculate_enrichment(
     tail: str,
     output_tsv: Path,
     output_json: Path,
+    *,
+    phenotype_qc_path: Path | None = None,
+    chromosome_qc_path: Path | None = None,
+    selected_chromosomes: Sequence[str] | None = None,
+    container_image: str | None = None,
+    workflow_version: str = "unknown",
+    max_retries: int = 0,
+    index_provenance: str = "unknown",
 ) -> None:
     thresholds = _validate_statistics_thresholds(z_thresholds)
     distances = _validate_distances(distance_thresholds)
     ac_classes = _validate_ac_classes(exact_ac, cumulative_ac_max)
     if tail not in {"absolute", "positive", "negative"}:
         raise ValueError(f"Unsupported tail mode: {tail}")
+    if isinstance(max_retries, bool) or not isinstance(max_retries, int) or max_retries < 0:
+        raise ValueError("max_retries must be a non-negative integer")
+    if index_provenance not in {"generated", "supplied", "unknown"}:
+        raise ValueError("index_provenance must be generated, supplied, or unknown")
 
     shared_samples = read_nonempty_lines(shared_samples_path)
     if not shared_samples:
         raise ValueError("At least one shared sample is required")
     _reject_duplicates(shared_samples, "sample")
     shared_sample_set = set(shared_samples)
+    selected_features = _read_selected_features(selected_features_path)
+    if not selected_features:
+        raise ValueError("At least one selected feature is required")
 
-    carrier_minima: dict[tuple[str, str, str], int] = {}
-    _read_carrier_file(carriers_path, carrier_minima)
     class_indexes = {ac_class.label: index for index, ac_class in enumerate(ac_classes)}
-    carriers_by_feature: dict[str, dict[str, dict[int, int]]] = {}
-    for (sample_id, feature_id, ac_label), distance in carrier_minima.items():
-        if sample_id not in shared_sample_set:
-            raise ValueError(f"Carrier sample is absent from shared samples: {sample_id}")
-        if ac_label not in class_indexes:
-            raise ValueError(f"Carrier AC class is not configured: {ac_label}")
-        feature_carriers = carriers_by_feature.setdefault(feature_id, {})
-        sample_carriers = feature_carriers.setdefault(sample_id, {})
-        sample_carriers[class_indexes[ac_label]] = distance
-
-    carrier_counts = [
-        [0 for _ in distances]
-        for _ in ac_classes
-    ]
+    carrier_counts = [[0 for _ in distances] for _ in ac_classes]
     carrier_outlier_counts = [
         [[0 for _ in distances] for _ in ac_classes]
         for _ in thresholds
@@ -140,67 +209,107 @@ def calculate_enrichment(
     outlier_counts = [0 for _ in thresholds]
     total_observations = 0
     missing_z_observations = 0
-    seen_features: set[str] = set()
+    seen_bed_features: set[str] = set()
+    seen_selected_features: set[str] = set()
+    unselected_feature_count = 0
 
-    with open_text(phenotype_bed) as bed_handle:
-        header = _read_header(bed_handle)
-        bed_samples = header[4:]
-        _reject_duplicates(bed_samples, "sample")
-        bed_sample_indexes = {sample_id: index for index, sample_id in enumerate(bed_samples)}
-        missing_samples = [sample for sample in shared_samples if sample not in bed_sample_indexes]
-        if missing_samples:
-            raise ValueError(
-                f"Shared samples are absent from phenotype BED: {', '.join(missing_samples)}"
-            )
-        shared_columns = [bed_sample_indexes[sample] for sample in shared_samples]
+    with MinimumDistanceStore(output_tsv.parent) as carrier_minima:
+        for sample_id, feature_id, ac_label, distance in _iter_carrier_file(carriers_path):
+            if sample_id not in shared_sample_set:
+                raise ValueError(f"Carrier sample is absent from shared samples: {sample_id}")
+            if feature_id not in selected_features:
+                raise ValueError(f"Carrier feature is absent from selected features: {feature_id}")
+            if ac_label not in class_indexes:
+                raise ValueError(f"Carrier AC class is not configured: {ac_label}")
+            carrier_minima.upsert(sample_id, feature_id, ac_label, distance)
 
-        for line_number, raw_line in enumerate(bed_handle, start=2):
-            if not raw_line.strip():
-                continue
-            fields = raw_line.rstrip("\r\n").split("\t")
-            if len(fields) != len(header):
+        carrier_key_count = carrier_minima.count()
+        features_with_carriers = carrier_minima.distinct_feature_count()
+        with open_text(phenotype_bed) as bed_handle:
+            header = _read_header(bed_handle)
+            bed_samples = header[4:]
+            _reject_duplicates(bed_samples, "sample")
+            bed_sample_indexes = {
+                sample_id: index for index, sample_id in enumerate(bed_samples)
+            }
+            missing_samples = [
+                sample for sample in shared_samples if sample not in bed_sample_indexes
+            ]
+            if missing_samples:
                 raise ValueError(
-                    f"Line {line_number} has {len(fields)} columns; expected {len(header)}"
+                    f"Shared samples are absent from phenotype BED: {', '.join(missing_samples)}"
                 )
-            chrom, start_text, end_text, feature_id = fields[:4]
-            _parse_tss_interval(start_text, end_text, line_number)
-            if not chrom:
-                raise ValueError(f"Line {line_number} has an empty chromosome")
-            if not feature_id:
-                raise ValueError(f"Line {line_number} has an empty feature ID")
-            if feature_id in seen_features:
-                raise ValueError(f"Duplicate feature ID: {feature_id}")
-            seen_features.add(feature_id)
+            shared_columns = [bed_sample_indexes[sample] for sample in shared_samples]
+            shared_sample_indexes = {
+                sample_id: index for index, sample_id in enumerate(shared_samples)
+            }
 
-            values = [_parse_phenotype_value(value, line_number) for value in fields[4:]]
-            feature_carriers = carriers_by_feature.get(feature_id, {})
-            for sample_id, column_index in zip(shared_samples, shared_columns, strict=True):
-                value = values[column_index]
-                if value is None:
-                    missing_z_observations += 1
+            for line_number, raw_line in enumerate(bed_handle, start=2):
+                if not raw_line.strip():
                     continue
+                fields = raw_line.rstrip("\r\n").split("\t")
+                if len(fields) != len(header):
+                    raise ValueError(
+                        f"Line {line_number} has {len(fields)} columns; expected {len(header)}"
+                    )
+                chrom, start_text, end_text, feature_id = fields[:4]
+                _, tss = _parse_tss_interval(start_text, end_text, line_number)
+                if not chrom:
+                    raise ValueError(f"Line {line_number} has an empty chromosome")
+                if not feature_id:
+                    raise ValueError(f"Line {line_number} has an empty feature ID")
+                if feature_id in seen_bed_features:
+                    raise ValueError(f"Duplicate feature ID: {feature_id}")
+                seen_bed_features.add(feature_id)
 
-                total_observations += 1
-                outlier_flags = [
-                    classify_outlier(value, threshold, tail) for threshold in thresholds
+                expected_location = selected_features.get(feature_id)
+                if expected_location is None:
+                    unselected_feature_count += 1
+                    continue
+                if expected_location != (chrom, tss):
+                    raise ValueError(
+                        f"Selected feature location does not match phenotype BED: {feature_id}"
+                    )
+                seen_selected_features.add(feature_id)
+
+                shared_values = [
+                    _parse_phenotype_value(fields[4 + column_index], line_number)
+                    for column_index in shared_columns
                 ]
-                for threshold_index, is_outlier in enumerate(outlier_flags):
-                    if is_outlier:
-                        outlier_counts[threshold_index] += 1
+                for value in shared_values:
+                    if value is None:
+                        missing_z_observations += 1
+                        continue
+                    total_observations += 1
+                    for threshold_index, threshold in enumerate(thresholds):
+                        if classify_outlier(value, threshold, tail):
+                            outlier_counts[threshold_index] += 1
 
-                for class_index, minimum_distance in feature_carriers.get(sample_id, {}).items():
+                for sample_id, ac_label, minimum_distance in carrier_minima.iter_feature(
+                    feature_id
+                ):
+                    value = shared_values[shared_sample_indexes[sample_id]]
+                    if value is None:
+                        continue
+                    class_index = class_indexes[ac_label]
+                    outlier_flags = [
+                        classify_outlier(value, threshold, tail) for threshold in thresholds
+                    ]
                     for distance_index, distance_threshold in enumerate(distances):
                         if minimum_distance > distance_threshold:
                             continue
                         carrier_counts[class_index][distance_index] += 1
                         for threshold_index, is_outlier in enumerate(outlier_flags):
                             if is_outlier:
-                                carrier_outlier_counts[threshold_index][class_index][distance_index] += 1
+                                carrier_outlier_counts[threshold_index][class_index][
+                                    distance_index
+                                ] += 1
 
-    missing_carrier_features = sorted(set(carriers_by_feature) - seen_features)
-    if missing_carrier_features:
+    missing_selected_features = sorted(set(selected_features) - seen_selected_features)
+    if missing_selected_features:
         raise ValueError(
-            "Carrier features are absent from phenotype BED: " + ", ".join(missing_carrier_features)
+            "Selected features are absent from phenotype BED: "
+            + ", ".join(missing_selected_features)
         )
 
     rows = _build_rows(
@@ -214,13 +323,17 @@ def calculate_enrichment(
         carrier_outlier_counts,
     )
     _write_rows(output_tsv, rows)
-    feature_count = len(seen_features)
-    features_with_carriers = len(set(carriers_by_feature))
-    write_json(
-        output_json,
-        {
+    feature_count = len(selected_features)
+    summary: dict[str, object] = {
             "ac_classes": [ac_class.label for ac_class in ac_classes],
-            "carrier_key_count": len(carrier_minima),
+            "analysis_parameters": {
+                "cumulative_allele_count_maxima": list(cumulative_ac_max),
+                "distance_thresholds_bp": distances,
+                "exact_allele_counts": list(exact_ac),
+                "outlier_tail": tail,
+                "z_thresholds": thresholds,
+            },
+            "carrier_key_count": carrier_key_count,
             "distance_thresholds_bp": distances,
             "emitted_rows": len(rows),
             "feature_count": feature_count,
@@ -236,8 +349,111 @@ def calculate_enrichment(
             "total_observations": total_observations,
             "tss_coordinate_convention": "TSS equals BED end; distance boundaries are inclusive.",
             "z_thresholds": thresholds,
-        },
-    )
+            "unselected_feature_count": unselected_feature_count,
+            "provenance": {
+                "container_image": container_image,
+                "max_retries": max_retries,
+                "selected_chromosomes": list(
+                    selected_chromosomes
+                    if selected_chromosomes is not None
+                    else dict.fromkeys(chrom for chrom, _ in selected_features.values())
+                ),
+                "software_versions": {
+                    "python": platform.python_version(),
+                    "rare_variant_enrichment": __version__,
+                    "sqlite": sqlite3.sqlite_version,
+                    "workflow": workflow_version,
+                },
+                "vcf_index": index_provenance,
+            },
+        }
+    if phenotype_qc_path is not None:
+        summary["phenotype_qc"] = _read_phenotype_qc(phenotype_qc_path)
+    if chromosome_qc_path is not None:
+        summary["chromosome_qc"] = _read_chromosome_qc(chromosome_qc_path)
+    write_json(output_json, summary)
+
+
+def _read_selected_features(path: Path) -> dict[str, tuple[str, int]]:
+    selected: dict[str, tuple[str, int]] = {}
+    with open_text(path) as handle:
+        reader = csv.reader(handle, delimiter="\t")
+        try:
+            header = next(reader)
+        except StopIteration as error:
+            raise ValueError("Selected feature TSV is empty") from error
+        if header != ["chrom", "tss", "feature_id"]:
+            raise ValueError("Selected feature TSV header must be chrom, tss, feature_id")
+        for line_number, fields in enumerate(reader, start=2):
+            if len(fields) != 3:
+                raise ValueError(
+                    f"Selected feature TSV line {line_number} must have three columns"
+                )
+            chrom, tss_text, feature_id = fields
+            try:
+                tss = int(tss_text)
+            except ValueError as error:
+                raise ValueError(
+                    f"Selected feature TSV line {line_number} has a non-integer TSS"
+                ) from error
+            if not chrom or not feature_id or tss < 1:
+                raise ValueError(
+                    f"Selected feature TSV line {line_number} has invalid feature values"
+                )
+            if feature_id in selected:
+                raise ValueError(f"Duplicate selected feature ID: {feature_id}")
+            selected[feature_id] = (chrom, tss)
+    return selected
+
+
+def _read_phenotype_qc(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"Phenotype QC JSON is invalid: {path}") from error
+    if not isinstance(payload, dict):
+        raise ValueError("Phenotype QC JSON must contain an object")
+    identifier_fields = {"bed_only_samples", "vcf_only_samples", "shared_samples"}
+    if identifier_fields.intersection(payload):
+        raise ValueError("Phenotype QC must publish overlap counts, not sample IDs")
+    return payload
+
+
+def _read_chromosome_qc(path: Path) -> dict[str, object]:
+    with open_text(path) as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        if not reader.fieldnames or "chromosome" not in reader.fieldnames:
+            raise ValueError("Chromosome QC TSV must contain a chromosome column")
+        per_chromosome: list[dict[str, object]] = []
+        totals: dict[str, int | float] = {}
+        seen_chromosomes: set[str] = set()
+        for row in reader:
+            chromosome = row.get("chromosome", "")
+            if not chromosome or chromosome in seen_chromosomes:
+                raise ValueError("Chromosome QC TSV must contain unique chromosomes")
+            seen_chromosomes.add(chromosome)
+            parsed_row: dict[str, object] = {"chromosome": chromosome}
+            for key, text in row.items():
+                if key == "chromosome":
+                    continue
+                value = _parse_qc_scalar(text or "")
+                parsed_row[key] = value
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    totals[key] = totals.get(key, 0) + value
+            per_chromosome.append(parsed_row)
+    return {"per_chromosome": per_chromosome, "totals": totals}
+
+
+def _parse_qc_scalar(text: str) -> object:
+    if text == "":
+        return None
+    if re.fullmatch(r"-?[0-9]+", text):
+        return int(text)
+    try:
+        numeric = float(text)
+    except ValueError:
+        return text
+    return numeric if math.isfinite(numeric) else text
 
 
 def _validate_statistics_thresholds(z_thresholds: Sequence[float]) -> list[float]:

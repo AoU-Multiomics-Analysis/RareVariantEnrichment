@@ -1,7 +1,7 @@
 # Rare Variant Enrichment Design
 
 **Date:** 2026-08-10  
-**Status:** Proposed
+**Status:** Implemented; final-review hardening incorporated
 
 ## Goal
 
@@ -42,7 +42,7 @@ The workflow will support two independently evaluated class families:
 - Exact classes: `AC=1`, `AC=2`, `AC=3`, etc.
 - Cumulative classes: `AC<=1`, `AC<=2`, `AC<=3`, etc.
 
-The WDL will accept the requested exact counts and cumulative maxima as arrays, so the caller can choose singleton-only, singleton-plus-doubleton, or broader rare-variant analyses without changing code. Each alternate allele is assigned its corresponding allele count from `INFO/AC` when available; otherwise the helper calculates AC from the genotype allele indices. Multiallelic records are evaluated one alternate allele at a time so carriers are associated with the correct AC value.
+The WDL accepts requested exact counts and cumulative maxima as arrays, so the caller can choose singleton-only, singleton-plus-doubleton, or broader rare-variant analyses without changing code. Each alternate allele uses its corresponding non-negative `INFO/AC` value when available; otherwise that ALT independently falls back to called genotype allele indices. Known ALT indices in partial calls count as carriers and toward fallback AC; unknown alleles do not. An ALT with missing INFO AC and no called genotype alleles is unavailable and skipped. INFO remains authoritative, with complete-record genotype disagreements reported in QC.
 
 ## Distance thresholds
 
@@ -94,18 +94,18 @@ Scatter over the requested chromosome array. Each task will:
 - Use one `tabix -h -R merged_maximum_windows.bed indexed.vcf.gz` call to extract variants falling within any maximum-distance window on that chromosome while retaining the VCF sample header.
 - Parse the extracted records and sample genotypes.
 - Determine each variant's allele count and requested AC classes.
-- Match each extracted variant to every feature TSS within the maximum distance using chromosome and exact coordinates.
-- Emit the minimum observed distance for each `(sample_id, feature_id, ac_class)` plus per-chromosome variant/QC counts.
+- Match each extracted variant to every feature TSS within the maximum distance using one pre-sorted positional index and binary search.
+- Reduce minimum observed distance for each `(sample_id, feature_id, ac_class)` in a temporary SQLite table and emit it in deterministic order plus per-chromosome variant/QC counts.
 
 The task will not calculate enrichment independently. Retaining only the minimum qualifying distance for each key is sufficient because carrier status at threshold `w` is equivalent to `minimum_distance <= w`.
 
 ### 4. GatherCarrierPairs
 
-Combine the scattered carrier-pair tables and reduce duplicate `(sample_id, feature_id, ac_class)` keys to their minimum distance. This prevents a gene–sample observation with multiple qualifying variants from being counted multiple times and remains safe if a feature appears in more than one scattered input.
+Combine the scattered carrier-pair tables with a disk-backed SQLite minimum reduction. This prevents a feature–sample observation with multiple qualifying variants from being counted multiple times without retaining cohort-scale keys in Python memory.
 
 ### 5. CalculateEnrichment
 
-Stream the wide phenotype BED and join each feature row to its deduplicated carrier keys. Evaluate all z-score threshold × AC class × distance combinations, calculate the 2x2 counts and statistics, and write the final report and QC summary. This stage will avoid converting the complete feature-by-sample matrix into an expanded long table.
+Stream the wide phenotype BED, restrict it to the exact feature table emitted by preparation, and query carrier minima from a disk-backed feature index. Evaluate all z-score threshold × AC class × distance combinations, calculate the 2x2 counts and statistics, and write the final report and QC summary. This stage avoids both a long phenotype expansion and a global carrier dictionary. Fisher probabilities use a constant-memory mode-relative recurrence.
 
 ## Outputs
 
@@ -114,7 +114,8 @@ The workflow will emit:
 - `rare_variant_enrichment.tsv`: one row per z-score threshold × AC class × distance, including z-score threshold, tail, AC class definition, distance in base pairs, total observations, outlier/non-outlier counts, carrier/non-carrier cells, carrier-rate ratio, continuity-corrected odds ratio, Fisher p-value, and BH FDR.
 - `rare_variant_enrichment.json`: run parameters, input summaries, and high-level QC metrics.
 - `chromosome_qc.tsv`: per-chromosome feature windows, merged maximum-distance regions, VCF records extracted, variants retained, variant–feature pairs formed, and carrier keys emitted.
-- `deduplicated_carrier_pairs.tsv`: the gathered `(sample_id, feature_id, ac_class, minimum_distance_bp)` keys, useful for auditing and downstream methods.
+- Optional `deduplicated_carrier_pairs.tsv`: the gathered `(sample_id, feature_id, ac_class, minimum_distance_bp)` keys, published only with explicit opt-in because it contains sample IDs.
+- `phenotype_qc.json` and index-provenance outputs, plus combined count-only phenotype/chromosome QC and software/container/retry metadata in the final JSON.
 
 The final report will also include counts of z-score observations dropped for missing values, BED features with no variants inside the maximum window, samples absent from the VCF, malformed/missing genotypes, variants skipped because their AC could not be determined, and records at exact distance boundaries.
 
@@ -122,7 +123,7 @@ The final report will also include counts of z-score observations dropped for mi
 
 The helper will fail for malformed required columns, duplicate feature or sample IDs, no shared BED/VCF samples, invalid one-base TSS intervals, non-numeric phenotype values, invalid distance or allele-count parameters, chromosome naming mismatches, and an unusable VCF/index. A missing genotype is never counted as a carrier; missing genotype calls are reported in QC so this assumption can be evaluated.
 
-All z-score thresholds, distance thresholds, AC class arrays, tail mode, TSS coordinate convention, and software/container versions will be recorded in the JSON output. The WDL will expose runtime settings for CPU, memory, disk, and task retry behavior rather than hard-coding cohort-specific values.
+All z-score thresholds, distance thresholds, AC class arrays, tail mode, selected chromosomes, TSS coordinate convention, index source, retry count, and software/container versions are recorded in JSON. The WDL exposes runtime settings for CPU, memory, disk, and task retries rather than hard-coding cohort-specific values. Production images should be pinned by digest; the default GHCR tag requires a public package or configured pull credentials.
 
 ## Testing strategy
 
