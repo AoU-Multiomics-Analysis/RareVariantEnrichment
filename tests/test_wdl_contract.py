@@ -157,6 +157,7 @@ print(json.dumps(rendered, sort_keys=True))
 
 
 def test_wdl_public_input_and_default_contract():
+    expected_autosomes = [f"chr{chromosome}" for chromosome in range(1, 23)]
     template_result = subprocess.run(
         [MINIWDL, "input_template", str(WORKFLOW)],
         text=True,
@@ -165,7 +166,6 @@ def test_wdl_public_input_and_default_contract():
     )
     assert template_result.returncode == 0, template_result.stderr
     assert json.loads(template_result.stdout) == {
-        "RareVariantEnrichment.chromosomes": ["String"],
         "RareVariantEnrichment.phenotype_bed": "File",
         "RareVariantEnrichment.rare_variant_vcf": "File",
     }
@@ -174,7 +174,10 @@ def test_wdl_public_input_and_default_contract():
         "phenotype_bed": {"type": "File", "default": None},
         "rare_variant_vcf": {"type": "File", "default": None},
         "rare_variant_vcf_tbi": {"type": "File?", "default": None},
-        "chromosomes": {"type": "Array[String]", "default": None},
+        "chromosomes": {
+            "type": "Array[String]",
+            "default": expected_autosomes,
+        },
         "z_thresholds": {"type": "Array[Float]", "default": [2.0, 3.0, 4.0, 5.0]},
         "exact_allele_counts": {"type": "Array[Int]", "default": [1, 2, 3, 4, 5]},
         "cumulative_allele_count_maxima": {
@@ -202,6 +205,13 @@ def test_wdl_public_input_and_default_contract():
         "max_retries": {"type": "Int", "default": 1},
         "publish_carrier_audit": {"type": "Boolean", "default": False},
     }
+
+
+def test_example_uses_default_autosomes():
+    inputs = json.loads(
+        (Path("examples") / "rare_variant_enrichment.inputs.json").read_text()
+    )
+    assert "RareVariantEnrichment.chromosomes" not in inputs
 
 
 def test_wdl_materializes_shell_values_before_rendering_commands():

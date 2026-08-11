@@ -29,6 +29,12 @@ Columns five onward are sample IDs and scaled-residual z-scores. Empty values, `
 
 `rare_variant_vcf` must be coordinate-sorted, bgzip-compressed, and include contig declarations, a `GT` FORMAT field, and sample genotypes. Chromosome names in `chromosomes` must exactly match both BED and VCF contigs. Each ALT allele of a multiallelic record is evaluated separately.
 
+`chromosomes` defaults to all autosomes, `chr1` through `chr22`. Omit
+the input for that default. To restrict a run, supply an explicit array such as
+`["chr7"]` or `["chr1", "chr2"]`. Non-autosomal contigs such as `chrX`
+must be requested explicitly, and every label must match both BED and VCF
+contigs.
+
 `rare_variant_vcf_tbi` is optional. When omitted, `PrepareVcfIndex` generates an adjacent tabix index with `tabix -p vcf`; when supplied, it is localized beside the VCF and validated. The example intentionally omits this field to demonstrate automatic index generation.
 
 `INFO/AC` is interpreted independently for every ALT and is authoritative when it is a non-negative integer. A missing value (`AC=.` or a `.` entry such as `AC=.,2`) falls back only that ALT to the called genotype allele indices across every VCF sample, including samples absent from the BED. Negative AC values are rejected. On fully called records, INFO and genotype AC are compared and disagreements are counted while INFO remains authoritative.
@@ -60,7 +66,7 @@ miniwdl run workflows/rare_variant_enrichment.wdl \
   -i examples/rare_variant_enrichment.inputs.json
 ```
 
-Adjust the two file paths and chromosome naming in the example JSON for the input cohort. To use an existing index, add `"RareVariantEnrichment.rare_variant_vcf_tbi": "rare_variants.vcf.gz.tbi"`.
+Adjust the two file paths in the example JSON for the input cohort. The example omits `chromosomes` to demonstrate the default autosomal selection; to restrict a run, add an explicit chromosome array. To use an existing index, add `"RareVariantEnrichment.rare_variant_vcf_tbi": "rare_variants.vcf.gz.tbi"`.
 
 The selected chromosome array controls the exact feature set in both preparation and calculation. Rows on other BED chromosomes are validated during preparation but do not enter enrichment denominators.
 
