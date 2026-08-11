@@ -51,6 +51,10 @@ def gather_outputs(
         chromosomes = [record["chromosome"] for record in qc_records]
         if len(chromosomes) != len(set(chromosomes)):
             raise ValueError("QC inputs must contain unique chromosomes")
+        classified_alt_alleles = _sum_qc_counter(qc_records, "classified_alt_alleles")
+        vat_joined_alt_alleles = _sum_qc_counter(qc_records, "vat_joined_alt_alleles")
+        if classified_alt_alleles > 0 and vat_joined_alt_alleles == 0:
+            raise ValueError("No queried VCF ALT alleles matched VAT allele keys")
         minimum_distances.write_tsv(carrier_output, "feature")
     _write_qc(qc_output, qc_records)
 
@@ -131,6 +135,16 @@ def _validate_qc_cell(key: str, value: object, path: Path) -> None:
     if isinstance(value, float) and math.isfinite(value):
         return
     raise ValueError(f"QC JSON values must be scalar TSV values: {path}")
+
+
+def _sum_qc_counter(qc_records: Sequence[dict[str, object]], counter: str) -> int | float:
+    total: int | float = 0
+    for record in qc_records:
+        value = record.get(counter, 0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ValueError(f"QC {counter} must be a non-negative number")
+        total += value
+    return total
 
 
 def _write_qc(path: Path, qc_records: Sequence[dict[str, object]]) -> None:

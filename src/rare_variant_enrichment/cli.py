@@ -75,6 +75,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("generated", "supplied", "unknown"),
         default="unknown",
     )
+    calculate_parser.add_argument("--consequence-classes", type=parse_csv_strings, default=[])
+    calculate_parser.add_argument("--loftee-enabled", type=parse_boolean, default=False)
+    calculate_parser.add_argument(
+        "--vat-index-provenance",
+        choices=("generated", "supplied", "unknown"),
+        default="unknown",
+    )
+    calculate_parser.add_argument("--maximum-gvs-maf", type=float, default=0.01)
+    calculate_parser.add_argument("--annotation-chunk-size-bp", type=int, default=10_000_000)
     return parser
 
 
@@ -134,6 +143,11 @@ def main() -> int:
             workflow_version=args.workflow_version,
             max_retries=args.max_retries,
             index_provenance=args.index_provenance,
+            consequence_classes=args.consequence_classes,
+            loftee_enabled=args.loftee_enabled,
+            vat_index_provenance=args.vat_index_provenance,
+            maximum_gvs_maf=args.maximum_gvs_maf,
+            annotation_chunk_size_bp=args.annotation_chunk_size_bp,
         )
     return 0
 
@@ -152,6 +166,14 @@ def parse_csv_ints(value: str) -> list[int]:
         return [int(item) for item in parse_csv_strings(value)]
     except ValueError as error:
         raise argparse.ArgumentTypeError("Expected comma-separated integers") from error
+
+
+def parse_boolean(value: str) -> bool:
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise argparse.ArgumentTypeError("Expected true or false")
 
 
 def parse_csv_floats(value: str) -> list[float]:

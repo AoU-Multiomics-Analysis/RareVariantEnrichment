@@ -175,6 +175,133 @@ def test_calculate_enrichment_stratifies_annotations_with_one_global_bh_correcti
     )
 
 
+def test_calculate_enrichment_emits_configured_zero_carrier_annotation_rows_and_provenance(
+    tmp_path: Path,
+):
+    """Removing configured annotation strata or provenance must fail this contract."""
+    bed = tmp_path / "phenotypes.bed"
+    bed.write_text(
+        "#chr\tstart\tend\tgene_id\tS1\tS2\n"
+        "chr1\t99\t100\tENSG1.1\t3\t0\n"
+    )
+    samples = tmp_path / "samples.txt"
+    samples.write_text("S1\nS2\n")
+    features = tmp_path / "features.tsv"
+    features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tENSG1.1\n")
+    carriers = tmp_path / "carriers.tsv"
+    carriers.write_text(
+        "sample_id\tfeature_id\tac_class\tannotation_family\t"
+        "annotation_class\tminimum_distance_bp\n"
+        "S1\tENSG1.1\tAC=1\tbaseline\tall_rare_variants\t0\n"
+    )
+    output = tmp_path / "enrichment.tsv"
+    summary_path = tmp_path / "enrichment.json"
+
+    calculate_enrichment(
+        bed,
+        samples,
+        carriers,
+        features,
+        [1],
+        [],
+        [2.0],
+        [100],
+        "absolute",
+        output,
+        summary_path,
+        consequence_classes=["stop_gained"],
+        loftee_enabled=True,
+        vat_index_provenance="generated",
+        maximum_gvs_maf=0.01,
+        annotation_chunk_size_bp=10_000_000,
+    )
+
+    rows = list(csv.DictReader(output.open(), delimiter="\t"))
+    assert [(row["annotation_family"], row["annotation_class"], row["n11"]) for row in rows] == [
+        ("baseline", "all_rare_variants", "1"),
+        ("consequence", "stop_gained", "0"),
+        ("loftee", "HC", "0"),
+        ("loftee", "LC", "0"),
+    ]
+    fdr_by_p_value = sorted(
+        (float(row["fisher_p_value"]), float(row["fisher_fdr_bh"])) for row in rows
+    )
+    assert [fdr for _, fdr in fdr_by_p_value] == sorted(fdr for _, fdr in fdr_by_p_value)
+    summary = json.loads(summary_path.read_text())
+    assert summary["analysis_parameters"] == {
+        "annotation_chunk_size_bp": 10_000_000,
+        "annotation_classes": [
+            {"family": "baseline", "label": "all_rare_variants"},
+            {"family": "consequence", "label": "stop_gained"},
+            {"family": "loftee", "label": "HC"},
+            {"family": "loftee", "label": "LC"},
+        ],
+        "consequence_classes": ["stop_gained"],
+        "cumulative_allele_count_maxima": [],
+        "distance_thresholds_bp": [100],
+        "exact_allele_counts": [1],
+        "loftee_enabled": True,
+        "maximum_gvs_maf": 0.01,
+        "outlier_tail": "absolute",
+        "z_thresholds": [2.0],
+    }
+    assert summary["provenance"] | {"software_versions": None} == {
+        "annotation_chunk_size_bp": 10_000_000,
+        "container_image": None,
+        "consequence_classes": ["stop_gained"],
+        "loftee_enabled": True,
+        "maximum_gvs_maf": 0.01,
+        "max_retries": 0,
+        "selected_chromosomes": ["chr1"],
+        "severity_order_version": "Ensembl release 116",
+        "software_versions": None,
+        "vat_index": "generated",
+        "vcf_index": "unknown",
+    }
+
+
+@pytest.mark.parametrize(
+    ("keyword", "value", "message"),
+    [
+        ("consequence_classes", ["not_an_ensembl_consequence"], "Unknown consequence classes"),
+        ("maximum_gvs_maf", float("nan"), "maximum_gvs_maf must be a finite number from 0 to 0.5"),
+        ("maximum_gvs_maf", 0.500_001, "maximum_gvs_maf must be a finite number from 0 to 0.5"),
+        ("annotation_chunk_size_bp", 0, "annotation_chunk_size_bp must be a positive integer"),
+        ("vat_index_provenance", "invalid", "vat_index_provenance must be generated, supplied, or unknown"),
+    ],
+)
+def test_calculate_enrichment_validates_annotation_configuration(
+    tmp_path: Path, keyword: str, value: object, message: str
+):
+    """Removing the annotation-configuration validators must fail this contract."""
+    bed = tmp_path / "phenotypes.bed"
+    bed.write_text("#chr\tstart\tend\tgene_id\tS1\nchr1\t99\t100\tGENE1\t3\n")
+    samples = tmp_path / "samples.txt"
+    samples.write_text("S1\n")
+    carriers = tmp_path / "carriers.tsv"
+    carriers.write_text(
+        "sample_id\tfeature_id\tac_class\tannotation_family\tannotation_class\tminimum_distance_bp\n"
+    )
+    features = tmp_path / "features.tsv"
+    features.write_text("chrom\ttss\tfeature_id\nchr1\t100\tGENE1\n")
+
+    with pytest.raises(ValueError, match=message):
+        calculate_enrichment(
+            bed,
+            samples,
+            carriers,
+            features,
+            [1],
+            [],
+            [2.0],
+            [100],
+            "absolute",
+            tmp_path / "enrichment.tsv",
+            tmp_path / "summary.json",
+            **{keyword: value},  # type: ignore[arg-type]
+        )
+
+
 def test_calculate_enrichment_rejects_unconfigured_carrier_annotation(tmp_path: Path):
     bed = tmp_path / "phenotypes.bed"
     bed.write_text("#chr\tstart\tend\tgene_id\tS1\nchr1\t99\t100\tGENE1\t3\n")

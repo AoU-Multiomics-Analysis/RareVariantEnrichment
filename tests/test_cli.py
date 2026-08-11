@@ -147,6 +147,62 @@ def test_classify_cli_dispatches_vat_annotation_arguments(tmp_path: Path, monkey
     ]
 
 
+def test_calculate_cli_dispatches_annotation_configuration_as_literal_data(
+    tmp_path: Path, monkeypatch
+):
+    """Replacing direct dispatch with shell evaluation must fail this contract."""
+    received: dict[str, object] = {}
+    marker = tmp_path / "must-not-exist"
+    consequence = f"stop_gained;touch {marker}"
+
+    def fake_calculate(*arguments: object, **keywords: object) -> None:
+        received["arguments"] = arguments
+        received["keywords"] = keywords
+
+    monkeypatch.setattr(cli, "calculate_enrichment", fake_calculate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "calculate",
+            "--phenotype-bed", "phenotypes.bed",
+            "--shared-samples", "shared_samples.txt",
+            "--carriers", "carriers.tsv",
+            "--features", "features.tsv",
+            "--exact-ac", "1",
+            "--cumulative-ac-max", "",
+            "--z-thresholds", "2.0",
+            "--distance-thresholds", "100",
+            "--tail", "absolute",
+            "--output-tsv", "enrichment.tsv",
+            "--output-json", "enrichment.json",
+            "--consequence-classes", consequence,
+            "--loftee-enabled", "true",
+            "--vat-index-provenance", "supplied",
+            "--maximum-gvs-maf", "0.01",
+            "--annotation-chunk-size-bp", "500",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received["keywords"] == {
+        "phenotype_qc_path": None,
+        "chromosome_qc_path": None,
+        "selected_chromosomes": None,
+        "container_image": None,
+        "workflow_version": "unknown",
+        "max_retries": 0,
+        "index_provenance": "unknown",
+        "consequence_classes": [consequence],
+        "loftee_enabled": True,
+        "vat_index_provenance": "supplied",
+        "maximum_gvs_maf": 0.01,
+        "annotation_chunk_size_bp": 500,
+    }
+    assert not marker.exists()
+
+
 def test_parse_csv_ints_decodes_empty_wdl_array():
     assert parse_csv_ints("") == []
 

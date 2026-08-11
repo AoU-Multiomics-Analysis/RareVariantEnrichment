@@ -55,6 +55,8 @@ ENSEMBL_CONSEQUENCE_ORDER = (
     "sequence_variant",
 )
 
+ENSEMBL_SEVERITY_ORDER_VERSION = "Ensembl release 116"
+
 DEFAULT_CONSEQUENCE_CLASSES: tuple[str, ...] = (
     "splice_acceptor_variant",
     "splice_donor_variant",
@@ -286,12 +288,16 @@ def parse_gvs_max_af(value: str) -> FrequencyValue:
 def build_annotation_classes(
     consequence_classes: Sequence[str], loftee_enabled: bool
 ) -> list[AnnotationClass]:
-    duplicates = sorted({value for value in consequence_classes if consequence_classes.count(value) > 1})
+    configured = list(consequence_classes)
+    duplicates = sorted({value for value in configured if configured.count(value) > 1})
     if duplicates:
         raise ValueError(f"Duplicate consequence classes: {', '.join(duplicates)}")
+    unknown = sorted({value for value in configured if value not in _CONSEQUENCE_RANK})
+    if unknown:
+        raise ValueError(f"Unknown consequence classes: {', '.join(unknown)}")
     return [
         AnnotationClass("baseline", "all_rare_variants"),
-        *[AnnotationClass("consequence", value) for value in consequence_classes],
+        *[AnnotationClass("consequence", value) for value in configured],
         *(
             [AnnotationClass("loftee", "HC"), AnnotationClass("loftee", "LC")]
             if loftee_enabled

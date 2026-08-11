@@ -9,7 +9,11 @@ from typing import Sequence
 
 from rare_variant_enrichment import __version__
 from rare_variant_enrichment.aggregation import _iter_carrier_file
-from rare_variant_enrichment.annotations import AnnotationClass, build_annotation_classes
+from rare_variant_enrichment.annotations import (
+    ENSEMBL_SEVERITY_ORDER_VERSION,
+    AnnotationClass,
+    build_annotation_classes,
+)
 from rare_variant_enrichment.io import open_text, read_nonempty_lines, write_json
 from rare_variant_enrichment.phenotypes import (
     _parse_phenotype_value,
@@ -199,6 +203,9 @@ def calculate_enrichment(
         raise ValueError("max_retries must be a non-negative integer")
     if index_provenance not in {"generated", "supplied", "unknown"}:
         raise ValueError("index_provenance must be generated, supplied, or unknown")
+    _validate_annotation_calculation_configuration(
+        vat_index_provenance, maximum_gvs_maf, annotation_chunk_size_bp
+    )
 
     shared_samples = read_nonempty_lines(shared_samples_path)
     if not shared_samples:
@@ -372,9 +379,17 @@ def calculate_enrichment(
     summary: dict[str, object] = {
             "ac_classes": [ac_class.label for ac_class in ac_classes],
             "analysis_parameters": {
+                "annotation_chunk_size_bp": annotation_chunk_size_bp,
+                "annotation_classes": [
+                    {"family": annotation.family, "label": annotation.label}
+                    for annotation in annotation_classes
+                ],
+                "consequence_classes": list(consequence_classes),
                 "cumulative_allele_count_maxima": list(cumulative_ac_max),
                 "distance_thresholds_bp": distances,
                 "exact_allele_counts": list(exact_ac),
+                "loftee_enabled": loftee_enabled,
+                "maximum_gvs_maf": maximum_gvs_maf,
                 "outlier_tail": tail,
                 "z_thresholds": thresholds,
             },
@@ -396,7 +411,11 @@ def calculate_enrichment(
             "z_thresholds": thresholds,
             "unselected_feature_count": unselected_feature_count,
             "provenance": {
+                "annotation_chunk_size_bp": annotation_chunk_size_bp,
                 "container_image": container_image,
+                "consequence_classes": list(consequence_classes),
+                "loftee_enabled": loftee_enabled,
+                "maximum_gvs_maf": maximum_gvs_maf,
                 "max_retries": max_retries,
                 "selected_chromosomes": list(
                     selected_chromosomes
@@ -409,6 +428,8 @@ def calculate_enrichment(
                     "sqlite": sqlite3.sqlite_version,
                     "workflow": workflow_version,
                 },
+                "severity_order_version": ENSEMBL_SEVERITY_ORDER_VERSION,
+                "vat_index": vat_index_provenance,
                 "vcf_index": index_provenance,
             },
         }
@@ -508,6 +529,26 @@ def _validate_statistics_thresholds(z_thresholds: Sequence[float]) -> list[float
     if len(thresholds) != len(set(thresholds)):
         raise ValueError("z-score thresholds must be unique")
     return thresholds
+
+
+def _validate_annotation_calculation_configuration(
+    vat_index_provenance: str, maximum_gvs_maf: float, annotation_chunk_size_bp: int
+) -> None:
+    if vat_index_provenance not in {"generated", "supplied", "unknown"}:
+        raise ValueError("vat_index_provenance must be generated, supplied, or unknown")
+    if (
+        isinstance(maximum_gvs_maf, bool)
+        or not isinstance(maximum_gvs_maf, (int, float))
+        or not math.isfinite(maximum_gvs_maf)
+        or not 0.0 <= maximum_gvs_maf <= 0.5
+    ):
+        raise ValueError("maximum_gvs_maf must be a finite number from 0 to 0.5")
+    if (
+        isinstance(annotation_chunk_size_bp, bool)
+        or not isinstance(annotation_chunk_size_bp, int)
+        or annotation_chunk_size_bp < 1
+    ):
+        raise ValueError("annotation_chunk_size_bp must be a positive integer")
 
 
 def _validate_distances(distance_thresholds: Sequence[int]) -> list[int]:

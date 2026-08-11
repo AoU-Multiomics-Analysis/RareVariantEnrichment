@@ -153,3 +153,54 @@ def test_gather_deduplicates_within_but_not_across_annotation_classes(tmp_path: 
         "S1\tENSG1.1\tAC=1\tconsequence\tmissense_variant\t20",
         "S1\tENSG1.1\tAC=1\tconsequence\tstop_gained\t10",
     ]
+
+
+def test_gather_rejects_run_with_no_vat_allele_key_matches(tmp_path: Path):
+    """Changing the all-unmatched join guard must fail this run-level contract."""
+    carrier = tmp_path / "chr1.tsv"
+    carrier.write_text(carrier_header)
+    empty_feature_carrier = tmp_path / "chr2.tsv"
+    empty_feature_carrier.write_text(carrier_header)
+    first_qc = tmp_path / "chr1.json"
+    first_qc.write_text(
+        '{"chromosome":"chr1","classified_alt_alleles":4,"vat_joined_alt_alleles":0}'
+    )
+    empty_feature_qc = tmp_path / "chr2.json"
+    empty_feature_qc.write_text(
+        '{"chromosome":"chr2","classified_alt_alleles":0,"vat_joined_alt_alleles":0}'
+    )
+
+    with pytest.raises(ValueError, match="No queried VCF ALT alleles matched VAT allele keys"):
+        gather_outputs(
+            [carrier, empty_feature_carrier],
+            [first_qc, empty_feature_qc],
+            tmp_path / "all.tsv",
+            tmp_path / "qc.tsv",
+        )
+
+
+def test_gather_allows_empty_feature_chromosomes_when_no_eligible_alt_alleles_exist(
+    tmp_path: Path,
+):
+    """Changing a zero eligible-allele run into a failure must fail this contract."""
+    first = tmp_path / "chr1.tsv"
+    second = tmp_path / "chr2.tsv"
+    first.write_text(carrier_header)
+    second.write_text(carrier_header)
+    first_qc = tmp_path / "chr1.json"
+    second_qc = tmp_path / "chr2.json"
+    first_qc.write_text(
+        '{"chromosome":"chr1","classified_alt_alleles":0,"vat_joined_alt_alleles":0}'
+    )
+    second_qc.write_text(
+        '{"chromosome":"chr2","classified_alt_alleles":0,"vat_joined_alt_alleles":0}'
+    )
+    qc_output = tmp_path / "qc.tsv"
+
+    gather_outputs([first, second], [first_qc, second_qc], tmp_path / "all.tsv", qc_output)
+
+    assert qc_output.read_text().splitlines() == [
+        "chromosome\tclassified_alt_alleles\tvat_joined_alt_alleles",
+        "chr1\t0\t0",
+        "chr2\t0\t0",
+    ]
