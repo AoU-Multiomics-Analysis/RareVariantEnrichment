@@ -1,0 +1,150 @@
+# Rare Variant Enrichment Design
+
+**Date:** 2026-08-10  
+**Status:** Implemented; final-review hardening incorporated
+
+## Goal
+
+Build a first-pass WDL workflow for testing whether rare variant carriers are enriched among RNA-seq/proteomics outlier observations across the All of Us multi-omics cohort. The workflow will evaluate multiple absolute z-score thresholds, allele-count classes, and distances from the feature transcription start site (TSS), while pooling evidence across genes to avoid sparse per-gene tests.
+
+## Scope
+
+This version will provide a screening analysis for rare variants already present in a VCF. It will not yet implement functional annotations, broader allele-frequency annotations, watershed causal modeling, covariate adjustment, ancestry-stratified tests, or a final gene-level causal statistic.
+
+The analysis unit is a gene/feature–sample observation, not a sample with any variant anywhere. A variant contributes to an observation only when it lies on the feature's chromosome, falls within the requested symmetric distance of its TSS, and the sample carries the alternate allele. Functional consequence and other annotation-based filters will be added later.
+
+## Statistical definition
+
+For each z-score threshold `t`, allele-count class `c`, and distance threshold `w`:
+
+1. Restrict the analysis to sample IDs present in both the phenotype BED and VCF, reporting BED-only and VCF-only sample counts separately.
+2. Read every non-missing `(sample_id, feature_id, z_score)` observation for those shared samples from the wide molecular phenotype BED.
+3. Classify it as an outlier when `abs(z_score) >= t` by default. The workflow will also expose a tail setting for positive-only or negative-only outliers.
+4. Use the BED interval as a one-base TSS, with `TSS = end` under the prepare_QTL convention (`start = TSS - 1`, `end = TSS`).
+5. Mark the observation as a carrier when the sample carries at least one variant belonging to class `c` whose 1-based VCF position satisfies `abs(VCF_POS - TSS) <= w` on the same chromosome.
+6. Construct the pooled 2x2 table:
+
+   | | Carrier | Non-carrier |
+   |---|---:|---:|
+   | Outlier | `n11` | `n10` |
+   | Non-outlier | `n01` | `n00` |
+
+7. Report the carrier-rate ratio `(n11/(n11+n10))/(n01/(n01+n00))`, the odds ratio `(n11*n00)/(n10*n01)`, a two-sided Fisher exact p-value, and Benjamini–Hochberg FDR across the tested z-score threshold × allele-count class × distance combinations.
+
+The output will include all underlying cell counts so downstream users can apply alternative filters or statistics. Zero-cell odds ratios will be reported using a clearly labelled 0.5 continuity correction, while the uncorrected cell counts remain available.
+
+Because samples and genes recur in the pooled table, the Fisher test is a first-pass screening statistic rather than a fully independent-observation inference. The report will state this limitation and retain enough counts for a later mixed-model, permutation, or gene-level meta-analysis implementation.
+
+## Allele-count classes
+
+The workflow will support two independently evaluated class families:
+
+- Exact classes: `AC=1`, `AC=2`, `AC=3`, etc.
+- Cumulative classes: `AC<=1`, `AC<=2`, `AC<=3`, etc.
+
+The WDL accepts requested exact counts and cumulative maxima as arrays, so the caller can choose singleton-only, singleton-plus-doubleton, or broader rare-variant analyses without changing code. Each alternate allele uses its corresponding non-negative `INFO/AC` value when available; otherwise that ALT independently falls back to called genotype allele indices. Known ALT indices in partial calls count as carriers and toward fallback AC; unknown alleles do not. An ALT with missing INFO AC and no called genotype alleles is unavailable and skipped. INFO remains authoritative, with complete-record genotype disagreements reported in QC.
+
+## Distance thresholds
+
+Distance thresholds are non-negative base-pair distances applied symmetrically around each TSS. The WDL will accept an array such as `[1000, 10000, 100000, 1000000]` and will validate that values are unique and non-negative.
+
+The VCF will be queried only once per chromosome using the largest requested distance. For that chromosome, the workflow will expand every TSS to the maximum window, merge overlapping expanded windows, and pass the merged regions to one `tabix -R` extraction. It will then compute the exact TSS-to-variant distance for each variant–feature pair and derive all smaller thresholds from that value without rereading the VCF.
+
+## Inputs
+
+The initial workflow will use these inputs:
+
+- A bgzipped VCF containing the rare variants and all relevant sample genotypes.
+- An optional VCF tabix index. If omitted, a preprocessing task will generate `VCF.tbi` using `tabix -p vcf`; if supplied, it will be copied to the expected local name and validated.
+- A wide, bgzip- or gzip-compressed molecular phenotype BED generated by prepare_QTL. The first four columns are `#chr`, `start`, `end`, and the feature identifier; columns five onward are sample IDs containing scaled residual z-scores. The fourth column may be named `gene_id`, `phenotype_id`, or another label because it is interpreted positionally.
+- A chromosome array whose names exactly match the VCF contig names, such as `1`, `2`, ..., `22`, `X` or `chr1`, `chr2`, ..., `chrX`.
+- Arrays of z-score thresholds, exact AC values, cumulative AC maxima, and TSS distance thresholds in base pairs.
+- An optional outlier-tail setting with `absolute` as the default and `positive`/`negative` as alternatives.
+
+The VCF must be bgzip-compressed and coordinate-sorted for tabix. The phenotype BED may use ordinary gzip or bgzip because it is streamed rather than queried with tabix. Preprocessing will fail early with a clear validation error if the VCF is not indexable, BED intervals are not one base wide, coordinates are invalid, sample columns are duplicated, or requested contig names are absent.
+
+## Workflow architecture
+
+The WDL will contain five logical stages:
+
+### 1. PrepareVcfIndex
+
+Normalize the optional index input:
+
+- If an index is supplied, copy it beside the VCF and validate it with `tabix`.
+- If no index is supplied, run `tabix -p vcf` and emit the generated index.
+- Validate that the VCF is bgzip-readable and obtain the available contig names and VCF sample IDs.
+
+### 2. PreparePhenotypes
+
+Stream the wide phenotype BED once to:
+
+- Validate the four metadata columns and numeric sample z-scores.
+- Restrict analysis columns to the VCF/BED sample intersection and report samples unique to either input.
+- Interpret the BED `end` coordinate as the 1-based TSS after verifying `end - start = 1`.
+- Write a compact feature/TSS table containing chromosome, TSS, and feature ID for the variant-scatter tasks.
+- Record sample IDs, per-threshold outlier totals, non-missing observation totals, and phenotype QC metrics without materializing a long gene-by-sample table.
+
+### 3. ExtractAndClassifyChromosome
+
+Scatter over the requested chromosome array. Each task will:
+
+- Select the chromosome's feature/TSS rows and expand each TSS by the largest requested distance.
+- Merge overlapping expanded intervals so variants are not repeatedly emitted from overlapping gene windows.
+- Use one `tabix -h -R merged_maximum_windows.bed indexed.vcf.gz` call to extract variants falling within any maximum-distance window on that chromosome while retaining the VCF sample header.
+- Parse the extracted records and sample genotypes.
+- Determine each variant's allele count and requested AC classes.
+- Match each extracted variant to every feature TSS within the maximum distance using one pre-sorted positional index and binary search.
+- Reduce minimum observed distance for each `(sample_id, feature_id, ac_class)` in a temporary SQLite table and emit it in deterministic order plus per-chromosome variant/QC counts.
+
+The task will not calculate enrichment independently. Retaining only the minimum qualifying distance for each key is sufficient because carrier status at threshold `w` is equivalent to `minimum_distance <= w`.
+
+### 4. GatherCarrierPairs
+
+Combine the scattered carrier-pair tables with a disk-backed SQLite minimum reduction. This prevents a feature–sample observation with multiple qualifying variants from being counted multiple times without retaining cohort-scale keys in Python memory.
+
+### 5. CalculateEnrichment
+
+Stream the wide phenotype BED, restrict it to the exact feature table emitted by preparation, and query carrier minima from a disk-backed feature index. Evaluate all z-score threshold × AC class × distance combinations, calculate the 2x2 counts and statistics, and write the final report and QC summary. This stage avoids both a long phenotype expansion and a global carrier dictionary. Fisher probabilities use a constant-memory mode-relative recurrence.
+
+## Outputs
+
+The workflow will emit:
+
+- `rare_variant_enrichment.tsv`: one row per z-score threshold × AC class × distance, including z-score threshold, tail, AC class definition, distance in base pairs, total observations, outlier/non-outlier counts, carrier/non-carrier cells, carrier-rate ratio, continuity-corrected odds ratio, Fisher p-value, and BH FDR.
+- `rare_variant_enrichment.json`: run parameters, input summaries, and high-level QC metrics.
+- `chromosome_qc.tsv`: per-chromosome feature windows, merged maximum-distance regions, VCF records extracted, variants retained, variant–feature pairs formed, and carrier keys emitted.
+- Optional `deduplicated_carrier_pairs.tsv`: the gathered `(sample_id, feature_id, ac_class, minimum_distance_bp)` keys, published only with explicit opt-in because it contains sample IDs.
+- `phenotype_qc.json` and index-provenance outputs, plus combined count-only phenotype/chromosome QC and software/container/retry metadata in the final JSON.
+
+The final report will also include counts of z-score observations dropped for missing values, BED features with no variants inside the maximum window, samples absent from the VCF, malformed/missing genotypes, variants skipped because their AC could not be determined, and records at exact distance boundaries.
+
+## Error handling and reproducibility
+
+The helper will fail for malformed required columns, duplicate feature or sample IDs, no shared BED/VCF samples, invalid one-base TSS intervals, non-numeric phenotype values, invalid distance or allele-count parameters, chromosome naming mismatches, and an unusable VCF/index. A missing genotype is never counted as a carrier; missing genotype calls are reported in QC so this assumption can be evaluated.
+
+All z-score thresholds, distance thresholds, AC class arrays, tail mode, selected chromosomes, TSS coordinate convention, index source, retry count, and software/container versions are recorded in JSON. The WDL exposes runtime settings for CPU, memory, disk, and task retries rather than hard-coding cohort-specific values. Production images should be pinned by digest; the default GHCR tag requires a public package or configured pull credentials.
+
+## Testing strategy
+
+Tests will use tiny synthetic fixtures and will cover:
+
+- Exact and cumulative AC class assignment.
+- Per-ALT AC and carrier assignment for multiallelic records.
+- Positive, negative, and absolute outlier classification.
+- BED-to-VCF coordinate conversion at distance zero and exactly on each window boundary.
+- Maximum-window merging and a single chromosome-level tabix extraction that supports all smaller thresholds.
+- Correct construction of the 2x2 table and Fisher p-value on a hand-checkable distance-stratified example.
+- Minimum-distance deduplication of the same gene–sample carrier across multiple variants.
+- Missing genotypes, features with no nearby variants, and missing z-scores in QC counts.
+- WDL static validation and a local miniature end-to-end execution where the required WDL runtime is available.
+
+## Future extension points
+
+The interfaces intentionally leave room for:
+
+- Broader allele-frequency and functional annotation classes.
+- Gene-level burden definitions and asymmetric or feature-specific variant windows.
+- Ancestry or technical covariate adjustment.
+- Permutation or mixed-model inference that accounts for repeated samples and genes.
+- Watershed-based variant prioritization beneath significant outlier signals.

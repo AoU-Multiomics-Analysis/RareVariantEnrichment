@@ -1,0 +1,54 @@
+name: Python tests
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/python-tests.yml"
+      - "envs/Dockerfile"
+      - "src/**"
+      - "tests/**"
+      - "workflows/**"
+      - "pyproject.toml"
+  pull_request:
+    paths:
+      - ".github/workflows/python-tests.yml"
+      - "envs/Dockerfile"
+      - "src/**"
+      - "tests/**"
+      - "workflows/**"
+      - "pyproject.toml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      RARE_VARIANT_ENRICHMENT_REQUIRE_WDL_RUNTIME: "1"
+      RARE_VARIANT_ENRICHMENT_TEST_IMAGE: rare-variant-enrichment:test
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tabix
+        run: sudo apt-get update && sudo apt-get install -y tabix
+
+      - name: Install package
+        run: pip install -e . pytest miniwdl
+
+      - name: Validate WDL
+        run: miniwdl check workflows/rare_variant_enrichment.wdl
+
+      - name: Build and load test image
+        run: docker build -f envs/Dockerfile -t rare-variant-enrichment:test .
+
+      - name: Run full tests including both Docker-backed WDL modes
+        run: python -m pytest -v
+
+      - name: Verify command help
+        run: rare-variant-enrichment --help
