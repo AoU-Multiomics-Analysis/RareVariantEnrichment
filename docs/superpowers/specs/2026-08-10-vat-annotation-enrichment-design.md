@@ -1,7 +1,7 @@
 # VAT Annotation Enrichment Design
 
 **Date:** 2026-08-10
-**Status:** Approved in conversation; awaiting written-spec review
+**Status:** Approved
 
 ## Goal
 

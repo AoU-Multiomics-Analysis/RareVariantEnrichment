@@ -4,19 +4,21 @@
 
 **Goal:** Add bounded-memory, gene-matched VAT consequence and LoFTEE enrichment to the chromosome-scattered rare-variant outlier workflow.
 
-**Architecture:** A preparation task validates or creates the generic VAT tabix index and records the resolved schema. Each chromosome task divides the union of maximum-distance TSS windows into non-overlapping 10 Mb chunks, aggregates that chunk's transcript rows in temporary SQLite, streams the matching VCF records, and upserts annotation-aware carrier minima. The gather and statistics stages add annotation family/class dimensions while retaining pooled Fisher testing and global BH correction.
+**Architecture:** A preparation task validates or creates the generic tabix index for the merged MTtoVCF transcript-annotation TSV and records its schema. Each chromosome task extracts the union of 100 kb TSS windows once, divides that union into non-overlapping 10 Mb chunks, aggregates each chunk's transcript rows in temporary SQLite, streams matching VCF records, and upserts annotation-aware carrier minima. The gather and statistics stages derive independent 10 kb and 100 kb strata while adding annotation family/class dimensions to pooled Fisher testing and global BH correction.
 
 **Tech Stack:** WDL 1.0, Python 3.12+, standard-library `sqlite3`, `tabix`/`bgzip`, miniwdl, pytest, Docker.
 
 ## Global Constraints
 
 - Join VCF and VAT alleles exactly on `(chromosome, position, reference, alternate)` in GRCh38; do not silently trim, left-normalize, or change chromosome labels.
+- Require the MTtoVCF transcript-annotation coordinates `chrom`, `pos`, `ref`, and `alt`; do not retain legacy coordinate aliases in the new public contract.
 - Strip only a terminal numeric Ensembl version suffix from BED and VAT gene IDs before gene matching; preserve the original BED feature ID in outputs.
 - Collapse consequences to one most-severe Ensembl term per variant-gene pair; LoFTEE is a separate HC-over-LC family.
 - Normalize every valid `gvs_max_af` with `min(AF, 1 - AF)` and retain values at the inclusive default `maximum_gvs_maf <= 0.01`.
 - Exclude VAT-absent, missing-frequency, malformed-frequency, inconsistent-frequency, and above-threshold alleles from every family, including baseline.
 - Keep Python heap bounded with streamed tabix output and temporary SQLite; do not create chromosome-sized dictionaries of VAT rows, variants, carriers, or phenotype observations.
-- Query only the largest TSS window, split into non-overlapping chunks of default size `10000000`; derive smaller distance thresholds from `minimum_distance_bp`.
+- Keep exact AC defaults `[1, 2, 3, 4, 5]` and cumulative AC defaults `[1, 2, 3, 5, 10]`; treat each class independently.
+- Change the cis-window default to `[10000, 100000]`, query only the largest window, split it into non-overlapping chunks of default size `10000000`, and derive 10 kb status from `minimum_distance_bp`.
 - Preserve one annotation-aware carrier key per `(sample_id, feature_id, ac_class, annotation_family, annotation_class)` using minimum-distance upserts.
 - Publish sample-level carrier records only when `publish_carrier_audit=true`; ordinary QC must contain aggregate counts, not variant or sample identifiers.
 - Keep Fisher p-values and BH FDR documented as pooled exploratory screening statistics.
@@ -28,14 +30,14 @@
 
 ### New files
 
-- `src/rare_variant_enrichment/annotations.py`: VAT schema aliases, gene normalization, consequence parsing/severity, LoFTEE collapse, MAF parsing, and configured annotation classes.
+- `src/rare_variant_enrichment/annotations.py`: MTtoVCF transcript schema, gene normalization, consequence parsing/severity, LoFTEE collapse, MAF parsing, and configured annotation classes.
 - `src/rare_variant_enrichment/annotation_storage.py`: temporary SQLite aggregation and lookup for one VAT genomic chunk.
 - `src/rare_variant_enrichment/vat.py`: VAT header inspection plus supplied/generated generic tabix-index preparation.
 - `tests/test_annotations.py`: pure annotation and schema tests.
 - `tests/test_annotation_storage.py`: SQLite transcript-collapse and frequency-consistency tests.
 - `tests/test_vat.py`: VAT preparation and index tests.
 - `tests/test_storage.py`: annotation-aware carrier-store key and ordering tests.
-- `tests/fixtures/variant_annotations.tsv`: transcript-granular synthetic VAT source.
+- `tests/fixtures/transcript_annotations.tsv`: transcript-granular synthetic MTtoVCF annotation source.
 
 ### Modified files
 
@@ -89,19 +91,20 @@ from rare_variant_enrichment.annotations import (
 )
 
 
-def test_vat_schema_accepts_official_and_susie_coordinate_names():
-    official = VatSchema.from_header([
-        "contig", "position", "ref_allele", "alt_allele",
-        "gene_id", "consequence", "gvs_max_af", "LoF",
-    ])
-    susie = VatSchema.from_header([
-        "chrom", "pos", "ref", "alt",
-        "gene_id", "consequence", "gvs_max_af",
-    ])
-    assert (official.chromosome, official.position, official.ref, official.alt) == (0, 1, 2, 3)
-    assert official.lof == 7
-    assert (susie.chromosome, susie.position, susie.ref, susie.alt) == (0, 1, 2, 3)
-    assert susie.lof is None
+MTTOVCF_HEADER = [
+    "chrom", "pos", "ref", "alt", "rsid", "gene_id", "gene_symbol",
+    "transcript", "is_canonical_transcript", "consequence", "aa_change",
+    "LoF", "LoF_filter", "LoF_flags", "LoF_info", "gvs_max_af",
+    "gvs_max_subpop",
+]
+
+
+def test_vat_schema_accepts_exact_mttovcf_transcript_header():
+    schema = VatSchema.from_header(MTTOVCF_HEADER)
+    assert (schema.chromosome, schema.position, schema.ref, schema.alt) == (0, 1, 2, 3)
+    assert (schema.gene_id, schema.consequence, schema.lof, schema.gvs_max_af) == (
+        5, 9, 11, 15,
+    )
 
 
 def test_gene_ids_strip_only_terminal_numeric_versions():
@@ -110,9 +113,9 @@ def test_gene_ids_strip_only_terminal_numeric_versions():
     assert normalize_gene_id("GENE.A") == "GENE.A"
 
 
-def test_consequence_arrays_collapse_by_ensembl_severity():
+def test_delimited_consequences_collapse_by_ensembl_severity():
     terms = (
-        *parse_consequence_terms("['intron_variant', 'splice_region_variant']"),
+        *parse_consequence_terms("intron_variant,splice_region_variant"),
         *parse_consequence_terms("missense_variant&stop_gained"),
     )
     selected, unknown = most_severe_consequence(terms)
@@ -140,7 +143,7 @@ def test_annotation_classes_have_stable_family_order():
     ]
 ```
 
-Also assert that missing/ambiguous aliases, duplicate consequence classes, an empty normalized gene ID, and Boolean/non-finite AF inputs raise exact `ValueError` messages. Assert `build_annotation_classes([], False)` returns the baseline class only.
+Also assert that a missing or duplicate required MTtoVCF column, duplicate consequence classes, an empty normalized gene ID, and Boolean/non-finite AF inputs raise exact `ValueError` messages. Assert `build_annotation_classes([], False)` returns the baseline class only and an absent `LoF` column sets `schema.lof is None` without weakening any other required field.
 
 - [ ] **Step 2: Run the focused tests and confirm they fail**
 
@@ -191,7 +194,7 @@ class GeneAnnotation:
     loftee: str | None
 ```
 
-Resolve aliases from the exact sets `("contig", "chrom")`, `("position", "pos")`, `("ref_allele", "ref")`, and `("alt_allele", "alt")`. Require exact `gene_id`, `consequence`, and `gvs_max_af`; detect exact `LoF` optionally. Serialize indices, header, and `lof_enabled` through JSON with duplicate-key rejection on read.
+Resolve exact columns `chrom`, `pos`, `ref`, `alt`, `gene_id`, `consequence`, and `gvs_max_af`; detect exact `LoF` optionally. Reject duplicate required names rather than choosing one. Serialize indices, the complete header, and `lof_enabled` through JSON with duplicate-key rejection on read.
 
 - [ ] **Step 4: Implement the complete severity order and parsers**
 
@@ -243,7 +246,7 @@ ENSEMBL_CONSEQUENCE_ORDER = (
 )
 ```
 
-Parse bracketed JSON/Python string arrays with `ast.literal_eval`, scalar `&` or comma-delimited values, and the missing tokens `""`, `"."`, `"NA"`, `"NaN"`, `"null"`, and `"[]"`. Deduplicate terms without reordering. Return unknown nonempty terms separately from `most_severe_consequence` so QC can count them.
+Parse scalar `&`- or comma-delimited values and the missing tokens `""`, `"."`, `"NA"`, `"NaN"`, and `"null"`. Deduplicate terms without reordering. Return unknown nonempty terms separately from `most_severe_consequence` so QC can count them. The ordinary MTtoVCF path supplies one scalar consequence per transcript row; delimiter support is defensive.
 
 Normalize LoFTEE by uppercasing stripped values; return HC if present, otherwise LC, otherwise `None`. Parse finite AF values in `[0, 1]`, calculate `min(value, 1.0 - value)`, and mark `converted=True` only for raw values above 0.5.
 
@@ -314,7 +317,7 @@ def test_query_chunks_split_merged_windows_without_overlap():
 
 @requires_htslib
 def test_prepare_vat_generates_and_validates_generic_tabix_index(tmp_path):
-    vat = bgzip_fixture(tmp_path, "tests/fixtures/variant_annotations.tsv")
+    vat = bgzip_fixture(tmp_path, "tests/fixtures/transcript_annotations.tsv")
     schema_path = tmp_path / "vat_schema.json"
     schema = prepare_vat(vat, ["chr1"], schema_path)
     assert Path(f"{vat}.tbi").is_file()
@@ -434,9 +437,11 @@ git commit -m "feat: prepare indexed VAT chunks"
 - [ ] **Step 1: Write failing transcript-collapse and frequency tests**
 
 ```python
-OFFICIAL_HEADER = [
-    "contig", "position", "ref_allele", "alt_allele",
-    "gene_id", "consequence", "gvs_max_af", "LoF",
+MTTOVCF_HEADER = [
+    "chrom", "pos", "ref", "alt", "rsid", "gene_id", "gene_symbol",
+    "transcript", "is_canonical_transcript", "consequence", "aa_change",
+    "LoF", "LoF_filter", "LoF_flags", "LoF_info", "gvs_max_af",
+    "gvs_max_subpop",
 ]
 
 
@@ -447,15 +452,20 @@ def row(
     lof: str,
     *,
     position: int = 100,
+    transcript: str = "ENST000001",
 ) -> list[str]:
-    return ["chr1", str(position), "A", "C", gene_id, consequence, gvs_max_af, lof]
+    return [
+        "chr1", str(position), "A", "C", "rsTest", gene_id, "GENE1",
+        transcript, "true", consequence, "p.Ala1Val", lof, ".", ".", ".",
+        gvs_max_af, "afr",
+    ]
 
 
 def test_chunk_store_collapses_transcripts_and_uses_hc_over_lc(tmp_path):
-    schema = VatSchema.from_header(OFFICIAL_HEADER)
+    schema = VatSchema.from_header(MTTOVCF_HEADER)
     with VatChunkStore(tmp_path, schema, 0.01, ["stop_gained", "missense_variant"]) as store:
-        store.ingest(row("ENSG000001.1", "['missense_variant']", "0.001", "LC"))
-        store.ingest(row("ENSG000001.2", "['stop_gained']", "0.001", "HC"))
+        store.ingest(row("ENSG000001.1", "missense_variant", "0.001", "LC"))
+        store.ingest(row("ENSG000001.2", "stop_gained", "0.001", "HC", transcript="ENST000002"))
         qc = store.finalize()
         key = VariantKey("chr1", 100, "A", "C")
         assert store.qualifying_maf(key) == 0.001
@@ -465,11 +475,11 @@ def test_chunk_store_collapses_transcripts_and_uses_hc_over_lc(tmp_path):
 
 
 def test_chunk_store_excludes_inconsistent_and_common_frequency(tmp_path):
-    schema = VatSchema.from_header(OFFICIAL_HEADER)
+    schema = VatSchema.from_header(MTTOVCF_HEADER)
     with VatChunkStore(tmp_path, schema, 0.01, ["frameshift_variant"]) as store:
-        store.ingest(row("ENSG1", "['frameshift_variant']", "0.001", "HC", position=100))
-        store.ingest(row("ENSG1", "['frameshift_variant']", "0.002", "HC", position=100))
-        store.ingest(row("ENSG2", "['frameshift_variant']", "0.02", "HC", position=200))
+        store.ingest(row("ENSG1", "frameshift_variant", "0.001", "HC", position=100))
+        store.ingest(row("ENSG1", "frameshift_variant", "0.002", "HC", position=100, transcript="ENST000002"))
+        store.ingest(row("ENSG2", "frameshift_variant", "0.02", "HC", position=200))
         qc = store.finalize()
         assert store.qualifying_maf(VariantKey("chr1", 100, "A", "C")) is None
         assert store.qualifying_maf(VariantKey("chr1", 200, "A", "C")) is None
@@ -477,7 +487,7 @@ def test_chunk_store_excludes_inconsistent_and_common_frequency(tmp_path):
         assert qc["above_maf_threshold_alleles"] == 1
 ```
 
-Also test missing/non-numeric/out-of-range frequencies, AF above 0.5 conversion, exact 0.01 retention, gene mismatch lookup, unknown terms, pre-collapsed rows, malformed coordinates, and use-before-finalize rejection.
+Also test missing/non-numeric/out-of-range frequencies, AF above 0.5 conversion, exact 0.01 retention, gene mismatch lookup, unknown terms, missing intergenic gene IDs, malformed coordinates, and use-before-finalize rejection.
 
 - [ ] **Step 2: Run the storage tests and confirm import failure**
 
@@ -699,10 +709,10 @@ git commit -m "feat: stratify carrier enrichment by annotation"
 
 ---
 
-### Task 5: Stream VAT and VCF chunks through chromosome classification
+### Task 5: Stream MTtoVCF annotations and VCF chunks through chromosome classification
 
 **Files:**
-- Create: `tests/fixtures/variant_annotations.tsv`
+- Create: `tests/fixtures/transcript_annotations.tsv`
 - Modify: `tests/conftest.py:8-70`
 - Modify: `src/rare_variant_enrichment/variants.py:149-330`
 - Modify: `src/rare_variant_enrichment/cli.py:25-105`
@@ -718,13 +728,19 @@ git commit -m "feat: stratify carrier enrichment by annotation"
 
 - [ ] **Step 1: Add a transcript-granular fixture and failing classifier test**
 
-Create `tests/fixtures/variant_annotations.tsv` with the exact header:
+Create `tests/fixtures/transcript_annotations.tsv` with these exact rows:
 
 ```text
-contig	position	ref_allele	alt_allele	gene_id	consequence	gvs_max_af	LoF
+chrom	pos	ref	alt	rsid	gene_id	gene_symbol	transcript	is_canonical_transcript	consequence	aa_change	LoF	LoF_filter	LoF_flags	LoF_info	gvs_max_af	gvs_max_subpop
+chr1	100	A	C	rs100	ENSG000001.1	GENE1	ENST000001	true	missense_variant	p.Ala1Val	LC	.	.	.	0.001	afr
+chr1	100	A	C	rs100	ENSG000001.2	GENE1	ENST000002	false	stop_gained	p.Ala1Ter	HC	.	.	.	0.001	afr
+chr1	100	A	C	rs100	ENSG000099.1	NEIGHBOR	ENST000099	true	frameshift_variant	p.Gly2fs	HC	.	.	.	0.001	afr
+chr1	150	G	T	rs150	ENSG000002.1	GENE2	ENST000003	true	missense_variant	p.Gly2Val	.	.	.	.	0.020	eamr
+chr1	180	C	G	rs180	ENSG000002.1	GENE2	ENST000003	true	synonymous_variant	p.Gly2Gly	.	.	.	.	0.999	eas
+chr1	300	T	A	rs300	ENSG000003.1	GENE3	ENST000004	true	stop_lost	p.Ter3Gln	.	.	.	.	NA	sas
 ```
 
-Include duplicate transcript rows for `chr1:100 A>C` matching `ENSG000001.1`, one missense LC and one stop-gained HC; a neighboring-gene frameshift that must not label the tested gene; a common `chr1:150 G>T`; an AF-above-0.5 convertible allele; and one missing-frequency allele.
+The two `ENSG000001` transcript rows prove most-severe and HC-over-LC collapse; the neighboring-gene row must not label the tested gene; position 150 is excluded as common; position 180 proves AF-to-MAF conversion; and position 300 is excluded for missing frequency.
 
 ```python
 @requires_htslib
@@ -816,7 +832,7 @@ Expected: all tests pass, including exact chunk boundaries, gene matching, commo
 - [ ] **Step 8: Commit chunked VAT-aware classification**
 
 ```bash
-git add tests/fixtures/variant_annotations.tsv tests/conftest.py src/rare_variant_enrichment/variants.py src/rare_variant_enrichment/cli.py tests/test_chromosome_classification.py tests/test_cli.py tests/test_end_to_end.py
+git add tests/fixtures/transcript_annotations.tsv tests/conftest.py src/rare_variant_enrichment/variants.py src/rare_variant_enrichment/cli.py tests/test_chromosome_classification.py tests/test_cli.py tests/test_end_to_end.py
 git commit -m "feat: classify annotated variants in chunks"
 ```
 
@@ -948,6 +964,14 @@ Assert these exact new public inputs:
 
 Update `miniwdl input_template` expectation to require phenotype BED, VCF, and VAT. Assert new task runtime keys, output types, scatter wiring, and safe generated-file boundaries.
 
+Also replace the old window contract assertion with these unchanged AC defaults and the revised fixed-window default:
+
+```python
+assert inputs["exact_allele_counts"]["default"] == [1, 2, 3, 4, 5]
+assert inputs["cumulative_allele_count_maxima"]["default"] == [1, 2, 3, 5, 10]
+assert inputs["distance_thresholds_bp"]["default"] == [10_000, 100_000]
+```
+
 - [ ] **Step 2: Run WDL contract tests and confirm failures**
 
 Run: `.venv/bin/pytest tests/test_wdl_contract.py -q`
@@ -971,6 +995,14 @@ Read `loftee_enabled.txt` with WDL `read_boolean`. Emit the original VAT, select
 - [ ] **Step 4: Extend scatter and calculation task inputs**
 
 Localize both VCF and VAT sidecars in `ClassifyChromosome`, pass schema/configuration/chunk inputs to the classifier, and retain one chromosome scatter. Pass consequence classes, LoFTEE availability, both index provenance strings, MAF threshold, and chunk size to `CalculateEnrichment` through materialized files.
+
+Change only the public default for the existing window input:
+
+```wdl
+Array[Int] distance_thresholds_bp = [10000, 100000]
+```
+
+Keep `DetermineMaximumDistance` and minimum-distance filtering unchanged so the workflow performs one maximum-window extraction and derives both result strata without duplicate tabix queries. Keep the exact and cumulative AC defaults unchanged.
 
 Set `workflow_version = "0.3.0"`.
 
@@ -1022,7 +1054,7 @@ For both parametrized modes:
 - supplied VCF index + supplied VAT index + carrier audit enabled;
 - generated VCF index + generated VAT index + carrier audit disabled.
 
-Pass a chr1-only workflow input, `maximum_gvs_maf=0.01`, `annotation_chunk_size_bp=25`, and three consequence classes. Assert generated/validated index files exist, provenance strings match, the audit optionality remains correct, and selected chromosomes remain `['chr1']`.
+Pass a chr1-only workflow input, miniature test windows `[10, 100]`, `maximum_gvs_maf=0.01`, `annotation_chunk_size_bp=25`, and three consequence classes. Assert generated/validated index files exist, provenance strings match, the audit optionality remains correct, and selected chromosomes remain `['chr1']`. The WDL contract test, example JSON, and README separately enforce the production defaults `[10000, 100000]`.
 
 - [ ] **Step 2: Add hand-checked annotation result assertions**
 
@@ -1082,18 +1114,19 @@ git commit -m "test: cover VAT enrichment end to end"
 Add:
 
 ```json
-"RareVariantEnrichment.variant_annotation_table": "variant_annotations.tsv.bgz",
+"RareVariantEnrichment.variant_annotation_table": "transcript_annotations.tsv.bgz",
 "RareVariantEnrichment.maximum_gvs_maf": 0.01,
-"RareVariantEnrichment.annotation_chunk_size_bp": 10000000
+"RareVariantEnrichment.annotation_chunk_size_bp": 10000000,
+"RareVariantEnrichment.distance_thresholds_bp": [10000, 100000]
 ```
 
 Continue omitting both optional index inputs and `chromosomes` so the example demonstrates automatic indexing and the chr1-chr22 default.
 
 - [ ] **Step 2: Rewrite README inputs, outputs, scale, and limitations**
 
-Document official and SuSiE-style VAT aliases, transcript collapse, versioned Ensembl matching, exact allele joins, `gvs_max_af` conversion/filtering, optional LoF, coding consequence defaults, supplied/generated VAT index behavior, coordinate-sort requirement, chunk size, and six-column controlled carrier audit.
+Document the exact merged MTtoVCF transcript-annotation columns, transcript collapse, versioned Ensembl matching, exact allele joins, `gvs_max_af` conversion/filtering, optional LoFTEE stratification, coding consequence defaults, supplied/generated annotation index behavior, coordinate-sort requirement, chunk size, and six-column controlled carrier audit.
 
-Update the enrichment row definition to z threshold × annotation family/class × AC class × distance. State that BH is global across every emitted row and that the baseline also requires valid VAT frequency. Replace the statement that functional/external annotations are not implemented with the remaining non-goals from the approved spec.
+Update the enrichment row definition to z threshold × annotation family/class × AC class × cis window. State that the default windows are inclusive 10 kb and 100 kb strata derived from one 100 kb extraction, that exact and cumulative AC classes remain independent, that BH is global across every emitted row, and that the baseline also requires valid VAT frequency. Replace the statement that functional/external annotations are not implemented with the remaining non-goals from the approved spec.
 
 - [ ] **Step 3: Bump Python and workflow-facing versions**
 
@@ -1117,7 +1150,7 @@ Verify manually that:
 
 - no ordinary JSON/TSV QC contains sample IDs, variant IDs, or VAT rows;
 - every tabix subprocess receives an argument list rather than a shell string;
-- each chunk is non-overlapping and each smaller distance derives from minimum distance;
+- each chunk is non-overlapping and the 10 kb stratum derives from minimum distance after one 100 kb extraction;
 - HC and LC are mutually exclusive per variant-gene while consequence remains separate;
 - all configured zero-carrier classes emit rows and participate in global FDR;
 - supplied indexes are validated and generated indexes are workflow outputs; and
