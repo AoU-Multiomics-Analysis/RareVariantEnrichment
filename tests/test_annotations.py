@@ -153,13 +153,14 @@ def test_boolean_and_non_finite_af_inputs_report_specific_categories():
         parse_gvs_max_af(float("inf"))  # type: ignore[arg-type]
 
 
-def test_annotation_classes_have_stable_family_order():
-    classes = build_annotation_classes(["frameshift_variant", "stop_gained"], True)
+def test_annotation_classes_use_canonical_ensembl_severity_order():
+    """Returning caller order instead of severity order must fail this contract."""
+    classes = build_annotation_classes(["missense_variant", "stop_gained"], True)
 
     assert classes == [
         AnnotationClass("baseline", "all_rare_variants"),
-        AnnotationClass("consequence", "frameshift_variant"),
         AnnotationClass("consequence", "stop_gained"),
+        AnnotationClass("consequence", "missense_variant"),
         AnnotationClass("loftee", "HC"),
         AnnotationClass("loftee", "LC"),
     ]

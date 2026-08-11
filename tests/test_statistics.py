@@ -209,7 +209,7 @@ def test_calculate_enrichment_emits_configured_zero_carrier_annotation_rows_and_
         "absolute",
         output,
         summary_path,
-        consequence_classes=["stop_gained"],
+        consequence_classes=["missense_variant", "stop_gained"],
         loftee_enabled=True,
         vat_index_provenance="generated",
         maximum_gvs_maf=0.01,
@@ -220,6 +220,7 @@ def test_calculate_enrichment_emits_configured_zero_carrier_annotation_rows_and_
     assert [(row["annotation_family"], row["annotation_class"], row["n11"]) for row in rows] == [
         ("baseline", "all_rare_variants", "1"),
         ("consequence", "stop_gained", "0"),
+        ("consequence", "missense_variant", "0"),
         ("loftee", "HC", "0"),
         ("loftee", "LC", "0"),
     ]
@@ -233,10 +234,11 @@ def test_calculate_enrichment_emits_configured_zero_carrier_annotation_rows_and_
         "annotation_classes": [
             {"family": "baseline", "label": "all_rare_variants"},
             {"family": "consequence", "label": "stop_gained"},
+            {"family": "consequence", "label": "missense_variant"},
             {"family": "loftee", "label": "HC"},
             {"family": "loftee", "label": "LC"},
         ],
-        "consequence_classes": ["stop_gained"],
+        "consequence_classes": ["stop_gained", "missense_variant"],
         "cumulative_allele_count_maxima": [],
         "distance_thresholds_bp": [100],
         "exact_allele_counts": [1],
@@ -248,7 +250,7 @@ def test_calculate_enrichment_emits_configured_zero_carrier_annotation_rows_and_
     assert summary["provenance"] | {"software_versions": None} == {
         "annotation_chunk_size_bp": 10_000_000,
         "container_image": None,
-        "consequence_classes": ["stop_gained"],
+        "consequence_classes": ["stop_gained", "missense_variant"],
         "loftee_enabled": True,
         "maximum_gvs_maf": 0.01,
         "max_retries": 0,

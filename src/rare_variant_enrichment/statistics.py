@@ -197,6 +197,11 @@ def calculate_enrichment(
     distances = _validate_distances(distance_thresholds)
     ac_classes = _validate_ac_classes(exact_ac, cumulative_ac_max)
     annotation_classes = build_annotation_classes(consequence_classes, loftee_enabled)
+    canonical_consequence_classes = [
+        annotation.label
+        for annotation in annotation_classes
+        if annotation.family == "consequence"
+    ]
     if tail not in {"absolute", "positive", "negative"}:
         raise ValueError(f"Unsupported tail mode: {tail}")
     if isinstance(max_retries, bool) or not isinstance(max_retries, int) or max_retries < 0:
@@ -384,7 +389,7 @@ def calculate_enrichment(
                     {"family": annotation.family, "label": annotation.label}
                     for annotation in annotation_classes
                 ],
-                "consequence_classes": list(consequence_classes),
+                "consequence_classes": canonical_consequence_classes,
                 "cumulative_allele_count_maxima": list(cumulative_ac_max),
                 "distance_thresholds_bp": distances,
                 "exact_allele_counts": list(exact_ac),
@@ -413,7 +418,7 @@ def calculate_enrichment(
             "provenance": {
                 "annotation_chunk_size_bp": annotation_chunk_size_bp,
                 "container_image": container_image,
-                "consequence_classes": list(consequence_classes),
+                "consequence_classes": canonical_consequence_classes,
                 "loftee_enabled": loftee_enabled,
                 "maximum_gvs_maf": maximum_gvs_maf,
                 "max_retries": max_retries,

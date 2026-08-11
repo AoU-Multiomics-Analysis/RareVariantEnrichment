@@ -295,6 +295,7 @@ def build_annotation_classes(
     unknown = sorted({value for value in configured if value not in _CONSEQUENCE_RANK})
     if unknown:
         raise ValueError(f"Unknown consequence classes: {', '.join(unknown)}")
+    configured.sort(key=_CONSEQUENCE_RANK.__getitem__)
     return [
         AnnotationClass("baseline", "all_rare_variants"),
         *[AnnotationClass("consequence", value) for value in configured],
