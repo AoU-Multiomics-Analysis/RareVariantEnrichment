@@ -39,3 +39,12 @@ None identified for Task 1. The canonical error messages are local API decisions
 ## Commit result
 
 The focused commit was created successfully with message `feat: define VAT annotation semantics`. No commit issue occurred; the report was then included in the amended focused commit.
+
+## Fix round 1/5: preserve gene-ID whitespace
+
+- Changed `normalize_gene_id` so it applies only the terminal numeric `ENSG` version regex to the original string; it no longer strips surrounding whitespace or otherwise transforms the identifier.
+- Added `test_gene_id_normalization_preserves_surrounding_whitespace`, asserting that leading/trailing whitespace is retained and the padded identifier does not become the clean ID.
+- RED command: `.venv/bin/pytest tests/test_annotations.py -q`
+- RED output: `1 failed, 16 passed in 0.05s`; failure was the new whitespace-preservation assertion against the pre-fix `strip()` behavior.
+- GREEN command: `.venv/bin/pytest tests/test_annotations.py -q`
+- GREEN output: `17 passed in 0.03s`.

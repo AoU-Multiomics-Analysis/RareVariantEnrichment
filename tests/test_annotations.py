@@ -92,6 +92,13 @@ def test_gene_ids_strip_only_terminal_numeric_ensembl_versions():
     assert normalize_gene_id("GENE.17") == "GENE.17"
 
 
+def test_gene_id_normalization_preserves_surrounding_whitespace():
+    padded = " ENSG00000123456.17 "
+
+    assert normalize_gene_id(padded) == padded
+    assert normalize_gene_id(padded) != "ENSG00000123456"
+
+
 def test_empty_normalized_gene_id_reports_the_input():
     with pytest.raises(ValueError, match=r"^Gene ID is empty after normalization: ''$"):
         normalize_gene_id("")

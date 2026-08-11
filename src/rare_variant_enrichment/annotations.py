@@ -207,7 +207,7 @@ class GeneAnnotation:
 def normalize_gene_id(value: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"Gene ID must be a string: {value!r}")
-    normalized = value.strip()
+    normalized = value
     match = _ENSEMBL_VERSION.fullmatch(normalized)
     if match:
         normalized = match.group(1)
