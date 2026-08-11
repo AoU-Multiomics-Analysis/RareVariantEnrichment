@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 
 import pytest
 
@@ -418,7 +419,7 @@ def test_calculate_enrichment_embeds_counts_and_reproducibility_provenance(
         chromosome_qc_path=chromosome_qc,
         selected_chromosomes=["chr1"],
         container_image="example.invalid/rare-variant@sha256:abc",
-        workflow_version="0.2.0",
+        workflow_version="0.3.0",
         max_retries=2,
         index_provenance="supplied",
     )
@@ -431,12 +432,18 @@ def test_calculate_enrichment_embeds_counts_and_reproducibility_provenance(
         "info_ac_alt_alleles": 3,
     }
     provenance = summary["provenance"]
+    release_version = "0.3.0"
+    package_metadata = tomllib.loads(Path("pyproject.toml").read_text())
     assert provenance["selected_chromosomes"] == ["chr1"]
     assert provenance["container_image"].endswith("@sha256:abc")
     assert provenance["max_retries"] == 2
     assert provenance["vcf_index"] == "supplied"
-    assert provenance["software_versions"]["workflow"] == "0.2.0"
-    assert provenance["software_versions"]["rare_variant_enrichment"] == "0.2.0"
+    assert package_metadata["project"]["version"] == release_version
+    assert 'String workflow_version = "0.3.0"' in Path(
+        "workflows/rare_variant_enrichment.wdl"
+    ).read_text()
+    assert provenance["software_versions"]["workflow"] == release_version
+    assert provenance["software_versions"]["rare_variant_enrichment"] == release_version
     assert "S1" not in summary_path.read_text()
 
 
