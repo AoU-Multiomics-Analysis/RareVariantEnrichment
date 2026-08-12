@@ -110,14 +110,17 @@ classify = next(
 calculate = calls["CalculateEnrichment"]
 print(json.dumps({
     "scatter_count": len(scatters),
-    "prepare_vcf_chromosomes": identifier(
-        calls["PrepareVcfIndex"].inputs["chromosomes"]
+    "extract_vcf_samples_chromosomes": identifier(
+        calls["ExtractVcfSamples"].inputs["chromosomes"]
     ),
     "prepare_vat_chromosomes": identifier(
         calls["PrepareVatIndex"].inputs["chromosomes"]
     ),
     "prepare_phenotypes_chromosomes": identifier(
         calls["PreparePhenotypes"].inputs["chromosomes"]
+    ),
+    "prepare_phenotypes_vcf_samples": identifier(
+        calls["PreparePhenotypes"].inputs["vcf_samples"]
     ),
     "scatter_variable": scatter.variable,
     "scatter_collection": identifier(scatter.expr),
@@ -192,6 +195,56 @@ print(json.dumps({
         if "disk_gb" in call.inputs
     },
     "declarations": declarations,
+}, sort_keys=True))
+"""
+    result = subprocess.run(
+        [*_miniwdl_python(), "-c", script, str(WORKFLOW)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def _parsed_supplied_vcf_index_contract() -> dict[str, object]:
+    script = """
+import json
+import sys
+
+import WDL
+
+document = WDL.load(sys.argv[1])
+workflow = document.workflow
+calls = {}
+
+def collect_calls(nodes):
+    for item in nodes:
+        if isinstance(item, WDL.Tree.Call):
+            calls[item.name] = item
+        elif isinstance(item, (WDL.Tree.Scatter, WDL.Tree.Conditional)):
+            collect_calls(item.body)
+
+collect_calls(workflow.body)
+scatter = next(
+    item for item in workflow.body if isinstance(item, WDL.Tree.Scatter)
+)
+classify = next(item for item in scatter.body if isinstance(item, WDL.Tree.Call))
+inputs = {item.name: str(item.type) for item in workflow.inputs}
+print(json.dumps({
+    "inputs": inputs,
+    "tasks": sorted(task.name for task in document.tasks),
+    "calls": sorted(calls),
+    "extract_vcf_samples_inputs": {
+        name: str(expression)
+        for name, expression in calls["ExtractVcfSamples"].inputs.items()
+        if name.startswith("rare_variant_vcf")
+    },
+    "prepare_phenotypes_vcf_samples": str(
+        calls["PreparePhenotypes"].inputs["vcf_samples"]
+    ),
+    "classify_vcf": str(classify.inputs["rare_variant_vcf"]),
+    "classify_vcf_tbi": str(classify.inputs["rare_variant_vcf_tbi"]),
 }, sort_keys=True))
 """
     result = subprocess.run(
@@ -325,6 +378,7 @@ def test_wdl_public_input_and_default_contract():
     assert json.loads(template_result.stdout) == {
         "RareVariantEnrichment.phenotype_bed": "File",
         "RareVariantEnrichment.rare_variant_vcf": "File",
+        "RareVariantEnrichment.rare_variant_vcf_tbi": "File",
         "RareVariantEnrichment.variant_annotation_table": "File",
     }
 
@@ -332,7 +386,7 @@ def test_wdl_public_input_and_default_contract():
     assert inputs == {
         "phenotype_bed": {"type": "File", "default": None},
         "rare_variant_vcf": {"type": "File", "default": None},
-        "rare_variant_vcf_tbi": {"type": "File?", "default": None},
+        "rare_variant_vcf_tbi": {"type": "File", "default": None},
         "variant_annotation_table": {"type": "File", "default": None},
         "variant_annotation_table_tbi": {"type": "File?", "default": None},
         "chromosomes": {
@@ -402,9 +456,10 @@ def test_wdl_workflow_wires_chromosomes_and_prepared_features():
     wiring = _parsed_workflow_wiring()
     assert wiring == {
         "scatter_count": 1,
-        "prepare_vcf_chromosomes": "chromosomes",
+        "extract_vcf_samples_chromosomes": "chromosomes",
         "prepare_vat_chromosomes": "chromosomes",
         "prepare_phenotypes_chromosomes": "chromosomes",
+        "prepare_phenotypes_vcf_samples": "ExtractVcfSamples.vcf_samples",
         "scatter_variable": "chromosome",
         "scatter_collection": "chromosomes",
         "classify_chromosome": "chromosome",
@@ -419,7 +474,7 @@ def test_wdl_workflow_wires_chromosomes_and_prepared_features():
         "calculate_consequence_classes": "consequence_classes",
         "calculate_vat_schema": "PrepareVatIndex.vat_schema_json",
         "calculate_loftee_enabled": "PrepareVatIndex.loftee_enabled",
-        "calculate_vcf_index_provenance": "PrepareVcfIndex.index_provenance",
+        "calculate_vcf_index_provenance": None,
         "calculate_vat_index_provenance": "PrepareVatIndex.index_provenance",
         "calculate_maximum_gvs_maf": "maximum_gvs_maf",
         "calculate_annotation_chunk_size_bp": "annotation_chunk_size_bp",
@@ -431,7 +486,7 @@ def test_wdl_dynamic_disk_requests_cover_large_localized_inputs():
     wiring = _parsed_dynamic_scatter_disk_wiring()
 
     assert wiring["task_disk_gb"] == {
-        "PrepareVcfIndex": "dynamic_vcf_index_disk_gb",
+        "ExtractVcfSamples": "dynamic_vcf_sample_disk_gb",
         "PrepareVatIndex": "dynamic_vat_index_disk_gb",
         "PreparePhenotypes": "prepare_disk_gb",
         "DetermineMaximumDistance": "prepare_disk_gb",
@@ -440,12 +495,12 @@ def test_wdl_dynamic_disk_requests_cover_large_localized_inputs():
         "PublishCarrierAudit": "dynamic_audit_disk_gb",
         "CalculateEnrichment": "dynamic_calculate_disk_gb",
     }
-    assert wiring["declarations"]["calculated_vcf_index_disk_gb"] == (
+    assert wiring["declarations"]["calculated_vcf_sample_disk_gb"] == (
         "ceil((size(rare_variant_vcf,\"GiB\") * 2.0 + 20.0))"
     )
-    assert wiring["declarations"]["dynamic_vcf_index_disk_gb"] == (
-        "if calculated_vcf_index_disk_gb > prepare_disk_gb then "
-        "calculated_vcf_index_disk_gb else prepare_disk_gb"
+    assert wiring["declarations"]["dynamic_vcf_sample_disk_gb"] == (
+        "if calculated_vcf_sample_disk_gb > prepare_disk_gb then "
+        "calculated_vcf_sample_disk_gb else prepare_disk_gb"
     )
     assert wiring["declarations"]["calculated_vat_index_disk_gb"] == (
         "ceil((size(variant_annotation_table,\"GiB\") * 2.0 + 20.0))"
@@ -455,7 +510,7 @@ def test_wdl_dynamic_disk_requests_cover_large_localized_inputs():
         "calculated_vat_index_disk_gb else prepare_disk_gb"
     )
     assert wiring["declarations"]["calculated_scatter_disk_gb"] == (
-        "ceil(((size(PrepareVcfIndex.vcf,\"GiB\") + "
+        "ceil(((size(rare_variant_vcf,\"GiB\") + "
         "size(PrepareVatIndex.vat,\"GiB\")) * 2.0 + 20.0))"
     )
     assert wiring["declarations"]["dynamic_scatter_disk_gb"] == (
@@ -486,6 +541,23 @@ def test_wdl_dynamic_disk_requests_cover_large_localized_inputs():
     )
 
 
+def test_wdl_requires_a_supplied_vcf_index_without_a_vcf_index_preparation_task():
+    contract = _parsed_supplied_vcf_index_contract()
+
+    assert contract["inputs"]["rare_variant_vcf_tbi"] == "File"
+    assert "PrepareVcfIndex" not in contract["tasks"]
+    assert "PrepareVcfIndex" not in contract["calls"]
+    assert "ExtractVcfSamples" in contract["tasks"]
+    assert "ExtractVcfSamples" in contract["calls"]
+    assert contract["extract_vcf_samples_inputs"] == {
+        "rare_variant_vcf": "rare_variant_vcf",
+        "rare_variant_vcf_tbi": "rare_variant_vcf_tbi",
+    }
+    assert contract["prepare_phenotypes_vcf_samples"] == "ExtractVcfSamples.vcf_samples"
+    assert contract["classify_vcf"] == "rare_variant_vcf"
+    assert contract["classify_vcf_tbi"] == "rare_variant_vcf_tbi"
+
+
 def test_wdl_materializes_shell_values_before_rendering_commands():
     rendered = _rendered_task_shell_boundaries()
     dangerous_chromosome = 'chr1"; touch CHROMOSOME_INJECTION; echo "'
@@ -498,7 +570,7 @@ def test_wdl_materializes_shell_values_before_rendering_commands():
     dangerous_vat_provenance = "generated; touch VAT_PROVENANCE_INJECTION"
 
     payloads_by_task = {
-        "PrepareVcfIndex": [dangerous_chromosome],
+        "ExtractVcfSamples": [dangerous_chromosome],
         "PrepareVatIndex": [dangerous_chromosome],
         "PreparePhenotypes": [dangerous_chromosome, dangerous_tail],
         "ClassifyChromosome": [dangerous_chromosome, dangerous_consequence],
@@ -513,7 +585,7 @@ def test_wdl_materializes_shell_values_before_rendering_commands():
         ],
     }
     expected_files_by_task = {
-        "PrepareVcfIndex": [[dangerous_chromosome]],
+        "ExtractVcfSamples": [[dangerous_chromosome]],
         "PrepareVatIndex": [[dangerous_chromosome]],
         "PreparePhenotypes": [[dangerous_chromosome], ["2.000000"], [dangerous_tail]],
         "DetermineMaximumDistance": [["1000"]],
@@ -557,6 +629,10 @@ def test_wdl_materializes_shell_values_before_rendering_commands():
         'ln -s "/tmp/annotation table.tsv.bgz.tbi" annotations.tsv.bgz.tbi'
         in prepare_vat_command
     )
+    extract_vcf_samples_command = rendered["ExtractVcfSamples"]["command"]
+    assert 'ln -s "/tmp/rare variants.vcf.gz" variants.vcf.gz' in extract_vcf_samples_command
+    assert 'ln -s "/tmp/rare variants.vcf.gz.tbi" variants.vcf.gz.tbi' in extract_vcf_samples_command
+    assert "tabix -p vcf" not in extract_vcf_samples_command
     classify_command = rendered["ClassifyChromosome"]["command"]
     assert '--vat annotations.tsv.bgz' in classify_command
     assert 'ln -s "/tmp/annotation table.tsv.bgz.tbi" annotations.tsv.bgz.tbi' in classify_command
@@ -583,8 +659,8 @@ def test_wdl_exposes_qc_provenance_optional_audit_and_required_retry_runtime():
         "enrichment_json": "File",
         "enrichment_tsv": "File",
         "generated_or_validated_vat_tbi": "File",
-        "generated_or_validated_vcf_tbi": "File",
         "phenotype_qc_json": "File",
+        "supplied_vcf_tbi": "File",
         "vat_index_provenance": "String",
         "vat_schema_json": "File",
         "vcf_index_provenance": "String",

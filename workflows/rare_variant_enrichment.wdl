@@ -1,9 +1,9 @@
 version 1.0
 
-task PrepareVcfIndex {
+task ExtractVcfSamples {
     input {
         File rare_variant_vcf
-        File? rare_variant_vcf_tbi
+        File rare_variant_vcf_tbi
         Array[String] chromosomes
         String docker_image
         Int cpu
@@ -18,13 +18,7 @@ task PrepareVcfIndex {
         set -euo pipefail
 
         ln -s "~{rare_variant_vcf}" variants.vcf.gz
-        if [[ "~{defined(rare_variant_vcf_tbi)}" == "true" ]]; then
-            ln -s "~{select_first([rare_variant_vcf_tbi, rare_variant_vcf])}" variants.vcf.gz.tbi
-            printf 'supplied\n' > index_provenance.txt
-        else
-            tabix -p vcf variants.vcf.gz
-            printf 'generated\n' > index_provenance.txt
-        fi
+        ln -s "~{rare_variant_vcf_tbi}" variants.vcf.gz.tbi
 
         tabix -l variants.vcf.gz > indexed_contigs.txt
         while IFS= read -r chromosome; do
@@ -40,10 +34,7 @@ task PrepareVcfIndex {
     >>>
 
     output {
-        File vcf = rare_variant_vcf
-        File vcf_tbi = if defined(rare_variant_vcf_tbi) then select_first([rare_variant_vcf_tbi]) else "variants.vcf.gz.tbi"
         File vcf_samples = "vcf_samples.txt"
-        String index_provenance = read_string("index_provenance.txt")
     }
 
     runtime {
@@ -529,7 +520,7 @@ workflow RareVariantEnrichment {
     input {
         File phenotype_bed
         File rare_variant_vcf
-        File? rare_variant_vcf_tbi
+        File rare_variant_vcf_tbi
         File variant_annotation_table
         File? variant_annotation_table_tbi
         Array[String] chromosomes = [
@@ -567,12 +558,12 @@ workflow RareVariantEnrichment {
     }
 
     String workflow_version = "0.3.0"
-    Int calculated_vcf_index_disk_gb = ceil((size(rare_variant_vcf, "GiB") * 2.0) + 20.0)
-    Int dynamic_vcf_index_disk_gb = if (calculated_vcf_index_disk_gb > prepare_disk_gb) then calculated_vcf_index_disk_gb else prepare_disk_gb
+    Int calculated_vcf_sample_disk_gb = ceil((size(rare_variant_vcf, "GiB") * 2.0) + 20.0)
+    Int dynamic_vcf_sample_disk_gb = if (calculated_vcf_sample_disk_gb > prepare_disk_gb) then calculated_vcf_sample_disk_gb else prepare_disk_gb
     Int calculated_vat_index_disk_gb = ceil((size(variant_annotation_table, "GiB") * 2.0) + 20.0)
     Int dynamic_vat_index_disk_gb = if (calculated_vat_index_disk_gb > prepare_disk_gb) then calculated_vat_index_disk_gb else prepare_disk_gb
 
-    call PrepareVcfIndex {
+    call ExtractVcfSamples {
         input:
             rare_variant_vcf = rare_variant_vcf,
             rare_variant_vcf_tbi = rare_variant_vcf_tbi,
@@ -580,7 +571,7 @@ workflow RareVariantEnrichment {
             docker_image = docker_image,
             cpu = prepare_cpu,
             memory_gb = prepare_memory_gb,
-            disk_gb = dynamic_vcf_index_disk_gb,
+            disk_gb = dynamic_vcf_sample_disk_gb,
             max_retries = max_retries
     }
 
@@ -597,14 +588,14 @@ workflow RareVariantEnrichment {
     }
 
     Int calculated_scatter_disk_gb = ceil(
-        ((size(PrepareVcfIndex.vcf, "GiB") + size(PrepareVatIndex.vat, "GiB")) * 2.0) + 20.0
+        ((size(rare_variant_vcf, "GiB") + size(PrepareVatIndex.vat, "GiB")) * 2.0) + 20.0
     )
     Int dynamic_scatter_disk_gb = if (calculated_scatter_disk_gb > scatter_disk_gb) then calculated_scatter_disk_gb else scatter_disk_gb
 
     call PreparePhenotypes {
         input:
             phenotype_bed = phenotype_bed,
-            vcf_samples = PrepareVcfIndex.vcf_samples,
+            vcf_samples = ExtractVcfSamples.vcf_samples,
             chromosomes = chromosomes,
             z_thresholds = z_thresholds,
             outlier_tail = outlier_tail,
@@ -628,8 +619,8 @@ workflow RareVariantEnrichment {
     scatter (chromosome in chromosomes) {
         call ClassifyChromosome {
             input:
-                rare_variant_vcf = PrepareVcfIndex.vcf,
-                rare_variant_vcf_tbi = PrepareVcfIndex.vcf_tbi,
+                rare_variant_vcf = rare_variant_vcf,
+                rare_variant_vcf_tbi = rare_variant_vcf_tbi,
                 variant_annotation_table = PrepareVatIndex.vat,
                 variant_annotation_table_tbi = PrepareVatIndex.vat_tbi,
                 vat_schema_json = PrepareVatIndex.vat_schema_json,
@@ -704,7 +695,7 @@ workflow RareVariantEnrichment {
             outlier_tail = outlier_tail,
             consequence_classes = consequence_classes,
             loftee_enabled = PrepareVatIndex.loftee_enabled,
-            vcf_index_provenance = PrepareVcfIndex.index_provenance,
+            vcf_index_provenance = "supplied",
             vat_index_provenance = PrepareVatIndex.index_provenance,
             maximum_gvs_maf = maximum_gvs_maf,
             annotation_chunk_size_bp = annotation_chunk_size_bp,
@@ -722,11 +713,11 @@ workflow RareVariantEnrichment {
         File chromosome_qc_tsv = GatherCarrierPairs.chromosome_qc_tsv
         File? carrier_minimum_distances_tsv = PublishCarrierAudit.carrier_minimum_distances_tsv
         File generated_or_validated_vat_tbi = PrepareVatIndex.vat_tbi
-        File generated_or_validated_vcf_tbi = PrepareVcfIndex.vcf_tbi
+        File supplied_vcf_tbi = rare_variant_vcf_tbi
         Array[File] chromosome_query_regions = ClassifyChromosome.query_regions_bed
         File phenotype_qc_json = PreparePhenotypes.phenotype_qc_json
         String vat_index_provenance = PrepareVatIndex.index_provenance
         File vat_schema_json = PrepareVatIndex.vat_schema_json
-        String vcf_index_provenance = PrepareVcfIndex.index_provenance
+        String vcf_index_provenance = "supplied"
     }
 }
