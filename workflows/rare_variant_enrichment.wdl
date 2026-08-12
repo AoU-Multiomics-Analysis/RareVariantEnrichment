@@ -567,6 +567,10 @@ workflow RareVariantEnrichment {
     }
 
     String workflow_version = "0.3.0"
+    Int calculated_vcf_index_disk_gb = ceil((size(rare_variant_vcf, "GiB") * 2.0) + 20.0)
+    Int dynamic_vcf_index_disk_gb = if (calculated_vcf_index_disk_gb > prepare_disk_gb) then calculated_vcf_index_disk_gb else prepare_disk_gb
+    Int calculated_vat_index_disk_gb = ceil((size(variant_annotation_table, "GiB") * 2.0) + 20.0)
+    Int dynamic_vat_index_disk_gb = if (calculated_vat_index_disk_gb > prepare_disk_gb) then calculated_vat_index_disk_gb else prepare_disk_gb
 
     call PrepareVcfIndex {
         input:
@@ -576,7 +580,7 @@ workflow RareVariantEnrichment {
             docker_image = docker_image,
             cpu = prepare_cpu,
             memory_gb = prepare_memory_gb,
-            disk_gb = prepare_disk_gb,
+            disk_gb = dynamic_vcf_index_disk_gb,
             max_retries = max_retries
     }
 
@@ -588,9 +592,14 @@ workflow RareVariantEnrichment {
             docker_image = docker_image,
             cpu = prepare_cpu,
             memory_gb = prepare_memory_gb,
-            disk_gb = prepare_disk_gb,
+            disk_gb = dynamic_vat_index_disk_gb,
             max_retries = max_retries
     }
+
+    Int calculated_scatter_disk_gb = ceil(
+        ((size(PrepareVcfIndex.vcf, "GiB") + size(PrepareVatIndex.vat, "GiB")) * 2.0) + 20.0
+    )
+    Int dynamic_scatter_disk_gb = if (calculated_scatter_disk_gb > scatter_disk_gb) then calculated_scatter_disk_gb else scatter_disk_gb
 
     call PreparePhenotypes {
         input:
@@ -636,10 +645,15 @@ workflow RareVariantEnrichment {
                 docker_image = docker_image,
                 cpu = scatter_cpu,
                 memory_gb = scatter_memory_gb,
-                disk_gb = scatter_disk_gb,
+                disk_gb = dynamic_scatter_disk_gb,
                 max_retries = max_retries
         }
     }
+
+    Int calculated_gather_disk_gb = ceil(
+        (size(ClassifyChromosome.carrier_pairs_tsv, "GiB") * 3.0) + 20.0
+    )
+    Int dynamic_gather_disk_gb = if (calculated_gather_disk_gb > gather_disk_gb) then calculated_gather_disk_gb else gather_disk_gb
 
     call GatherCarrierPairs {
         input:
@@ -648,9 +662,18 @@ workflow RareVariantEnrichment {
             docker_image = docker_image,
             cpu = gather_cpu,
             memory_gb = gather_memory_gb,
-            disk_gb = gather_disk_gb,
+            disk_gb = dynamic_gather_disk_gb,
             max_retries = max_retries
     }
+
+    Int calculated_audit_disk_gb = ceil(
+        (size(GatherCarrierPairs.carrier_minimum_distances_tsv, "GiB") * 2.0) + 20.0
+    )
+    Int dynamic_audit_disk_gb = if (calculated_audit_disk_gb > gather_disk_gb) then calculated_audit_disk_gb else gather_disk_gb
+    Int calculated_calculate_disk_gb = ceil(
+        ((size(phenotype_bed, "GiB") + size(GatherCarrierPairs.carrier_minimum_distances_tsv, "GiB")) * 2.0) + 20.0
+    )
+    Int dynamic_calculate_disk_gb = if (calculated_calculate_disk_gb > gather_disk_gb) then calculated_calculate_disk_gb else gather_disk_gb
 
     if (publish_carrier_audit) {
         call PublishCarrierAudit {
@@ -659,7 +682,7 @@ workflow RareVariantEnrichment {
                 docker_image = docker_image,
                 cpu = gather_cpu,
                 memory_gb = gather_memory_gb,
-                disk_gb = gather_disk_gb,
+                disk_gb = dynamic_audit_disk_gb,
                 max_retries = max_retries
         }
     }
@@ -689,7 +712,7 @@ workflow RareVariantEnrichment {
             docker_image = docker_image,
             cpu = gather_cpu,
             memory_gb = gather_memory_gb,
-            disk_gb = gather_disk_gb,
+            disk_gb = dynamic_calculate_disk_gb,
             max_retries = max_retries
     }
 
