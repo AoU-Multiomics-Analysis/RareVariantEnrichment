@@ -161,6 +161,49 @@ print(json.dumps({
     return json.loads(result.stdout)
 
 
+def _parsed_dynamic_scatter_disk_wiring() -> dict[str, object]:
+    script = """
+import json
+import sys
+
+import WDL
+
+document = WDL.load(sys.argv[1])
+workflow = document.workflow
+calls = {}
+
+def collect_calls(nodes):
+    for item in nodes:
+        if isinstance(item, WDL.Tree.Call):
+            calls[item.name] = item
+        elif isinstance(item, (WDL.Tree.Scatter, WDL.Tree.Conditional)):
+            collect_calls(item.body)
+
+collect_calls(workflow.body)
+declarations = {
+    item.name: str(item.expr)
+    for item in workflow.body
+    if isinstance(item, WDL.Tree.Decl)
+}
+print(json.dumps({
+    "task_disk_gb": {
+        name: str(call.inputs["disk_gb"])
+        for name, call in calls.items()
+        if "disk_gb" in call.inputs
+    },
+    "declarations": declarations,
+}, sort_keys=True))
+"""
+    result = subprocess.run(
+        [*_miniwdl_python(), "-c", script, str(WORKFLOW)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
 def _rendered_task_shell_boundaries(
     consequence_classes: list[str] | None = None,
 ) -> dict[str, dict[str, object]]:
@@ -382,6 +425,65 @@ def test_wdl_workflow_wires_chromosomes_and_prepared_features():
         "calculate_annotation_chunk_size_bp": "annotation_chunk_size_bp",
     }
     assert wiring["classify_chromosome"] == wiring["scatter_variable"]
+
+
+def test_wdl_dynamic_disk_requests_cover_large_localized_inputs():
+    wiring = _parsed_dynamic_scatter_disk_wiring()
+
+    assert wiring["task_disk_gb"] == {
+        "PrepareVcfIndex": "dynamic_vcf_index_disk_gb",
+        "PrepareVatIndex": "dynamic_vat_index_disk_gb",
+        "PreparePhenotypes": "prepare_disk_gb",
+        "DetermineMaximumDistance": "prepare_disk_gb",
+        "ClassifyChromosome": "dynamic_scatter_disk_gb",
+        "GatherCarrierPairs": "dynamic_gather_disk_gb",
+        "PublishCarrierAudit": "dynamic_audit_disk_gb",
+        "CalculateEnrichment": "dynamic_calculate_disk_gb",
+    }
+    assert wiring["declarations"]["calculated_vcf_index_disk_gb"] == (
+        "ceil((size(rare_variant_vcf,\"GiB\") * 2.0 + 20.0))"
+    )
+    assert wiring["declarations"]["dynamic_vcf_index_disk_gb"] == (
+        "if calculated_vcf_index_disk_gb > prepare_disk_gb then "
+        "calculated_vcf_index_disk_gb else prepare_disk_gb"
+    )
+    assert wiring["declarations"]["calculated_vat_index_disk_gb"] == (
+        "ceil((size(variant_annotation_table,\"GiB\") * 2.0 + 20.0))"
+    )
+    assert wiring["declarations"]["dynamic_vat_index_disk_gb"] == (
+        "if calculated_vat_index_disk_gb > prepare_disk_gb then "
+        "calculated_vat_index_disk_gb else prepare_disk_gb"
+    )
+    assert wiring["declarations"]["calculated_scatter_disk_gb"] == (
+        "ceil(((size(PrepareVcfIndex.vcf,\"GiB\") + "
+        "size(PrepareVatIndex.vat,\"GiB\")) * 2.0 + 20.0))"
+    )
+    assert wiring["declarations"]["dynamic_scatter_disk_gb"] == (
+        "if calculated_scatter_disk_gb > scatter_disk_gb then "
+        "calculated_scatter_disk_gb else scatter_disk_gb"
+    )
+    assert wiring["declarations"]["calculated_gather_disk_gb"] == (
+        "ceil((size(ClassifyChromosome.carrier_pairs_tsv,\"GiB\") * 3.0 + 20.0))"
+    )
+    assert wiring["declarations"]["dynamic_gather_disk_gb"] == (
+        "if calculated_gather_disk_gb > gather_disk_gb then "
+        "calculated_gather_disk_gb else gather_disk_gb"
+    )
+    assert wiring["declarations"]["calculated_audit_disk_gb"] == (
+        "ceil((size(GatherCarrierPairs.carrier_minimum_distances_tsv,\"GiB\") * 2.0 + 20.0))"
+    )
+    assert wiring["declarations"]["dynamic_audit_disk_gb"] == (
+        "if calculated_audit_disk_gb > gather_disk_gb then "
+        "calculated_audit_disk_gb else gather_disk_gb"
+    )
+    assert wiring["declarations"]["calculated_calculate_disk_gb"] == (
+        "ceil(((size(phenotype_bed,\"GiB\") + "
+        "size(GatherCarrierPairs.carrier_minimum_distances_tsv,\"GiB\")) * 2.0 + 20.0))"
+    )
+    assert wiring["declarations"]["dynamic_calculate_disk_gb"] == (
+        "if calculated_calculate_disk_gb > gather_disk_gb then "
+        "calculated_calculate_disk_gb else gather_disk_gb"
+    )
 
 
 def test_wdl_materializes_shell_values_before_rendering_commands():
