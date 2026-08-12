@@ -1,6 +1,7 @@
 {
   "RareVariantEnrichment.phenotype_bed": "phenotypes.scaled.residualized.bed.gz",
   "RareVariantEnrichment.rare_variant_vcf": "rare_variants.vcf.gz",
+  "RareVariantEnrichment.rare_variant_vcf_tbi": "rare_variants.vcf.gz.tbi",
   "RareVariantEnrichment.variant_annotation_table": "transcript_annotations.tsv.bgz",
   "RareVariantEnrichment.z_thresholds": [2.0, 3.0, 4.0, 5.0],
   "RareVariantEnrichment.exact_allele_counts": [1, 2, 3, 4, 5],

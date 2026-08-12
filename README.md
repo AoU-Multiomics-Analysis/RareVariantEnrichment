@@ -35,7 +35,7 @@ the input for that default. To restrict a run, supply an explicit array such as
 must be requested explicitly, and every label must match both BED and VCF
 contigs.
 
-`rare_variant_vcf_tbi` is optional. When omitted, `PrepareVcfIndex` generates an adjacent tabix index with `tabix -p vcf`; when supplied, it is localized beside the VCF and validated. The example intentionally omits this field to demonstrate automatic index generation.
+`rare_variant_vcf_tbi` is required. The workflow never creates a VCF tabix index: `ExtractVcfSamples` localizes the supplied VCF/index pair once to validate requested contigs and emit the VCF sample list, then chromosome tasks use that same supplied index for their tabix queries.
 
 `INFO/AC` is interpreted independently for every ALT and is authoritative when it is a non-negative integer. A missing value (`AC=.` or a `.` entry such as `AC=.,2`) falls back only that ALT to the called genotype allele indices across every VCF sample, including samples absent from the BED. Negative AC values are rejected. On fully called records, INFO and genotype AC are compared and disagreements are counted while INFO remains authoritative.
 
@@ -71,20 +71,20 @@ The defaults and recommended first-pass grid are:
 
 Exact and cumulative AC grids are independent, so either may be empty, but at least one family must be configured. Threshold values must be valid and unique. The workflow forms non-overlapping chunks from the merged 100 kb windows, extracts each chunk once, and stores the minimum carrier–TSS distance. The inclusive 10 kb stratum is then derived from that minimum distance without a second extraction.
 
-The default runtime image is `ghcr.io/aou-multiomics-analysis/rarevariantenrichment:main`. The GHCR package must be public, or the execution backend must have credentials that can pull it. For production, override `docker_image` with an immutable digest such as `ghcr.io/aou-multiomics-analysis/rarevariantenrichment@sha256:...`; tags can move and are not sufficient provenance. CPU, memory, and disk inputs can be overridden separately for preparation, scatter, and gather/calculation tasks. These inputs are minimums: VCF/VAT index preparation requests the larger of `prepare_disk_gb` and twice its localized input size plus 20 GiB; each chromosome shard uses the larger of `scatter_disk_gb` and twice the combined VCF/VAT size plus 20 GiB; gathering uses the larger of `gather_disk_gb` and three times the total shard-carrier size plus 20 GiB to allow for its temporary SQLite store; the optional audit copy and final calculation also scale from their large localized inputs. This prevents staging failures without over-allocating small runs. `max_retries` defaults to `1` and is applied as WDL `maxRetries` to every task.
+The default runtime image is `ghcr.io/aou-multiomics-analysis/rarevariantenrichment:main`. The GHCR package must be public, or the execution backend must have credentials that can pull it. For production, override `docker_image` with an immutable digest such as `ghcr.io/aou-multiomics-analysis/rarevariantenrichment@sha256:...`; tags can move and are not sufficient provenance. CPU, memory, and disk inputs can be overridden separately for preparation, scatter, and gather/calculation tasks. These inputs are minimums: VCF sample extraction and VAT index preparation request the larger of `prepare_disk_gb` and twice their localized input size plus 20 GiB; each chromosome shard uses the larger of `scatter_disk_gb` and twice the combined VCF/VAT size plus 20 GiB; gathering uses the larger of `gather_disk_gb` and three times the total shard-carrier size plus 20 GiB to allow for its temporary SQLite store; the optional audit copy and final calculation also scale from their large localized inputs. This prevents staging failures without over-allocating small runs. `max_retries` defaults to `1` and is applied as WDL `maxRetries` to every task.
 
 `publish_carrier_audit` defaults to `false`. Set it to `true` only when the sample-level carrier-distance audit is needed and its access controls are appropriate.
 
 ## Run
 
-Install [miniwdl](https://miniwdl.readthedocs.io/) and a supported container runtime. From a directory containing `phenotypes.scaled.residualized.bed.gz`, `rare_variants.vcf.gz`, and `transcript_annotations.tsv.bgz`, run:
+Install [miniwdl](https://miniwdl.readthedocs.io/) and a supported container runtime. From a directory containing `phenotypes.scaled.residualized.bed.gz`, `rare_variants.vcf.gz`, `rare_variants.vcf.gz.tbi`, and `transcript_annotations.tsv.bgz`, run:
 
 ```bash
 miniwdl run workflows/rare_variant_enrichment.wdl \
   -i examples/rare_variant_enrichment.inputs.json
 ```
 
-Adjust the three file paths in the example JSON for the input cohort. The example omits `chromosomes` to demonstrate the default autosomal selection; to restrict a run, add an explicit chromosome array. To use existing indexes, add `"RareVariantEnrichment.rare_variant_vcf_tbi": "rare_variants.vcf.gz.tbi"` and/or `"RareVariantEnrichment.variant_annotation_table_tbi": "transcript_annotations.tsv.bgz.tbi"`.
+Adjust the four required file paths in the example JSON for the input cohort. The example omits `chromosomes` to demonstrate the default autosomal selection; to restrict a run, add an explicit chromosome array. `rare_variant_vcf_tbi` is required; add `"RareVariantEnrichment.variant_annotation_table_tbi": "transcript_annotations.tsv.bgz.tbi"` only when using an existing VAT index.
 
 The selected chromosome array controls the exact feature set in both preparation and calculation. Rows on other BED chromosomes are validated during preparation but do not enter enrichment denominators.
 
@@ -97,8 +97,8 @@ The workflow publishes:
 - `phenotype_qc_json`: selected/input feature counts, selected chromosomes, non-missing/missing and threshold-specific outlier counts, and BED/VCF overlap counts. It intentionally contains counts rather than excluded sample IDs.
 - `chromosome_qc_tsv`: per-chromosome feature, merged-region/chunk, extracted-record, total/classified ALT, exact VAT join/frequency/consequence/LoFTEE, AC-source/unavailable/mismatch, complete/partial/fully-missing genotype, maximum-distance boundary, variant–feature-pair, tabix-query, and emitted-key counts. It contains aggregate counts only, not sample IDs, variant IDs, or VAT rows.
 - `carrier_minimum_distances_tsv`: optional six-column controlled audit: `sample_id`, `feature_id`, `ac_class`, `annotation_family`, `annotation_class`, and `minimum_distance_bp`. It is emitted only when `publish_carrier_audit=true`. Multiple qualifying variants reduce to the minimum distance, so one feature–sample observation is counted at most once per AC class and annotation class.
-- `generated_or_validated_vcf_tbi`: the generated or validated tabix index.
-- `vcf_index_provenance`: machine-readable `generated` or `supplied` index provenance.
+- `supplied_vcf_tbi`: the required supplied VCF tabix index.
+- `vcf_index_provenance`: always `supplied`.
 - `generated_or_validated_vat_tbi`, `vat_index_provenance`, and `vat_schema_json`: the analogous VAT index, provenance, and validated column schema.
 - `chromosome_query_regions`: one merged maximum-window BED per chromosome.
 
