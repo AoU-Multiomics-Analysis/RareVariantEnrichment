@@ -60,7 +60,7 @@ def test_required_runtime_mode_fails_instead_of_skipping_missing_prerequisites(
         "exact_ac",
         "cumulative_ac_max",
         "expected_kind",
-        "supply_indexes",
+        "supply_vat_index",
         "consequence_classes",
         "expected_annotations",
     ),
@@ -93,15 +93,15 @@ def test_required_runtime_mode_fails_instead_of_skipping_missing_prerequisites(
             },
         ),
     ],
-    ids=["exact-only-generated-index", "cumulative-only-supplied-index"],
+    ids=["exact-only-generated-vat-index", "cumulative-only-supplied-vat-index"],
 )
-def test_wdl_runs_single_ac_family_and_optional_index_modes(
+def test_wdl_runs_single_ac_family_and_vat_index_modes(
     prepared_fixture,
     tmp_path: Path,
     exact_ac: list[int],
     cumulative_ac_max: list[int],
     expected_kind: str,
-    supply_indexes: bool,
+    supply_vat_index: bool,
     consequence_classes: list[str],
     expected_annotations: set[tuple[str, str]],
 ):
@@ -109,6 +109,9 @@ def test_wdl_runs_single_ac_family_and_optional_index_modes(
     inputs = {
         "RareVariantEnrichment.phenotype_bed": str(prepared_fixture.bed.resolve()),
         "RareVariantEnrichment.rare_variant_vcf": str(prepared_fixture.vcf_gz.resolve()),
+        "RareVariantEnrichment.rare_variant_vcf_tbi": str(
+            prepared_fixture.vcf_tbi.resolve()
+        ),
         "RareVariantEnrichment.variant_annotation_table": str(
             prepared_fixture.vat_bgz.resolve()
         ),
@@ -132,12 +135,9 @@ def test_wdl_runs_single_ac_family_and_optional_index_modes(
         "RareVariantEnrichment.gather_memory_gb": 1,
         "RareVariantEnrichment.gather_disk_gb": 1,
         "RareVariantEnrichment.max_retries": 2,
-        "RareVariantEnrichment.publish_carrier_audit": supply_indexes,
+        "RareVariantEnrichment.publish_carrier_audit": supply_vat_index,
     }
-    if supply_indexes:
-        inputs["RareVariantEnrichment.rare_variant_vcf_tbi"] = str(
-            prepared_fixture.vcf_tbi.resolve()
-        )
+    if supply_vat_index:
         inputs["RareVariantEnrichment.variant_annotation_table_tbi"] = str(
             prepared_fixture.vat_tbi.resolve()
         )
@@ -179,27 +179,21 @@ def test_wdl_runs_single_ac_family_and_optional_index_modes(
     assert {
         (row["annotation_family"], row["annotation_class"]) for row in rows
     } == expected_annotations
-    assert Path(
-        outputs["RareVariantEnrichment.generated_or_validated_vcf_tbi"]
-    ).is_file()
+    assert Path(outputs["RareVariantEnrichment.supplied_vcf_tbi"]).is_file()
     assert Path(
         outputs["RareVariantEnrichment.generated_or_validated_vat_tbi"]
     ).is_file()
     assert Path(outputs["RareVariantEnrichment.vat_schema_json"]).is_file()
-    assert outputs["RareVariantEnrichment.vcf_index_provenance"] == (
-        "supplied" if supply_indexes else "generated"
-    )
+    assert outputs["RareVariantEnrichment.vcf_index_provenance"] == "supplied"
     assert outputs["RareVariantEnrichment.vat_index_provenance"] == (
-        "supplied" if supply_indexes else "generated"
+        "supplied" if supply_vat_index else "generated"
     )
     summary = json.loads(
         Path(outputs["RareVariantEnrichment.enrichment_json"]).read_text()
     )
-    assert summary["provenance"]["vcf_index"] == (
-        "supplied" if supply_indexes else "generated"
-    )
+    assert summary["provenance"]["vcf_index"] == "supplied"
     assert summary["provenance"]["vat_index"] == (
-        "supplied" if supply_indexes else "generated"
+        "supplied" if supply_vat_index else "generated"
     )
     assert summary["provenance"]["max_retries"] == 2
     assert summary["provenance"]["selected_chromosomes"] == ["chr1"]
@@ -212,7 +206,7 @@ def test_wdl_runs_single_ac_family_and_optional_index_modes(
     )
     assert phenotype_qc["selected_feature_count"] == 4
     audit_output = outputs["RareVariantEnrichment.carrier_minimum_distances_tsv"]
-    assert (audit_output is not None) is supply_indexes
+    assert (audit_output is not None) is supply_vat_index
     if audit_output is not None:
         assert Path(audit_output).is_file()
 
