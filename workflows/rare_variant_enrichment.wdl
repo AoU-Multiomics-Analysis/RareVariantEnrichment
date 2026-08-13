@@ -63,6 +63,10 @@ task CalculateLofPcEnrichment {
         while IFS= read -r value; do
             negative_z_threshold_values+=("$value")
         done < "~{negative_z_thresholds_file}"
+        if ((${#negative_z_threshold_values[@]} == 0)); then
+            echo "negative_z_thresholds must contain at least one negative threshold" >&2
+            exit 2
+        fi
         pc_count_values=()
         while IFS= read -r value; do
             pc_count_values+=("$value")
@@ -76,7 +80,7 @@ task CalculateLofPcEnrichment {
             --lof-carriers "~{lof_carrier_table}" \
             --principal-components "~{principal_components_tsv}" \
             --protein-coding-genes "~{protein_coding_genes}" \
-            --negative-z-thresholds "$negative_z_thresholds_csv" \
+            --negative-z-thresholds="$negative_z_thresholds_csv" \
             --pc-counts "$pc_counts_csv" \
             --results-output "lof_pc_enrichment.tsv" \
             --summary-output "lof_pc_enrichment.summary.json" \
