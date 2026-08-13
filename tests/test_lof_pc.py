@@ -2,6 +2,7 @@ import csv
 import gzip
 import importlib
 import json
+import logging
 import math
 from pathlib import Path
 
@@ -303,6 +304,20 @@ def _run_analysis(
         outputs["analysis_qc"],
     )
     return outputs
+
+
+def test_analysis_logs_configuration_progress_and_outputs(tmp_path: Path, caplog):
+    inputs = _write_analysis_fixture(tmp_path)
+
+    with caplog.at_level(logging.INFO, logger="rare_variant_enrichment.lof_pc"):
+        outputs = _run_analysis(tmp_path, inputs, thresholds=[-0.8], pc_counts=[0])
+
+    messages = "\n".join(caplog.messages)
+    assert "Starting LoF/PC enrichment" in messages
+    assert "shared BED/PC samples" in messages
+    assert "Completed PC count 0" in messages
+    assert "Wrote LoF/PC enrichment outputs" in messages
+    assert str(outputs["results"]) in messages
 
 
 def test_lof_pc_enrichment_emits_hand_checked_pooled_fisher_cells_and_global_fdr(
