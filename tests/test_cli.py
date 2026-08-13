@@ -17,8 +17,97 @@ def test_cli_lists_workflow_subcommands():
         check=False,
     )
     assert result.returncode == 0
-    for command in ("prepare-phenotypes", "prepare-vat", "classify-chromosome", "gather", "calculate"):
+    for command in (
+        "prepare-phenotypes",
+        "prepare-vat",
+        "classify-chromosome",
+        "gather",
+        "calculate",
+        "prepare-protein-coding-genes",
+        "lof-pc-enrichment",
+    ):
         assert command in result.stdout
+
+
+def test_prepare_protein_coding_genes_cli_dispatches_exact_paths(monkeypatch):
+    received: list[Path] = []
+
+    def fake_prepare(gtf: Path, genes_output: Path, qc_output: Path) -> None:
+        received.extend([gtf, genes_output, qc_output])
+
+    monkeypatch.setattr(cli, "prepare_protein_coding_genes", fake_prepare)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "prepare-protein-coding-genes",
+            "--gtf",
+            "annotation.gtf.gz",
+            "--genes-output",
+            "genes.tsv",
+            "--qc-output",
+            "genes.qc.json",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received == [
+        Path("annotation.gtf.gz"),
+        Path("genes.tsv"),
+        Path("genes.qc.json"),
+    ]
+
+
+def test_lof_pc_enrichment_cli_dispatches_exact_contract(monkeypatch):
+    received: list[object] = []
+
+    def fake_calculate(*arguments: object) -> None:
+        received.extend(arguments)
+
+    monkeypatch.setattr(cli, "calculate_lof_pc_enrichment", fake_calculate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "lof-pc-enrichment",
+            "--phenotype-bed",
+            "phenotypes.bed.gz",
+            "--lof-carriers",
+            "lof.tsv",
+            "--principal-components",
+            "pcs.tsv",
+            "--protein-coding-genes",
+            "genes.tsv",
+            "--negative-z-thresholds",
+            "-2,-3",
+            "--pc-counts",
+            "0,10",
+            "--results-output",
+            "results.tsv",
+            "--summary-output",
+            "summary.json",
+            "--gene-pc-qc-output",
+            "gene-pc-qc.tsv.gz",
+            "--analysis-qc-output",
+            "analysis-qc.json",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received == [
+        Path("phenotypes.bed.gz"),
+        Path("lof.tsv"),
+        Path("pcs.tsv"),
+        Path("genes.tsv"),
+        [-2.0, -3.0],
+        [0, 10],
+        Path("results.tsv"),
+        Path("summary.json"),
+        Path("gene-pc-qc.tsv.gz"),
+        Path("analysis-qc.json"),
+    ]
 
 
 def test_prepare_vat_cli_dispatches_paths_and_chromosomes_unchanged(tmp_path: Path, monkeypatch):

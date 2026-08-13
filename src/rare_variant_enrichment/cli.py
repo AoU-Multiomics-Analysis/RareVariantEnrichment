@@ -3,18 +3,47 @@ import math
 from pathlib import Path
 
 from rare_variant_enrichment.aggregation import gather_outputs
+from rare_variant_enrichment.lof_pc import (
+    calculate_lof_pc_enrichment,
+    prepare_protein_coding_genes,
+)
 from rare_variant_enrichment.phenotypes import prepare_phenotypes
 from rare_variant_enrichment.statistics import calculate_enrichment
 from rare_variant_enrichment.vat import prepare_vat
 from rare_variant_enrichment.variants import classify_chromosome
 
 
-COMMANDS = ("prepare-phenotypes", "prepare-vat", "classify-chromosome", "gather", "calculate")
+COMMANDS = (
+    "prepare-phenotypes",
+    "prepare-vat",
+    "classify-chromosome",
+    "gather",
+    "calculate",
+    "prepare-protein-coding-genes",
+    "lof-pc-enrichment",
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="rare-variant-enrichment")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    coding_gene_parser = subparsers.add_parser("prepare-protein-coding-genes")
+    coding_gene_parser.add_argument("--gtf", required=True, type=Path)
+    coding_gene_parser.add_argument("--genes-output", required=True, type=Path)
+    coding_gene_parser.add_argument("--qc-output", required=True, type=Path)
+    lof_pc_parser = subparsers.add_parser("lof-pc-enrichment")
+    lof_pc_parser.add_argument("--phenotype-bed", required=True, type=Path)
+    lof_pc_parser.add_argument("--lof-carriers", required=True, type=Path)
+    lof_pc_parser.add_argument("--principal-components", required=True, type=Path)
+    lof_pc_parser.add_argument("--protein-coding-genes", required=True, type=Path)
+    lof_pc_parser.add_argument(
+        "--negative-z-thresholds", required=True, type=parse_csv_floats
+    )
+    lof_pc_parser.add_argument("--pc-counts", required=True, type=parse_csv_ints)
+    lof_pc_parser.add_argument("--results-output", required=True, type=Path)
+    lof_pc_parser.add_argument("--summary-output", required=True, type=Path)
+    lof_pc_parser.add_argument("--gene-pc-qc-output", required=True, type=Path)
+    lof_pc_parser.add_argument("--analysis-qc-output", required=True, type=Path)
     prepare_parser = subparsers.add_parser("prepare-phenotypes")
     prepare_parser.add_argument("--phenotype-bed", required=True, type=Path)
     prepare_parser.add_argument("--vcf-samples", required=True, type=Path)
@@ -94,7 +123,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    if args.command == "prepare-phenotypes":
+    if args.command == "prepare-protein-coding-genes":
+        prepare_protein_coding_genes(args.gtf, args.genes_output, args.qc_output)
+    elif args.command == "lof-pc-enrichment":
+        calculate_lof_pc_enrichment(
+            args.phenotype_bed,
+            args.lof_carriers,
+            args.principal_components,
+            args.protein_coding_genes,
+            args.negative_z_thresholds,
+            args.pc_counts,
+            args.results_output,
+            args.summary_output,
+            args.gene_pc_qc_output,
+            args.analysis_qc_output,
+        )
+    elif args.command == "prepare-phenotypes":
         prepare_phenotypes(
             args.phenotype_bed,
             args.vcf_samples,
