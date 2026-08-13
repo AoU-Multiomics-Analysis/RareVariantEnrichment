@@ -1,4 +1,5 @@
 import argparse
+import logging
 import math
 from pathlib import Path
 
@@ -122,6 +123,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     args = build_parser().parse_args()
     if args.command == "prepare-protein-coding-genes":
         prepare_protein_coding_genes(args.gtf, args.genes_output, args.qc_output)

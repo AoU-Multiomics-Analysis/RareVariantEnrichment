@@ -1,6 +1,7 @@
 import csv
 from dataclasses import dataclass
 import gzip
+import logging
 import math
 import platform
 from pathlib import Path
@@ -69,6 +70,8 @@ GENE_PC_QC_HEADER = (
     "status",
     "exclusion_reason",
 )
+PROGRESS_INTERVAL_GENES = 500
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -426,6 +429,12 @@ def calculate_lof_pc_enrichment(
     )
     coding_genes = _read_protein_coding_genes(protein_coding_genes_path)
     carriers = read_lof_carriers(lof_carriers_path)
+    LOGGER.info(
+        "Starting LoF/PC enrichment: thresholds=%s pc_counts=%s coding_genes=%d",
+        thresholds,
+        pc_counts,
+        len(coding_genes),
+    )
     pc_sample_indexes = {
         sample_id: index
         for index, sample_id in enumerate(principal_components.sample_ids)
@@ -466,6 +475,12 @@ def calculate_lof_pc_enrichment(
         shared_samples = [sample for sample in bed_samples if sample in pc_sample_indexes]
         if not shared_samples:
             raise ValueError("No shared phenotype BED and PC samples")
+        LOGGER.info(
+            "Found %d shared BED/PC samples (%d BED, %d PC)",
+            len(shared_samples),
+            len(bed_samples),
+            len(principal_components.sample_ids),
+        )
         shared_bed_columns = [bed_samples.index(sample) for sample in shared_samples]
         shared_pc_rows = [pc_sample_indexes[sample] for sample in shared_samples]
         shared_pc_values = principal_components.values[shared_pc_rows, :]
@@ -504,6 +519,11 @@ def calculate_lof_pc_enrichment(
                 if gene_id not in coding_genes:
                     continue
                 coding_bed_gene_count += 1
+                if coding_bed_gene_count % PROGRESS_INTERVAL_GENES == 0:
+                    LOGGER.info(
+                        "Processed %d protein-coding BED genes",
+                        coding_bed_gene_count,
+                    )
                 expression = np.asarray(
                     [
                         np.nan if values[column] is None else values[column]
@@ -586,6 +606,15 @@ def calculate_lof_pc_enrichment(
     if coding_bed_gene_count == 0:
         raise ValueError("No protein-coding genes from the supplied list occur in the phenotype BED")
 
+    for pc_count in pc_counts:
+        pc_qc = per_pc[str(pc_count)]
+        LOGGER.info(
+            "Completed PC count %d: eligible_genes=%d observations=%d",
+            pc_count,
+            pc_qc["eligible_gene_count"],
+            pc_qc["total_observations"],
+        )
+
     rows = _build_result_rows(
         pc_counts, thresholds, per_pc, outlier_observations, outlier_carriers
     )
@@ -641,6 +670,13 @@ def calculate_lof_pc_enrichment(
                 "as observations; use dependence-aware inference for confirmation."
             ),
         },
+    )
+    LOGGER.info(
+        "Wrote LoF/PC enrichment outputs: results=%s summary=%s gene_pc_qc=%s analysis_qc=%s",
+        results_output,
+        summary_output,
+        gene_pc_qc_output,
+        analysis_qc_output,
     )
 
 
