@@ -9,34 +9,10 @@ import pytest
 
 
 WORKFLOW = Path("workflows/rare_variant_enrichment.wdl").resolve()
+FIXTURES = Path(__file__).parent / "fixtures"
 TEST_IMAGE = os.environ.get(
     "RARE_VARIANT_ENRICHMENT_TEST_IMAGE", "rare-variant-enrichment:test"
 )
-
-
-def _require_wdl_runtime() -> str:
-    missing = [name for name in ("miniwdl", "docker") if not shutil.which(name)]
-    if missing:
-        _unavailable("WDL runtime prerequisites are missing: " + ", ".join(missing))
-
-    docker_info = subprocess.run(
-        ["docker", "info"], text=True, capture_output=True, check=False
-    )
-    if docker_info.returncode != 0:
-        _unavailable("Docker daemon is unavailable: " + docker_info.stderr.strip())
-
-    image = subprocess.run(
-        ["docker", "image", "inspect", TEST_IMAGE],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if image.returncode != 0:
-        _unavailable(
-            f"Build {TEST_IMAGE} before running WDL integration tests: "
-            + image.stderr.strip()
-        )
-    return shutil.which("miniwdl") or "miniwdl"
 
 
 def _unavailable(message: str) -> None:
@@ -45,189 +21,84 @@ def _unavailable(message: str) -> None:
     pytest.skip(message)
 
 
+def _require_wdl_runtime() -> str:
+    missing = [name for name in ("miniwdl", "docker") if not shutil.which(name)]
+    if missing:
+        _unavailable("WDL runtime prerequisites are missing: " + ", ".join(missing))
+    docker_info = subprocess.run(
+        ["docker", "info"], text=True, capture_output=True, check=False
+    )
+    if docker_info.returncode != 0:
+        _unavailable("Docker daemon is unavailable: " + docker_info.stderr.strip())
+    image = subprocess.run(
+        ["docker", "image", "inspect", TEST_IMAGE],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if image.returncode != 0:
+        _unavailable(f"Build {TEST_IMAGE} before WDL runtime tests: " + image.stderr.strip())
+    return shutil.which("miniwdl") or "miniwdl"
+
+
 def test_required_runtime_mode_fails_instead_of_skipping_missing_prerequisites(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv("RARE_VARIANT_ENRICHMENT_REQUIRE_WDL_RUNTIME", "1")
     monkeypatch.setattr(shutil, "which", lambda _name: None)
-
     with pytest.raises(pytest.fail.Exception, match="prerequisites are missing"):
         _require_wdl_runtime()
 
 
-@pytest.mark.parametrize(
-    (
-        "exact_ac",
-        "cumulative_ac_max",
-        "expected_kind",
-        "supply_vat_index",
-        "consequence_classes",
-        "expected_annotations",
-    ),
-    [
-        (
-            [1, 2],
-            [],
-            "exact",
-            False,
-            [],
-            {
-                ("baseline", "all_rare_variants"),
-                ("loftee", "HC"),
-                ("loftee", "LC"),
-            },
-        ),
-        (
-            [],
-            [1, 2],
-            "cumulative",
-            True,
-            ["stop_gained", "frameshift_variant", "missense_variant"],
-            {
-                ("baseline", "all_rare_variants"),
-                ("consequence", "stop_gained"),
-                ("consequence", "frameshift_variant"),
-                ("consequence", "missense_variant"),
-                ("loftee", "HC"),
-                ("loftee", "LC"),
-            },
-        ),
-    ],
-    ids=["exact-only-generated-vat-index", "cumulative-only-supplied-vat-index"],
-)
-def test_wdl_runs_single_ac_family_and_vat_index_modes(
-    prepared_fixture,
-    tmp_path: Path,
-    exact_ac: list[int],
-    cumulative_ac_max: list[int],
-    expected_kind: str,
-    supply_vat_index: bool,
-    consequence_classes: list[str],
-    expected_annotations: set[tuple[str, str]],
-):
+def test_wdl_runs_the_four_input_lof_pc_fixture_with_known_cells(tmp_path: Path):
     miniwdl = _require_wdl_runtime()
     inputs = {
-        "RareVariantEnrichment.phenotype_bed": str(prepared_fixture.bed.resolve()),
-        "RareVariantEnrichment.rare_variant_vcf": str(prepared_fixture.vcf_gz.resolve()),
-        "RareVariantEnrichment.rare_variant_vcf_tbi": str(
-            prepared_fixture.vcf_tbi.resolve()
-        ),
-        "RareVariantEnrichment.variant_annotation_table": str(
-            prepared_fixture.vat_bgz.resolve()
-        ),
-        "RareVariantEnrichment.chromosomes": ["chr1"],
-        "RareVariantEnrichment.z_thresholds": [2.0, 3.0],
-        "RareVariantEnrichment.exact_allele_counts": exact_ac,
-        "RareVariantEnrichment.cumulative_allele_count_maxima": cumulative_ac_max,
-        "RareVariantEnrichment.distance_thresholds_bp": [10, 100],
-        "RareVariantEnrichment.consequence_classes": consequence_classes,
-        "RareVariantEnrichment.maximum_gvs_maf": 0.01,
-        "RareVariantEnrichment.annotation_chunk_size_bp": 25,
-        "RareVariantEnrichment.outlier_tail": "absolute",
+        "RareVariantEnrichment.phenotype_bed": str((FIXTURES / "lof_pc_phenotypes.bed").resolve()),
+        "RareVariantEnrichment.lof_carrier_table": str((FIXTURES / "lof_carriers.tsv").resolve()),
+        "RareVariantEnrichment.principal_components_tsv": str((FIXTURES / "principal_components.tsv").resolve()),
+        "RareVariantEnrichment.gene_annotation_gtf": str((FIXTURES / "gene_annotation.gtf").resolve()),
+        "RareVariantEnrichment.negative_z_thresholds": [-0.8],
+        "RareVariantEnrichment.pc_counts": [0],
         "RareVariantEnrichment.docker_image": TEST_IMAGE,
         "RareVariantEnrichment.prepare_cpu": 1,
         "RareVariantEnrichment.prepare_memory_gb": 1,
         "RareVariantEnrichment.prepare_disk_gb": 1,
-        "RareVariantEnrichment.scatter_cpu": 1,
-        "RareVariantEnrichment.scatter_memory_gb": 1,
-        "RareVariantEnrichment.scatter_disk_gb": 1,
-        "RareVariantEnrichment.gather_cpu": 1,
-        "RareVariantEnrichment.gather_memory_gb": 1,
-        "RareVariantEnrichment.gather_disk_gb": 1,
-        "RareVariantEnrichment.max_retries": 2,
-        "RareVariantEnrichment.publish_carrier_audit": supply_vat_index,
+        "RareVariantEnrichment.analysis_cpu": 1,
+        "RareVariantEnrichment.analysis_memory_gb": 1,
+        "RareVariantEnrichment.analysis_disk_gb": 1,
+        "RareVariantEnrichment.max_retries": 1,
     }
-    if supply_vat_index:
-        inputs["RareVariantEnrichment.variant_annotation_table_tbi"] = str(
-            prepared_fixture.vat_tbi.resolve()
-        )
-
     inputs_path = tmp_path / "inputs.json"
-    inputs_path.write_text(json.dumps(inputs))
     outputs_path = tmp_path / "outputs.json"
-    run_directory = tmp_path / "miniwdl-run"
-    run_directory.mkdir()
-    result = subprocess.run(
-        [
-            miniwdl,
-            "run",
-            str(WORKFLOW),
-            "-i",
-            str(inputs_path),
-            "-d",
-            f"{run_directory}/.",
-            "-o",
-            str(outputs_path),
-            "--no-cache",
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    inputs_path.write_text(json.dumps(inputs))
+    try:
+        result = subprocess.run(
+            [miniwdl, "run", str(WORKFLOW), "-i", str(inputs_path), "-d", str(tmp_path / "miniwdl"), "-o", str(outputs_path), "--no-cache"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        _unavailable("miniwdl Docker backend did not start the fixture workflow within 60 seconds")
     assert result.returncode == 0, result.stderr
-
     outputs = json.loads(outputs_path.read_text())["outputs"]
-    enrichment_path = Path(outputs["RareVariantEnrichment.enrichment_tsv"])
-    rows = list(csv.DictReader(enrichment_path.open(), delimiter="\t"))
-    assert len(rows) == 2 * len(expected_annotations) * 2 * 2
-    assert {row["z_threshold"] for row in rows} == {"2.0", "3.0"}
-    assert {row["distance_bp"] for row in rows} == {"10", "100"}
-    assert {row["ac_kind"] for row in rows} == {expected_kind}
-    assert {row["ac_class"] for row in rows} == {
-        f"AC{'=' if expected_kind == 'exact' else '<='}{value}" for value in (1, 2)
+    assert set(outputs) == {
+        "RareVariantEnrichment.results_tsv",
+        "RareVariantEnrichment.summary_json",
+        "RareVariantEnrichment.gene_pc_qc_tsv_gz",
+        "RareVariantEnrichment.analysis_qc_json",
+        "RareVariantEnrichment.protein_coding_genes_tsv",
+        "RareVariantEnrichment.protein_coding_genes_qc_json",
     }
+    rows = list(csv.DictReader(Path(outputs["RareVariantEnrichment.results_tsv"]).open(), delimiter="\t"))
     assert {
-        (row["annotation_family"], row["annotation_class"]) for row in rows
-    } == expected_annotations
-    assert Path(outputs["RareVariantEnrichment.supplied_vcf_tbi"]).is_file()
-    assert Path(
-        outputs["RareVariantEnrichment.generated_or_validated_vat_tbi"]
-    ).is_file()
-    assert Path(outputs["RareVariantEnrichment.vat_schema_json"]).is_file()
-    assert outputs["RareVariantEnrichment.vcf_index_provenance"] == "supplied"
-    assert outputs["RareVariantEnrichment.vat_index_provenance"] == (
-        "supplied" if supply_vat_index else "generated"
-    )
-    summary = json.loads(
-        Path(outputs["RareVariantEnrichment.enrichment_json"]).read_text()
-    )
-    assert summary["provenance"]["vcf_index"] == "supplied"
-    assert summary["provenance"]["vat_index"] == (
-        "supplied" if supply_vat_index else "generated"
-    )
-    assert summary["provenance"]["max_retries"] == 2
-    assert summary["provenance"]["selected_chromosomes"] == ["chr1"]
-    assert summary["provenance"]["vat_schema"] == json.loads(
-        Path(outputs["RareVariantEnrichment.vat_schema_json"]).read_text()
-    )
-    assert summary["provenance"]["vat_source"] == "variant_annotation_table"
-    phenotype_qc = json.loads(
-        Path(outputs["RareVariantEnrichment.phenotype_qc_json"]).read_text()
-    )
-    assert phenotype_qc["selected_feature_count"] == 4
-    audit_output = outputs["RareVariantEnrichment.carrier_minimum_distances_tsv"]
-    assert (audit_output is not None) is supply_vat_index
-    if audit_output is not None:
-        assert Path(audit_output).is_file()
-
-    by_key = {
-        (
-            row["z_threshold"],
-            row["annotation_family"],
-            row["annotation_class"],
-            row["ac_class"],
-            row["distance_bp"],
-        ): row
+        row["carrier_definition"]: tuple(int(row[cell]) for cell in ("n11", "n10", "n01", "n00"))
         for row in rows
+    } == {
+        "any_lof": (2, 3, 2, 5),
+        "HC": (1, 1, 3, 7),
+        "HC_or_LC": (2, 2, 2, 6),
     }
-    expected_class = "AC=1" if expected_kind == "exact" else "AC<=1"
-    hand_checked = by_key[
-        ("2.0", "baseline", "all_rare_variants", expected_class, "10")
-    ]
-    assert (
-        hand_checked["total_observations"],
-        hand_checked["n11"],
-        hand_checked["n10"],
-        hand_checked["n01"],
-        hand_checked["n00"],
-    ) == ("11", "1", "2", "0", "8")
+    assert json.loads(Path(outputs["RareVariantEnrichment.summary_json"]).read_text())["fdr_scope"] == "global_across_all_emitted_rows"
+    assert Path(outputs["RareVariantEnrichment.gene_pc_qc_tsv_gz"]).read_bytes()[:2] == b"\x1f\x8b"

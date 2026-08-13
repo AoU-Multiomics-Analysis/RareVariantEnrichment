@@ -1,16 +1,16 @@
 {
   "RareVariantEnrichment.phenotype_bed": "phenotypes.scaled.residualized.bed.gz",
-  "RareVariantEnrichment.rare_variant_vcf": "rare_variants.vcf.gz",
-  "RareVariantEnrichment.rare_variant_vcf_tbi": "rare_variants.vcf.gz.tbi",
-  "RareVariantEnrichment.variant_annotation_table": "transcript_annotations.tsv.bgz",
-  "RareVariantEnrichment.z_thresholds": [2.0, 3.0, 4.0, 5.0],
-  "RareVariantEnrichment.exact_allele_counts": [1, 2, 3, 4, 5],
-  "RareVariantEnrichment.cumulative_allele_count_maxima": [1, 2, 3, 5, 10],
-  "RareVariantEnrichment.maximum_gvs_maf": 0.01,
-  "RareVariantEnrichment.annotation_chunk_size_bp": 10000000,
-  "RareVariantEnrichment.distance_thresholds_bp": [10000, 100000],
-  "RareVariantEnrichment.outlier_tail": "absolute",
+  "RareVariantEnrichment.lof_carrier_table": "lof_carriers.tsv.gz",
+  "RareVariantEnrichment.principal_components_tsv": "principal_components.tsv",
+  "RareVariantEnrichment.gene_annotation_gtf": "genes.gtf.gz",
+  "RareVariantEnrichment.negative_z_thresholds": [-2.0, -3.0, -4.0, -5.0, -6.0],
+  "RareVariantEnrichment.pc_counts": [],
   "RareVariantEnrichment.docker_image": "ghcr.io/aou-multiomics-analysis/rarevariantenrichment:main",
-  "RareVariantEnrichment.max_retries": 1,
-  "RareVariantEnrichment.publish_carrier_audit": false
+  "RareVariantEnrichment.prepare_cpu": 2,
+  "RareVariantEnrichment.prepare_memory_gb": 32,
+  "RareVariantEnrichment.prepare_disk_gb": 500,
+  "RareVariantEnrichment.analysis_cpu": 8,
+  "RareVariantEnrichment.analysis_memory_gb": 128,
+  "RareVariantEnrichment.analysis_disk_gb": 1000,
+  "RareVariantEnrichment.max_retries": 1
 }

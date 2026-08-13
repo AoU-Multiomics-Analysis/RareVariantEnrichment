@@ -468,7 +468,7 @@ def test_calculate_enrichment_embeds_counts_and_reproducibility_provenance(
     assert provenance["max_retries"] == 2
     assert provenance["vcf_index"] == "supplied"
     assert package_metadata["project"]["version"] == release_version
-    assert 'String workflow_version = "0.3.0"' in Path(
+    assert "workflow_version" not in Path(
         "workflows/rare_variant_enrichment.wdl"
     ).read_text()
     assert provenance["software_versions"]["workflow"] == release_version
