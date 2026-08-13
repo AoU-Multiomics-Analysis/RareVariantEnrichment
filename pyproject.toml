@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "rare-variant-enrichment"
 version = "0.3.0"
 requires-python = ">=3.12"
+dependencies = ["numpy>=2.0"]
 
 [project.scripts]
 rare-variant-enrichment = "rare_variant_enrichment.cli:main"

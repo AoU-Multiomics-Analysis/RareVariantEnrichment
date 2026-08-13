@@ -1,0 +1,4 @@
+#chr	start	end	feature_id	S1	S2	S3	S4	S5	S6
+chr1	0	1	ENSG1.4	0	1	2	3	4	5
+chr1	1	2	ENSG2.8	5	4	3	2	1	0
+chr1	2	3	ENSG3.1	0	1	2	3	4	5
