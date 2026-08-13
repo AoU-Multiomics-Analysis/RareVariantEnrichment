@@ -264,6 +264,7 @@ print(json.dumps(rendered, sort_keys=True))
     assert '"/tmp/lof carriers.tsv"' in analysis["command"]
     assert '"/tmp/principal components.tsv"' in analysis["command"]
     assert '"/tmp/protein coding.tsv"' in analysis["command"]
+    assert '--negative-z-thresholds="$negative_z_thresholds_csv"' in analysis["command"]
     assert dangerous_image not in analysis["command"]
     assert analysis["generated_files"]["negative_z_thresholds_file"] == ["-2.000000"]
     assert analysis["generated_files"]["pc_counts_file"] == []
