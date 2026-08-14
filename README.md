@@ -96,12 +96,14 @@ Legacy Python CLI commands remain available for compatibility, but are not part 
 
 ## Outputs
 
-The workflow emits exactly six files:
+The workflow emits exactly eight files:
 
 - `results_tsv`: one row per PC count × negative threshold × carrier definition, merged across analysis shards.
 - `summary_json`: selected grid/settings, global FDR scope, residualization description, provenance, and the screening limitation.
 - `gene_pc_qc_tsv_gz`: compressed per-normalized-gene/per-PC QC with usable samples, rank, residual mean/SD, status, and exclusion reason.
 - `analysis_qc_json`: BED/PC overlap counts, pre-join carrier-pair counts, LoF input QC, and per-PC eligibility, actual carrier-observation, and structured exclusion counters.
+- `pc_selection_json`: median-logOR plateau summaries, excluded/included z thresholds, and the minimum common PC count selected by the 95% plateau rule.
+- `enrichment_plot_svg`: threshold-specific enrichment curves for `HC` and `any_lof`, median logOR curves, and reference lines for the selected PC positions.
 - `protein_coding_genes_tsv`: the prepared sorted coding-gene list.
 - `protein_coding_genes_qc_json`: GTF record and normalization QC.
 
@@ -119,6 +121,8 @@ The workflow emits exactly six files:
 The `analysis_qc_json` reconciles each PC-specific `carrier_observations` count with every result row: `carrier_observations = n11 + n10`. Pre-join carrier counts are intentionally reported separately because carriers absent from the BED/PC-gene observation set do not enter a Fisher table.
 
 Per-shard analysis files are workflow intermediates, not public outputs. During merge, `fisher_fdr_bh` is recomputed across every final result row, preserving a global FDR scope rather than retaining shard-local adjustments.
+
+The workflow also emits `pc_selection_json` and `enrichment_plot_svg`. PC selection summarizes the enrichment curves after excluding `z = -2` by default, because that threshold is not intended to represent the true outlier set. For each of `HC` and `any_lof`, it computes the median log odds ratio across `z = -3, -4, -5, -6`, finds the maximum median log odds ratio, and identifies the earliest PC count reaching 95% of that maximum. The reported selected PC count is the larger of those two definition-specific plateau-entry counts, so both carrier definitions meet the criterion while the number of PCs remains minimal. The SVG retains each threshold curve, overlays the median log-odds curve, and marks both definition-specific plateau entries and the common selected PC count.
 
 ## Interpretation
 

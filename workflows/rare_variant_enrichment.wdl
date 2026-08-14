@@ -202,6 +202,56 @@ task MergeLofPcEnrichment {
     }
 }
 
+task AnalyzeLofPcEnrichment {
+    input {
+        File results_tsv
+        Array[Float] selection_z_thresholds
+        Float plateau_fraction
+        String docker_image
+        Int cpu
+        Int memory_gb
+        Int disk_gb
+        Int max_retries
+    }
+
+    File selection_z_thresholds_file = write_lines(selection_z_thresholds)
+
+    command <<<
+        set -euo pipefail
+
+        join_by_comma() {
+            local IFS=,
+            printf '%s' "$*"
+        }
+
+        selection_z_threshold_values=()
+        while IFS= read -r value; do
+            selection_z_threshold_values+=("$value")
+        done < "~{selection_z_thresholds_file}"
+        selection_z_thresholds_csv="$(join_by_comma "${selection_z_threshold_values[@]}")"
+
+        rare-variant-enrichment analyze-lof-pc-enrichment \
+            --results-input "~{results_tsv}" \
+            --selection-output "lof_pc_selection.json" \
+            --plot-output "lof_pc_enrichment.svg" \
+            --selection-z-thresholds "$selection_z_thresholds_csv" \
+            --plateau-fraction "~{plateau_fraction}"
+    >>>
+
+    output {
+        File selection_json = "lof_pc_selection.json"
+        File plot_svg = "lof_pc_enrichment.svg"
+    }
+
+    runtime {
+        docker: docker_image
+        cpu: cpu
+        memory: "~{memory_gb} GB"
+        disks: "local-disk ~{disk_gb} HDD"
+        maxRetries: max_retries
+    }
+}
+
 workflow RareVariantEnrichment {
     input {
         File phenotype_bed
@@ -209,6 +259,8 @@ workflow RareVariantEnrichment {
         File principal_components_tsv
         File gene_annotation_gtf
         Array[Float] negative_z_thresholds = [-2.0, -3.0, -4.0, -5.0, -6.0]
+        Array[Float] selection_z_thresholds = [-3.0, -4.0, -5.0, -6.0]
+        Float plateau_fraction = 0.95
         Array[Int] pc_counts = []
         Int pc_counts_per_job = 10
         String docker_image = "ghcr.io/aou-multiomics-analysis/rarevariantenrichment:main"
@@ -286,11 +338,25 @@ workflow RareVariantEnrichment {
             max_retries = max_retries
     }
 
+    call AnalyzeLofPcEnrichment {
+        input:
+            results_tsv = MergeLofPcEnrichment.results_tsv,
+            selection_z_thresholds = selection_z_thresholds,
+            plateau_fraction = plateau_fraction,
+            docker_image = docker_image,
+            cpu = 1,
+            memory_gb = 4,
+            disk_gb = dynamic_merge_disk_gb,
+            max_retries = max_retries
+    }
+
     output {
         File results_tsv = MergeLofPcEnrichment.results_tsv
         File summary_json = MergeLofPcEnrichment.summary_json
         File gene_pc_qc_tsv_gz = MergeLofPcEnrichment.gene_pc_qc_tsv_gz
         File analysis_qc_json = MergeLofPcEnrichment.analysis_qc_json
+        File pc_selection_json = AnalyzeLofPcEnrichment.selection_json
+        File enrichment_plot_svg = AnalyzeLofPcEnrichment.plot_svg
         File protein_coding_genes_tsv = PrepareProteinCodingGenes.protein_coding_genes_tsv
         File protein_coding_genes_qc_json = PrepareProteinCodingGenes.protein_coding_genes_qc_json
     }

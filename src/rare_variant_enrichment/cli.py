@@ -12,6 +12,11 @@ from rare_variant_enrichment.lof_pc import (
     prepare_protein_coding_genes,
     read_principal_component_header,
 )
+from rare_variant_enrichment.pc_selection import (
+    DEFAULT_PLATEAU_FRACTION,
+    DEFAULT_SELECTION_Z_THRESHOLDS,
+    analyze_lof_pc_enrichment,
+)
 from rare_variant_enrichment.phenotypes import prepare_phenotypes
 from rare_variant_enrichment.statistics import calculate_enrichment
 from rare_variant_enrichment.vat import prepare_vat
@@ -27,6 +32,7 @@ COMMANDS = (
     "prepare-protein-coding-genes",
     "lof-pc-enrichment",
     "merge-lof-pc-enrichment",
+    "analyze-lof-pc-enrichment",
     "pc-chunks",
 )
 
@@ -61,6 +67,18 @@ def build_parser() -> argparse.ArgumentParser:
     merge_lof_pc_parser.add_argument("--summary-output", required=True, type=Path)
     merge_lof_pc_parser.add_argument("--gene-pc-qc-output", required=True, type=Path)
     merge_lof_pc_parser.add_argument("--analysis-qc-output", required=True, type=Path)
+    analyze_lof_pc_parser = subparsers.add_parser("analyze-lof-pc-enrichment")
+    analyze_lof_pc_parser.add_argument("--results-input", required=True, type=Path)
+    analyze_lof_pc_parser.add_argument("--selection-output", required=True, type=Path)
+    analyze_lof_pc_parser.add_argument("--plot-output", required=True, type=Path)
+    analyze_lof_pc_parser.add_argument(
+        "--selection-z-thresholds",
+        type=parse_csv_floats,
+        default=list(DEFAULT_SELECTION_Z_THRESHOLDS),
+    )
+    analyze_lof_pc_parser.add_argument(
+        "--plateau-fraction", type=float, default=DEFAULT_PLATEAU_FRACTION
+    )
     pc_chunks_parser = subparsers.add_parser("pc-chunks")
     pc_chunks_parser.add_argument("--principal-components", required=True, type=Path)
     pc_chunks_parser.add_argument("--pc-counts", required=True, type=parse_csv_ints)
@@ -190,6 +208,14 @@ def main() -> int:
             args.summary_output,
             args.gene_pc_qc_output,
             args.analysis_qc_output,
+        )
+    elif args.command == "analyze-lof-pc-enrichment":
+        analyze_lof_pc_enrichment(
+            args.results_input,
+            args.selection_output,
+            args.plot_output,
+            selection_z_thresholds=args.selection_z_thresholds,
+            plateau_fraction=args.plateau_fraction,
         )
     elif args.command == "prepare-phenotypes":
         prepare_phenotypes(
