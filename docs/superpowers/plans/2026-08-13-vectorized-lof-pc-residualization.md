@@ -34,6 +34,8 @@
 ```python
 def test_complete_data_projection_matches_legacy_residuals():
     state = prepare_complete_data_projection(expression, pcs, [0, 1])
+    prediction = np.zeros_like(expression)
+    previous_pc_count = 0
     for pc_count in [0, 1]:
         prediction = state.advance_prediction(previous_pc_count, pc_count, prediction)
         actual = state.z_scores(prediction)
@@ -42,6 +44,7 @@ def test_complete_data_projection_matches_legacy_residuals():
             for column in range(expression.shape[1])
         ])
         np.testing.assert_allclose(actual, expected, atol=1e-10, rtol=1e-10)
+        previous_pc_count = pc_count
 ```
 
 Also test zero-variance expression exclusion and rejection of any missing
