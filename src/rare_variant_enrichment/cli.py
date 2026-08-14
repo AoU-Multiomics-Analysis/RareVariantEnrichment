@@ -4,10 +4,11 @@ import math
 from pathlib import Path
 
 from rare_variant_enrichment.aggregation import gather_outputs
-from rare_variant_enrichment.io import write_json
+from rare_variant_enrichment.io import read_nonempty_lines, write_json
 from rare_variant_enrichment.lof_pc import (
     build_pc_chunks,
     calculate_lof_pc_enrichment,
+    merge_lof_pc_enrichment,
     prepare_protein_coding_genes,
     read_principal_component_header,
 )
@@ -25,6 +26,7 @@ COMMANDS = (
     "calculate",
     "prepare-protein-coding-genes",
     "lof-pc-enrichment",
+    "merge-lof-pc-enrichment",
     "pc-chunks",
 )
 
@@ -49,6 +51,15 @@ def build_parser() -> argparse.ArgumentParser:
     lof_pc_parser.add_argument("--summary-output", required=True, type=Path)
     lof_pc_parser.add_argument("--gene-pc-qc-output", required=True, type=Path)
     lof_pc_parser.add_argument("--analysis-qc-output", required=True, type=Path)
+    merge_lof_pc_parser = subparsers.add_parser("merge-lof-pc-enrichment")
+    merge_lof_pc_parser.add_argument("--results-input-list", required=True, type=Path)
+    merge_lof_pc_parser.add_argument("--summary-input-list", required=True, type=Path)
+    merge_lof_pc_parser.add_argument("--gene-pc-qc-input-list", required=True, type=Path)
+    merge_lof_pc_parser.add_argument("--analysis-qc-input-list", required=True, type=Path)
+    merge_lof_pc_parser.add_argument("--results-output", required=True, type=Path)
+    merge_lof_pc_parser.add_argument("--summary-output", required=True, type=Path)
+    merge_lof_pc_parser.add_argument("--gene-pc-qc-output", required=True, type=Path)
+    merge_lof_pc_parser.add_argument("--analysis-qc-output", required=True, type=Path)
     pc_chunks_parser = subparsers.add_parser("pc-chunks")
     pc_chunks_parser.add_argument("--principal-components", required=True, type=Path)
     pc_chunks_parser.add_argument("--pc-counts", required=True, type=parse_csv_ints)
@@ -161,6 +172,17 @@ def main() -> int:
                 available_pc_count,
                 args.pc_counts_per_job,
             ),
+        )
+    elif args.command == "merge-lof-pc-enrichment":
+        merge_lof_pc_enrichment(
+            [Path(path) for path in read_nonempty_lines(args.results_input_list)],
+            [Path(path) for path in read_nonempty_lines(args.summary_input_list)],
+            [Path(path) for path in read_nonempty_lines(args.gene_pc_qc_input_list)],
+            [Path(path) for path in read_nonempty_lines(args.analysis_qc_input_list)],
+            args.results_output,
+            args.summary_output,
+            args.gene_pc_qc_output,
+            args.analysis_qc_output,
         )
     elif args.command == "prepare-phenotypes":
         prepare_phenotypes(

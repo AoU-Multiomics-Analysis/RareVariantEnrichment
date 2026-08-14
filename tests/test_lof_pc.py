@@ -425,6 +425,165 @@ def _run_analysis(
     return outputs
 
 
+def _write_merge_shard(
+    tmp_path: Path,
+    name: str,
+    *,
+    pc_counts: list[int],
+    p_values: list[float],
+) -> dict[str, Path]:
+    shard_dir = tmp_path / name
+    shard_dir.mkdir()
+    outputs = {
+        "results": shard_dir / "results.tsv",
+        "summary": shard_dir / "summary.json",
+        "gene_qc": shard_dir / "gene-pc-qc.tsv.gz",
+        "analysis_qc": shard_dir / "analysis-qc.json",
+    }
+    result_header = lof_pc_module().RESULT_HEADER
+    with outputs["results"].open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=result_header, delimiter="\t")
+        writer.writeheader()
+        for pc_count in pc_counts:
+            for index, p_value in enumerate(p_values):
+                writer.writerow(
+                    {
+                        "pc_count": pc_count,
+                        "z_threshold": [-2.0, -3.0][index],
+                        "carrier_definition": ["HC", "any_lof"][index],
+                        "eligible_gene_count": 1,
+                        "total_observations": 4,
+                        "outlier_observations": 1,
+                        "carrier_observations": 1,
+                        "n11": 1,
+                        "n10": 0,
+                        "n01": 0,
+                        "n00": 3,
+                        "outlier_carrier_rate": "1.0",
+                        "nonoutlier_carrier_rate": "0.0",
+                        "carrier_rate_ratio": "NA",
+                        "odds_ratio": "NA",
+                        "odds_ratio_corrected_0_5": "21.0",
+                        "fisher_p_value": p_value,
+                        "fisher_fdr_bh": "1.0",
+                    }
+                )
+    with gzip.open(outputs["gene_qc"], "wt", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(lof_pc_module().GENE_PC_QC_HEADER)
+        for pc_count in pc_counts:
+            writer.writerow([f"GENE_{pc_count}", pc_count, 4, 1, 0.0, 1.0, "included", ""])
+    summary = {
+        "available_pc_count": 2,
+        "carrier_definitions": ["any_lof", "HC", "HC_or_LC"],
+        "emitted_result_rows": len(pc_counts) * len(p_values),
+        "fdr_scope": "global_across_all_emitted_rows",
+        "negative_z_thresholds": [-2.0, -3.0],
+        "observation_unit": "eligible sample-gene residual",
+        "pc_grid_mode": "explicit",
+        "provenance": {"input_files": {"phenotype_bed": "input.bed"}},
+        "residualization": {
+            "design": "intercept plus first k principal components",
+            "outlier_rule": "residual_z <= z_threshold",
+            "residual_standard_deviation_ddof": 0,
+        },
+        "selected_pc_counts": pc_counts,
+        "statistical_limitation": "screening",
+    }
+    outputs["summary"].write_text(json.dumps(summary))
+    analysis_qc = {
+        "bed_gene_count": 1,
+        "bed_sample_count": 4,
+        "pc_sample_count": 4,
+        "protein_coding_bed_gene_count": 1,
+        "protein_coding_gene_count": 1,
+        "shared_bed_pc_sample_count": 4,
+        "pre_join_carrier_pair_counts": {"any_lof": 1, "HC": 1, "HC_or_LC": 1},
+        "lof_carrier_table": {"input_row_count": 1},
+        "per_pc": {
+            str(pc_count): {
+                "eligible_gene_count": 1,
+                "total_observations": 4,
+                "carrier_observations": {"any_lof": 1, "HC": 1, "HC_or_LC": 1},
+                "exclusion_counts": {
+                    "insufficient_dof": 0,
+                    "invalid_or_zero_residual_sd": 0,
+                    "other": 0,
+                    "rank_deficiency": 0,
+                },
+            }
+            for pc_count in pc_counts
+        },
+    }
+    outputs["analysis_qc"].write_text(json.dumps(analysis_qc))
+    return outputs
+
+
+def _merge_shards(tmp_path: Path, shards: list[dict[str, Path]]) -> dict[str, Path]:
+    outputs = {
+        "results": tmp_path / "merged-results.tsv",
+        "summary": tmp_path / "merged-summary.json",
+        "gene_qc": tmp_path / "merged-gene-pc-qc.tsv.gz",
+        "analysis_qc": tmp_path / "merged-analysis-qc.json",
+    }
+    lof_pc_module().merge_lof_pc_enrichment(
+        [shard["results"] for shard in shards],
+        [shard["summary"] for shard in shards],
+        [shard["gene_qc"] for shard in shards],
+        [shard["analysis_qc"] for shard in shards],
+        outputs["results"],
+        outputs["summary"],
+        outputs["gene_qc"],
+        outputs["analysis_qc"],
+    )
+    return outputs
+
+
+def test_merge_lof_pc_enrichment_recomputes_global_fdr_and_combines_qc(tmp_path: Path):
+    shard_one = _write_merge_shard(tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20])
+    shard_two = _write_merge_shard(tmp_path, "two", pc_counts=[1], p_values=[0.02, 0.50])
+
+    outputs = _merge_shards(tmp_path, [shard_one, shard_two])
+
+    rows = list(csv.DictReader(outputs["results"].open(), delimiter="\t"))
+    assert [(row["pc_count"], row["z_threshold"], row["carrier_definition"]) for row in rows] == [
+        ("0", "-2.0", "HC"),
+        ("0", "-3.0", "any_lof"),
+        ("1", "-2.0", "HC"),
+        ("1", "-3.0", "any_lof"),
+    ]
+    assert [row["fisher_fdr_bh"] for row in rows] == [
+        "0.04",
+        "0.26666666666666666",
+        "0.04",
+        "0.5",
+    ]
+    with gzip.open(outputs["gene_qc"], "rt", encoding="utf-8") as handle:
+        assert len(list(csv.DictReader(handle, delimiter="\t"))) == 2
+    analysis_qc = json.loads(outputs["analysis_qc"].read_text())
+    assert set(analysis_qc["per_pc"]) == {"0", "1"}
+    assert analysis_qc["bed_gene_count"] == 1
+    summary = json.loads(outputs["summary"].read_text())
+    assert summary["selected_pc_counts"] == [0, 1]
+    assert summary["emitted_result_rows"] == 4
+
+
+def test_merge_lof_pc_enrichment_rejects_duplicate_pc_counts(tmp_path: Path):
+    shard_one = _write_merge_shard(tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20])
+    shard_two = _write_merge_shard(tmp_path, "two", pc_counts=[0], p_values=[0.02, 0.50])
+
+    with pytest.raises(ValueError, match="Duplicate PC count"):
+        _merge_shards(tmp_path, [shard_one, shard_two])
+
+
+def test_merge_lof_pc_enrichment_rejects_results_missing_a_selected_pc(tmp_path: Path):
+    shard = _write_merge_shard(tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20])
+    shard["results"].write_text("\t".join(lof_pc_module().RESULT_HEADER) + "\n")
+
+    with pytest.raises(ValueError, match="do not match the shard summary"):
+        _merge_shards(tmp_path, [shard])
+
+
 def test_analysis_logs_configuration_progress_and_outputs(tmp_path: Path, caplog):
     inputs = _write_analysis_fixture(tmp_path)
 

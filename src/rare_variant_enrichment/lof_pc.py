@@ -1,6 +1,7 @@
 import csv
 from dataclasses import dataclass
 import gzip
+import json
 import logging
 import math
 import platform
@@ -1028,6 +1029,251 @@ def _write_result_rows(path: Path, rows: Sequence[Mapping[str, object]]) -> None
         )
         writer.writeheader()
         writer.writerows(rows)
+
+
+def merge_lof_pc_enrichment(
+    results_inputs: Sequence[Path],
+    summary_inputs: Sequence[Path],
+    gene_pc_qc_inputs: Sequence[Path],
+    analysis_qc_inputs: Sequence[Path],
+    results_output: Path,
+    summary_output: Path,
+    gene_pc_qc_output: Path,
+    analysis_qc_output: Path,
+) -> None:
+    shard_count = len(results_inputs)
+    if shard_count == 0 or any(
+        len(inputs) != shard_count
+        for inputs in (summary_inputs, gene_pc_qc_inputs, analysis_qc_inputs)
+    ):
+        raise ValueError("All merge input lists must have the same nonzero shard count")
+
+    summaries = [_read_json_object(path, "summary") for path in summary_inputs]
+    first_summary = summaries[0]
+    metadata_keys = (
+        "negative_z_thresholds",
+        "carrier_definitions",
+        "available_pc_count",
+        "provenance",
+    )
+    for summary in summaries[1:]:
+        for key in metadata_keys:
+            if summary.get(key) != first_summary.get(key):
+                raise ValueError(f"Shard summaries have incompatible {key}")
+
+    thresholds = _read_ordered_floats(first_summary, "negative_z_thresholds")
+    carrier_definitions = _read_ordered_strings(first_summary, "carrier_definitions")
+    selected_pc_counts: list[int] = []
+    selected_pc_set: set[int] = set()
+    for summary in summaries:
+        shard_pc_counts = _read_ordered_ints(summary, "selected_pc_counts")
+        for pc_count in shard_pc_counts:
+            if pc_count in selected_pc_set:
+                raise ValueError(f"Duplicate PC count across merge shards: {pc_count}")
+            selected_pc_set.add(pc_count)
+            selected_pc_counts.append(pc_count)
+    selected_pc_counts.sort()
+
+    all_rows: list[dict[str, str]] = []
+    for results_path, summary in zip(results_inputs, summaries, strict=True):
+        shard_pc_counts = set(_read_ordered_ints(summary, "selected_pc_counts"))
+        observed_pc_counts: set[int] = set()
+        with results_path.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            if reader.fieldnames != list(RESULT_HEADER):
+                raise ValueError(f"Results TSV {results_path} does not match the result schema")
+            for line_number, row in enumerate(reader, start=2):
+                if None in row or set(row) != set(RESULT_HEADER):
+                    raise ValueError(f"Results TSV {results_path} line {line_number} is malformed")
+                pc_count = _parse_merge_pc_count(row["pc_count"], results_path, line_number)
+                if pc_count not in shard_pc_counts:
+                    raise ValueError(
+                        f"Results TSV {results_path} line {line_number} has an unselected PC count"
+                    )
+                observed_pc_counts.add(pc_count)
+                threshold = _parse_merge_float(
+                    row["z_threshold"], results_path, line_number, "z_threshold"
+                )
+                if threshold not in thresholds:
+                    raise ValueError(
+                        f"Results TSV {results_path} line {line_number} has an unknown z_threshold"
+                    )
+                if row["carrier_definition"] not in carrier_definitions:
+                    raise ValueError(
+                        f"Results TSV {results_path} line {line_number} has an unknown carrier definition"
+                    )
+                _parse_merge_float(
+                    row["fisher_p_value"], results_path, line_number, "fisher_p_value"
+                )
+                all_rows.append({column: row[column] for column in RESULT_HEADER})
+        if observed_pc_counts != shard_pc_counts:
+            raise ValueError(
+                f"Results TSV {results_path} PC counts do not match the shard summary"
+            )
+
+    threshold_order = {value: index for index, value in enumerate(thresholds)}
+    carrier_order = {value: index for index, value in enumerate(carrier_definitions)}
+    all_rows.sort(
+        key=lambda row: (
+            int(row["pc_count"]),
+            threshold_order[float(row["z_threshold"])],
+            carrier_order[row["carrier_definition"]],
+        )
+    )
+    p_values = [float(row["fisher_p_value"]) for row in all_rows]
+    for row, adjusted in zip(all_rows, benjamini_hochberg(p_values), strict=True):
+        row["fisher_fdr_bh"] = _format_optional_float(adjusted)
+
+    gene_qc_rows: list[list[str]] = []
+    for path in gene_pc_qc_inputs:
+        with gzip.open(path, "rt", encoding="utf-8", newline="") as handle:
+            reader = csv.reader(handle, delimiter="\t")
+            try:
+                header = next(reader)
+            except StopIteration as error:
+                raise ValueError(f"Gene-PC QC TSV {path} is empty") from error
+            if header != list(GENE_PC_QC_HEADER):
+                raise ValueError(f"Gene-PC QC TSV {path} does not match the QC schema")
+            for line_number, row in enumerate(reader, start=2):
+                if len(row) != len(GENE_PC_QC_HEADER):
+                    raise ValueError(f"Gene-PC QC TSV {path} line {line_number} is malformed")
+                gene_qc_rows.append(row)
+
+    analysis_qcs = [_read_json_object(path, "analysis QC") for path in analysis_qc_inputs]
+    merged_analysis_qc = {
+        key: value for key, value in analysis_qcs[0].items() if key != "per_pc"
+    }
+    merged_per_pc: dict[str, dict[str, object]] = {}
+    for summary, analysis_qc in zip(summaries, analysis_qcs, strict=True):
+        per_pc = analysis_qc.get("per_pc")
+        if not isinstance(per_pc, dict):
+            raise ValueError("Analysis QC must contain a per_pc object")
+        shard_pc_counts = _read_ordered_ints(summary, "selected_pc_counts")
+        if set(per_pc) != {str(pc_count) for pc_count in shard_pc_counts}:
+            raise ValueError("Analysis QC per_pc keys do not match the shard summary")
+        for pc_count in shard_pc_counts:
+            pc_qc = per_pc[str(pc_count)]
+            if not isinstance(pc_qc, dict):
+                raise ValueError("Analysis QC per_pc entries must be objects")
+            merged_per_pc[str(pc_count)] = _merge_pc_qc(pc_qc)
+    merged_analysis_qc["per_pc"] = {
+        str(pc_count): merged_per_pc[str(pc_count)] for pc_count in selected_pc_counts
+    }
+
+    merged_summary = dict(first_summary)
+    merged_summary["selected_pc_counts"] = selected_pc_counts
+    merged_summary["emitted_result_rows"] = len(all_rows)
+    _write_result_rows(results_output, all_rows)
+    with gzip.open(gene_pc_qc_output, "wt", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(GENE_PC_QC_HEADER)
+        writer.writerows(gene_qc_rows)
+    write_json(analysis_qc_output, merged_analysis_qc)
+    write_json(summary_output, merged_summary)
+
+
+def _read_json_object(path: Path, description: str) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{description.capitalize()} JSON {path} is invalid") from error
+    if not isinstance(payload, dict):
+        raise ValueError(f"{description.capitalize()} JSON {path} must contain an object")
+    return payload
+
+
+def _read_ordered_strings(summary: Mapping[str, object], key: str) -> list[str]:
+    values = summary.get(key)
+    if (
+        not isinstance(values, list)
+        or not values
+        or any(not isinstance(value, str) or not value for value in values)
+        or len(values) != len(set(values))
+    ):
+        raise ValueError(f"Summary {key} must be a non-empty unique string list")
+    return values
+
+
+def _read_ordered_ints(summary: Mapping[str, object], key: str) -> list[int]:
+    values = summary.get(key)
+    if (
+        not isinstance(values, list)
+        or not values
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values)
+        or len(values) != len(set(values))
+    ):
+        raise ValueError(f"Summary {key} must be a non-empty unique integer list")
+    return values
+
+
+def _read_ordered_floats(summary: Mapping[str, object], key: str) -> list[float]:
+    values = summary.get(key)
+    if not isinstance(values, list) or not values:
+        raise ValueError(f"Summary {key} must be a non-empty finite number list")
+    parsed: list[float] = []
+    for value in values:
+        if isinstance(value, bool):
+            raise ValueError(f"Summary {key} must be a non-empty finite number list")
+        try:
+            parsed_value = float(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Summary {key} must be a non-empty finite number list") from error
+        if not math.isfinite(parsed_value):
+            raise ValueError(f"Summary {key} must be a non-empty finite number list")
+        parsed.append(parsed_value)
+    if len(parsed) != len(set(parsed)):
+        raise ValueError(f"Summary {key} must be a non-empty finite number list")
+    return parsed
+
+
+def _parse_merge_pc_count(value: str, path: Path, line_number: int) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise ValueError(
+            f"Results TSV {path} line {line_number} has an invalid pc_count"
+        ) from error
+    if parsed < 0 or str(parsed) != value:
+        raise ValueError(f"Results TSV {path} line {line_number} has an invalid pc_count")
+    return parsed
+
+
+def _parse_merge_float(value: str, path: Path, line_number: int, column: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise ValueError(
+            f"Results TSV {path} line {line_number} has an invalid {column}"
+        ) from error
+    if not math.isfinite(parsed):
+        raise ValueError(f"Results TSV {path} line {line_number} has an invalid {column}")
+    return parsed
+
+
+def _merge_pc_qc(pc_qc: Mapping[str, object]) -> dict[str, object]:
+    carrier_observations = pc_qc.get("carrier_observations")
+    exclusion_counts = pc_qc.get("exclusion_counts")
+    if not isinstance(carrier_observations, dict) or not isinstance(exclusion_counts, dict):
+        raise ValueError("Analysis QC per_pc counters must be objects")
+    return {
+        "eligible_gene_count": _read_qc_count(pc_qc, "eligible_gene_count"),
+        "total_observations": _read_qc_count(pc_qc, "total_observations"),
+        "carrier_observations": {
+            definition: _read_qc_count(carrier_observations, definition)
+            for definition in CARRIER_DEFINITIONS
+        },
+        "exclusion_counts": {
+            reason: _read_qc_count(exclusion_counts, reason)
+            for reason in EXCLUSION_REASONS
+        },
+    }
+
+
+def _read_qc_count(values: Mapping[str, object], key: str) -> int:
+    value = values.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"Analysis QC counter {key} must be a non-negative integer")
+    return value
 
 
 def _divide_or_none(numerator: int, denominator: int) -> float | None:

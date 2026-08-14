@@ -25,6 +25,7 @@ def test_cli_lists_workflow_subcommands():
         "calculate",
         "prepare-protein-coding-genes",
         "lof-pc-enrichment",
+        "merge-lof-pc-enrichment",
     ):
         assert command in result.stdout
 
@@ -147,6 +148,56 @@ def test_pc_chunks_cli_dispatches_header_count_chunking_and_json_output(monkeypa
 
     assert cli.main() == 0
     assert received == [Path("pcs.tsv"), [0, 1, 10], 30, 2, Path("chunks.json"), [[0, 1], [10]]]
+
+
+def test_merge_lof_pc_enrichment_cli_reads_input_lists_and_dispatches(tmp_path: Path, monkeypatch):
+    lists = {}
+    for name in ("results", "summary", "gene-qc", "analysis-qc"):
+        input_list = tmp_path / f"{name}-inputs.txt"
+        input_list.write_text(f"one-{name}\ntwo-{name}\n")
+        lists[name] = input_list
+    received: list[object] = []
+
+    def fake_merge(*arguments: object) -> None:
+        received.extend(arguments)
+
+    monkeypatch.setattr(cli, "merge_lof_pc_enrichment", fake_merge)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "merge-lof-pc-enrichment",
+            "--results-input-list",
+            str(lists["results"]),
+            "--summary-input-list",
+            str(lists["summary"]),
+            "--gene-pc-qc-input-list",
+            str(lists["gene-qc"]),
+            "--analysis-qc-input-list",
+            str(lists["analysis-qc"]),
+            "--results-output",
+            "results.tsv",
+            "--summary-output",
+            "summary.json",
+            "--gene-pc-qc-output",
+            "gene-pc-qc.tsv.gz",
+            "--analysis-qc-output",
+            "analysis-qc.json",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received == [
+        [Path("one-results"), Path("two-results")],
+        [Path("one-summary"), Path("two-summary")],
+        [Path("one-gene-qc"), Path("two-gene-qc")],
+        [Path("one-analysis-qc"), Path("two-analysis-qc")],
+        Path("results.tsv"),
+        Path("summary.json"),
+        Path("gene-pc-qc.tsv.gz"),
+        Path("analysis-qc.json"),
+    ]
 
 
 def test_prepare_vat_cli_dispatches_paths_and_chromosomes_unchanged(tmp_path: Path, monkeypatch):
