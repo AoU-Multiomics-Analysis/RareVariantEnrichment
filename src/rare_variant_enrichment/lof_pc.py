@@ -546,12 +546,19 @@ def calculate_lof_pc_enrichment(
     summary_output: Path,
     gene_pc_qc_output: Path,
     analysis_qc_output: Path,
+    *,
+    pc_grid_mode: str | None = None,
 ) -> None:
     thresholds = validate_negative_z_thresholds(negative_z_thresholds)
     principal_components = read_principal_components(principal_components_path)
     pc_counts = build_pc_grid(
         requested_pc_counts, principal_components.available_pc_count
     )
+    resolved_pc_grid_mode = "adaptive" if not requested_pc_counts else "explicit"
+    if pc_grid_mode is not None:
+        if pc_grid_mode not in {"adaptive", "explicit"}:
+            raise ValueError("pc_grid_mode must be adaptive or explicit")
+        resolved_pc_grid_mode = pc_grid_mode
     coding_genes = _read_protein_coding_genes(protein_coding_genes_path)
     carriers = read_lof_carriers(lof_carriers_path)
     LOGGER.info(
@@ -896,7 +903,7 @@ def calculate_lof_pc_enrichment(
             "fdr_scope": "global_across_all_emitted_rows",
             "negative_z_thresholds": thresholds,
             "observation_unit": "eligible sample-gene residual",
-            "pc_grid_mode": "adaptive" if not requested_pc_counts else "explicit",
+            "pc_grid_mode": resolved_pc_grid_mode,
             "provenance": {
                 "input_files": {
                     "lof_carriers": str(lof_carriers_path),
@@ -1154,26 +1161,16 @@ def merge_lof_pc_enrichment(
     for row, adjusted in zip(all_rows, benjamini_hochberg(p_values), strict=True):
         row["fisher_fdr_bh"] = _format_optional_float(adjusted)
 
-    gene_qc_rows: list[list[str]] = []
-    for path in gene_pc_qc_inputs:
-        with gzip.open(path, "rt", encoding="utf-8", newline="") as handle:
-            reader = csv.reader(handle, delimiter="\t")
-            try:
-                header = next(reader)
-            except StopIteration as error:
-                raise ValueError(f"Gene-PC QC TSV {path} is empty") from error
-            if header != list(GENE_PC_QC_HEADER):
-                raise ValueError(f"Gene-PC QC TSV {path} does not match the QC schema")
-            for line_number, row in enumerate(reader, start=2):
-                if len(row) != len(GENE_PC_QC_HEADER):
-                    raise ValueError(f"Gene-PC QC TSV {path} line {line_number} is malformed")
-                gene_qc_rows.append(row)
-
     analysis_qcs = [_read_json_object(path, "analysis QC") for path in analysis_qc_inputs]
-    merged_analysis_qc = {
+    first_analysis_qc_metadata = {
         key: value for key, value in analysis_qcs[0].items() if key != "per_pc"
     }
-    merged_per_pc: dict[str, dict[str, object]] = {}
+    for analysis_qc in analysis_qcs[1:]:
+        metadata = {key: value for key, value in analysis_qc.items() if key != "per_pc"}
+        if metadata != first_analysis_qc_metadata:
+            raise ValueError("Analysis QC shards have incompatible top-level metadata")
+
+    validated_per_pc_by_shard: list[dict[str, dict[str, object]]] = []
     for summary, analysis_qc in zip(summaries, analysis_qcs, strict=True):
         per_pc = analysis_qc.get("per_pc")
         if not isinstance(per_pc, dict):
@@ -1181,11 +1178,35 @@ def merge_lof_pc_enrichment(
         shard_pc_counts = _read_ordered_ints(summary, "selected_pc_counts")
         if set(per_pc) != {str(pc_count) for pc_count in shard_pc_counts}:
             raise ValueError("Analysis QC per_pc keys do not match the shard summary")
+        validated_per_pc_by_shard.append(
+            {
+                str(pc_count): _merge_pc_qc(per_pc[str(pc_count)])
+                for pc_count in shard_pc_counts
+            }
+        )
+
+    gene_qc_rows: list[list[str]] = []
+    for path, summary, analysis_qc, validated_per_pc in zip(
+        gene_pc_qc_inputs,
+        summaries,
+        analysis_qcs,
+        validated_per_pc_by_shard,
+        strict=True,
+    ):
+        gene_qc_rows.extend(
+            _read_and_validate_gene_pc_qc_shard(
+                path, summary, analysis_qc, validated_per_pc
+            )
+        )
+
+    merged_analysis_qc = first_analysis_qc_metadata
+    merged_per_pc: dict[str, dict[str, object]] = {}
+    for summary, validated_per_pc in zip(
+        summaries, validated_per_pc_by_shard, strict=True
+    ):
+        shard_pc_counts = _read_ordered_ints(summary, "selected_pc_counts")
         for pc_count in shard_pc_counts:
-            pc_qc = per_pc[str(pc_count)]
-            if not isinstance(pc_qc, dict):
-                raise ValueError("Analysis QC per_pc entries must be objects")
-            merged_per_pc[str(pc_count)] = _merge_pc_qc(pc_qc)
+            merged_per_pc[str(pc_count)] = validated_per_pc[str(pc_count)]
     merged_analysis_qc["per_pc"] = {
         str(pc_count): merged_per_pc[str(pc_count)] for pc_count in selected_pc_counts
     }
@@ -1347,6 +1368,122 @@ def _parse_merge_float(value: str, path: Path, line_number: int, column: str) ->
         ) from error
     if not math.isfinite(parsed):
         raise ValueError(f"Results TSV {path} line {line_number} has an invalid {column}")
+    return parsed
+
+
+def _read_and_validate_gene_pc_qc_shard(
+    path: Path,
+    summary: Mapping[str, object],
+    analysis_qc: Mapping[str, object],
+    per_pc: Mapping[str, Mapping[str, object]],
+) -> list[list[str]]:
+    shard_pc_counts = _read_ordered_ints(summary, "selected_pc_counts")
+    shard_pc_count_set = set(shard_pc_counts)
+    expected_gene_count = _read_qc_count(analysis_qc, "protein_coding_bed_gene_count")
+    rows_by_pc = {pc_count: [] for pc_count in shard_pc_counts}
+    gene_ids_by_pc = {pc_count: set() for pc_count in shard_pc_counts}
+    observed_gene_pc: set[tuple[str, int]] = set()
+    all_rows: list[list[str]] = []
+
+    with gzip.open(path, "rt", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle, delimiter="\t")
+        try:
+            header = next(reader)
+        except StopIteration as error:
+            raise ValueError(f"Gene-PC QC TSV {path} is empty") from error
+        if header != list(GENE_PC_QC_HEADER):
+            raise ValueError(f"Gene-PC QC TSV {path} does not match the QC schema")
+        for line_number, row in enumerate(reader, start=2):
+            if len(row) != len(GENE_PC_QC_HEADER):
+                raise ValueError(f"Gene-PC QC TSV {path} line {line_number} is malformed")
+            gene_id, pc_count_text, usable_sample_count_text, *_, status, reason = row
+            if not gene_id:
+                raise ValueError(f"Gene-PC QC TSV {path} line {line_number} has an empty gene_id")
+            pc_count = _parse_gene_pc_qc_pc_count(pc_count_text, path, line_number)
+            if pc_count not in shard_pc_count_set:
+                raise ValueError(
+                    f"Gene-PC QC TSV {path} line {line_number} has an unselected PC count"
+                )
+            gene_pc = (gene_id, pc_count)
+            if gene_pc in observed_gene_pc:
+                raise ValueError(f"Gene-PC QC TSV {path} has a duplicate gene-PC QC row")
+            observed_gene_pc.add(gene_pc)
+            usable_sample_count = _parse_gene_pc_qc_count(
+                usable_sample_count_text, path, line_number, "usable_sample_count"
+            )
+            if status == "included":
+                if reason:
+                    raise ValueError(
+                        f"Gene-PC QC TSV {path} line {line_number} has an included row with an exclusion reason"
+                    )
+            elif status == "excluded":
+                if reason not in EXCLUSION_REASONS:
+                    raise ValueError(
+                        f"Gene-PC QC TSV {path} line {line_number} has an invalid exclusion reason"
+                    )
+            else:
+                raise ValueError(f"Gene-PC QC TSV {path} line {line_number} has an invalid status")
+            rows_by_pc[pc_count].append((row, usable_sample_count))
+            gene_ids_by_pc[pc_count].add(gene_id)
+            all_rows.append(row)
+
+    expected_gene_ids: set[str] | None = None
+    for pc_count in shard_pc_counts:
+        rows = rows_by_pc[pc_count]
+        if len(rows) != expected_gene_count:
+            raise ValueError(
+                f"Gene-PC QC TSV {path} does not contain expected gene-PC QC rows for PC count {pc_count}"
+            )
+        if expected_gene_ids is None:
+            expected_gene_ids = gene_ids_by_pc[pc_count]
+        elif gene_ids_by_pc[pc_count] != expected_gene_ids:
+            raise ValueError(
+                f"Gene-PC QC TSV {path} has incompatible gene membership across PC counts"
+            )
+        pc_qc = per_pc[str(pc_count)]
+        included_rows = [(row, count) for row, count in rows if row[6] == "included"]
+        if len(included_rows) != int(pc_qc["eligible_gene_count"]):
+            raise ValueError(
+                f"Gene-PC QC TSV {path} included row count does not match analysis QC for PC count {pc_count}"
+            )
+        if sum(count for _, count in included_rows) != int(pc_qc["total_observations"]):
+            raise ValueError(
+                f"Gene-PC QC TSV {path} total_observations do not match analysis QC for PC count {pc_count}"
+            )
+        exclusion_counts = {reason: 0 for reason in EXCLUSION_REASONS}
+        for row, _ in rows:
+            if row[6] == "excluded":
+                exclusion_counts[row[7]] += 1
+        if exclusion_counts != pc_qc["exclusion_counts"]:
+            raise ValueError(
+                f"Gene-PC QC TSV {path} exclusion counts do not match analysis QC for PC count {pc_count}"
+            )
+    return all_rows
+
+
+def _parse_gene_pc_qc_pc_count(value: str, path: Path, line_number: int) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise ValueError(
+            f"Gene-PC QC TSV {path} line {line_number} has an invalid pc_count"
+        ) from error
+    if parsed < 0 or str(parsed) != value:
+        raise ValueError(f"Gene-PC QC TSV {path} line {line_number} has an invalid pc_count")
+    return parsed
+
+
+def _parse_gene_pc_qc_count(
+    value: str, path: Path, line_number: int, column: str
+) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise ValueError(
+            f"Gene-PC QC TSV {path} line {line_number} has an invalid {column}"
+        ) from error
+    if parsed < 0 or str(parsed) != value:
+        raise ValueError(f"Gene-PC QC TSV {path} line {line_number} has an invalid {column}")
     return parsed
 
 

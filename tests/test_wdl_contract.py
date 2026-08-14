@@ -146,6 +146,7 @@ def test_wdl_scatter_and_merge_preserve_the_six_public_outputs():
                 "protein_coding_genes": "PrepareProteinCodingGenes.protein_coding_genes_tsv",
                 "negative_z_thresholds": "negative_z_thresholds",
                 "pc_counts": "pc_count_chunk",
+                "pc_grid_mode": "pc_grid_mode",
                 "docker_image": "docker_image",
                 "cpu": "analysis_cpu",
                 "memory_gb": "analysis_memory_gb",
@@ -183,9 +184,9 @@ def test_wdl_wires_chunk_preparation_merge_and_dynamic_disk_floors():
             "pc_counts": "pc_counts",
             "pc_counts_per_job": "pc_counts_per_job",
             "docker_image": "docker_image",
-            "cpu": "analysis_cpu",
-            "memory_gb": "analysis_memory_gb",
-            "disk_gb": "dynamic_pc_chunk_disk_gb",
+            "cpu": "1",
+            "memory_gb": "4",
+            "disk_gb": "calculated_pc_chunk_disk_gb",
             "max_retries": "max_retries",
         },
         "MergeLofPcEnrichment": {
@@ -211,9 +212,8 @@ def test_wdl_wires_chunk_preparation_merge_and_dynamic_disk_floors():
     assert declarations["calculated_pc_chunk_disk_gb"] == (
         'ceil((size(principal_components_tsv,"GiB") * 2.0 + 20.0))'
     )
-    assert declarations["dynamic_pc_chunk_disk_gb"] == (
-        "if calculated_pc_chunk_disk_gb > analysis_disk_gb then "
-        "calculated_pc_chunk_disk_gb else analysis_disk_gb"
+    assert declarations["pc_grid_mode"] == (
+        'if length(pc_counts) == 0 then "adaptive" else "explicit"'
     )
     assert declarations["calculated_analysis_disk_gb"] == (
         'ceil(((size(phenotype_bed,"GiB") + size(lof_carrier_table,"GiB") + '
@@ -253,6 +253,7 @@ def test_wdl_task_interfaces_and_retries_are_complete():
             "protein_coding_genes": "File",
             "negative_z_thresholds": "Array[Float]",
             "pc_counts": "Array[Int]",
+            "pc_grid_mode": "String",
             "docker_image": "String",
             "cpu": "Int",
             "memory_gb": "Int",
@@ -313,6 +314,7 @@ values = {
     'protein_coding_genes': WDL.Value.File('/tmp/protein coding.tsv'),
     'negative_z_thresholds': array(WDL.Type.Float(), [WDL.Value.Float(-2.0)]),
     'pc_counts': array(WDL.Type.Int(), []),
+    'pc_grid_mode': WDL.Value.String('adaptive'),
     'pc_counts_per_job': WDL.Value.Int(1),
     'results_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/results one.tsv')]),
     'summary_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/summary one.json')]),
@@ -354,6 +356,7 @@ print(json.dumps(rendered, sort_keys=True))
     assert '"/tmp/principal components.tsv"' in analysis["command"]
     assert '"/tmp/protein coding.tsv"' in analysis["command"]
     assert '--negative-z-thresholds="$negative_z_thresholds_csv"' in analysis["command"]
+    assert '--pc-grid-mode "adaptive"' in analysis["command"]
     assert dangerous_image not in analysis["command"]
     assert analysis["generated_files"]["negative_z_thresholds_file"] == ["-2.000000"]
     assert analysis["generated_files"]["pc_counts_file"] == []

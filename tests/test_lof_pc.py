@@ -425,6 +425,32 @@ def _run_analysis(
     return outputs
 
 
+def test_calculate_lof_pc_enrichment_preserves_supplied_adaptive_grid_mode(
+    tmp_path: Path,
+):
+    """A chunked adaptive WDL shard must not be relabeled as an explicit grid."""
+    inputs = _write_analysis_fixture(tmp_path)
+    outputs = _run_analysis(
+        tmp_path, inputs, thresholds=[-0.8], pc_counts=[0, 1]
+    )
+
+    lof_pc_module().calculate_lof_pc_enrichment(
+        inputs["phenotype"],
+        inputs["carriers"],
+        inputs["pcs"],
+        inputs["genes"],
+        [-0.8],
+        [0, 1],
+        outputs["results"],
+        outputs["summary"],
+        outputs["gene_qc"],
+        outputs["analysis_qc"],
+        pc_grid_mode="adaptive",
+    )
+
+    assert json.loads(outputs["summary"].read_text())["pc_grid_mode"] == "adaptive"
+
+
 def _write_merge_shard(
     tmp_path: Path,
     name: str,
@@ -545,10 +571,27 @@ def _write_merge_result_rows(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
+def _read_gene_pc_qc_rows(path: Path) -> list[list[str]]:
+    with gzip.open(path, "rt", encoding="utf-8", newline="") as handle:
+        return list(csv.reader(handle, delimiter="\t"))
+
+
+def _write_gene_pc_qc_rows(path: Path, rows: list[list[str]]) -> None:
+    with gzip.open(path, "wt", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerows(rows)
+
+
 def _rewrite_merge_summary(path: Path, **changes: object) -> None:
     summary = json.loads(path.read_text())
     summary.update(changes)
     path.write_text(json.dumps(summary))
+
+
+def _rewrite_analysis_qc(path: Path, **changes: object) -> None:
+    analysis_qc = json.loads(path.read_text())
+    analysis_qc.update(changes)
+    path.write_text(json.dumps(analysis_qc))
 
 
 def _merge_shards(tmp_path: Path, shards: list[dict[str, Path]]) -> dict[str, Path]:
@@ -663,6 +706,56 @@ def test_merge_lof_pc_enrichment_rejects_duplicate_or_missing_result_combination
         _merge_shards(tmp_path, [shard])
 
 
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("duplicate", "duplicate gene-PC QC row"),
+        ("missing", "expected gene-PC QC rows"),
+        ("wrong_pc", "unselected PC count"),
+        ("excluded", "included row count"),
+        ("wrong_usable_count", "total_observations"),
+    ],
+)
+def test_merge_lof_pc_enrichment_rejects_incompatible_gene_pc_qc(
+    tmp_path: Path, mutation: str, message: str
+):
+    shard = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    rows = _read_gene_pc_qc_rows(shard["gene_qc"])
+    if mutation == "duplicate":
+        rows.append(rows[1])
+    elif mutation == "missing":
+        rows.pop()
+    elif mutation == "wrong_pc":
+        rows[1][1] = "1"
+    elif mutation == "excluded":
+        rows[1][6:] = ["excluded", "rank_deficiency"]
+    elif mutation == "wrong_usable_count":
+        rows[1][2] = "3"
+    else:
+        raise AssertionError(f"Unhandled mutation: {mutation}")
+    _write_gene_pc_qc_rows(shard["gene_qc"], rows)
+
+    with pytest.raises(ValueError, match=message):
+        _merge_shards(tmp_path, [shard])
+
+
+def test_merge_lof_pc_enrichment_requires_identical_analysis_qc_metadata(
+    tmp_path: Path,
+):
+    shard_one = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    shard_two = _write_merge_shard(
+        tmp_path, "two", pc_counts=[1], p_values=[0.02, 0.50, 0.60]
+    )
+    _rewrite_analysis_qc(shard_two["analysis_qc"], bed_sample_count=5)
+
+    with pytest.raises(ValueError, match="top-level metadata"):
+        _merge_shards(tmp_path, [shard_one, shard_two])
+
+
 def test_merge_lof_pc_enrichment_rejects_invalid_available_pc_count(tmp_path: Path):
     shard = _write_merge_shard(
         tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
@@ -757,6 +850,58 @@ def test_pc_major_complete_data_analysis_uses_incremental_projection_and_logs_in
         for pc_count in (0, 1)
     }
     assert completion_indexes[0] < completion_indexes[1]
+
+
+def test_vectorized_multi_pc_nonorthogonal_analysis_matches_legacy_results_and_qc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The complete-data optimization must retain legacy outputs for nonorthogonal PCs."""
+    inputs = _write_analysis_fixture(tmp_path)
+    vectorized_directory = tmp_path / "vectorized"
+    vectorized_directory.mkdir()
+    vectorized_outputs = _run_analysis(
+        vectorized_directory, inputs, thresholds=[-0.8], pc_counts=[0, 1, 2]
+    )
+
+    module = lof_pc_module()
+    original_matrix_rank = module.np.linalg.matrix_rank
+    rank_calls = 0
+
+    def force_initial_rank_deficiency(*arguments, **kwargs):
+        nonlocal rank_calls
+        rank_calls += 1
+        if rank_calls == 1:
+            return 0
+        return original_matrix_rank(*arguments, **kwargs)
+
+    monkeypatch.setattr(module.np.linalg, "matrix_rank", force_initial_rank_deficiency)
+    legacy_directory = tmp_path / "legacy"
+    legacy_directory.mkdir()
+    legacy_outputs = _run_analysis(
+        legacy_directory, inputs, thresholds=[-0.8], pc_counts=[0, 1, 2]
+    )
+
+    assert _read_merge_result_rows(vectorized_outputs["results"]) == _read_merge_result_rows(
+        legacy_outputs["results"]
+    )
+    vectorized_qc_rows = _read_gene_pc_qc_rows(vectorized_outputs["gene_qc"])
+    legacy_qc_rows = _read_gene_pc_qc_rows(legacy_outputs["gene_qc"])
+    assert [row[:4] + row[6:] for row in vectorized_qc_rows] == [
+        row[:4] + row[6:] for row in legacy_qc_rows
+    ]
+    for vectorized_row, legacy_row in zip(
+        vectorized_qc_rows[1:], legacy_qc_rows[1:], strict=True
+    ):
+        for column in (4, 5):
+            if vectorized_row[column] == "NA":
+                assert legacy_row[column] == "NA"
+            else:
+                assert float(vectorized_row[column]) == pytest.approx(
+                    float(legacy_row[column]), abs=1e-12
+                )
+    assert json.loads(vectorized_outputs["analysis_qc"].read_text()) == json.loads(
+        legacy_outputs["analysis_qc"].read_text()
+    )
 
 
 def test_missing_expression_fallback_retains_legacy_results_and_qc_exclusions(

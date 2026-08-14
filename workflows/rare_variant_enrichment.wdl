@@ -41,6 +41,7 @@ task CalculateLofPcEnrichment {
         File protein_coding_genes
         Array[Float] negative_z_thresholds
         Array[Int] pc_counts
+        String pc_grid_mode
         String docker_image
         Int cpu
         Int memory_gb
@@ -82,6 +83,7 @@ task CalculateLofPcEnrichment {
             --protein-coding-genes "~{protein_coding_genes}" \
             --negative-z-thresholds="$negative_z_thresholds_csv" \
             --pc-counts "$pc_counts_csv" \
+            --pc-grid-mode "~{pc_grid_mode}" \
             --results-output "lof_pc_enrichment.tsv" \
             --summary-output "lof_pc_enrichment.summary.json" \
             --gene-pc-qc-output "lof_pc_enrichment.gene_pc_qc.tsv.gz" \
@@ -224,7 +226,7 @@ workflow RareVariantEnrichment {
     Int calculated_analysis_disk_gb = ceil(((size(phenotype_bed, "GiB") + size(lof_carrier_table, "GiB") + size(principal_components_tsv, "GiB") + size(gene_annotation_gtf, "GiB")) * 2.0 + 20.0))
     Int dynamic_analysis_disk_gb = if calculated_analysis_disk_gb > analysis_disk_gb then calculated_analysis_disk_gb else analysis_disk_gb
     Int calculated_pc_chunk_disk_gb = ceil((size(principal_components_tsv, "GiB") * 2.0 + 20.0))
-    Int dynamic_pc_chunk_disk_gb = if calculated_pc_chunk_disk_gb > analysis_disk_gb then calculated_pc_chunk_disk_gb else analysis_disk_gb
+    String pc_grid_mode = if length(pc_counts) == 0 then "adaptive" else "explicit"
 
     call PrepareProteinCodingGenes {
         input:
@@ -242,9 +244,9 @@ workflow RareVariantEnrichment {
             pc_counts = pc_counts,
             pc_counts_per_job = pc_counts_per_job,
             docker_image = docker_image,
-            cpu = analysis_cpu,
-            memory_gb = analysis_memory_gb,
-            disk_gb = dynamic_pc_chunk_disk_gb,
+            cpu = 1,
+            memory_gb = 4,
+            disk_gb = calculated_pc_chunk_disk_gb,
             max_retries = max_retries
     }
 
@@ -259,6 +261,7 @@ workflow RareVariantEnrichment {
                 protein_coding_genes = PrepareProteinCodingGenes.protein_coding_genes_tsv,
                 negative_z_thresholds = negative_z_thresholds,
                 pc_counts = pc_count_chunk,
+                pc_grid_mode = pc_grid_mode,
                 docker_image = docker_image,
                 cpu = analysis_cpu,
                 memory_gb = analysis_memory_gb,
