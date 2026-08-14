@@ -100,6 +100,99 @@ class ResidualFit:
     exclusion_reason: str | None
 
 
+@dataclass(frozen=True)
+class CompleteDataProjection:
+    """Cached projection terms for complete-data expression residualization."""
+
+    centered_expression: np.ndarray
+    normalized_pcs: np.ndarray
+    component_scores: np.ndarray
+
+    def advance_prediction(
+        self, previous_pc_count: int, pc_count: int, prediction: np.ndarray
+    ) -> np.ndarray:
+        available_pc_count = self.normalized_pcs.shape[1]
+        if (
+            isinstance(previous_pc_count, bool)
+            or not isinstance(previous_pc_count, int)
+            or isinstance(pc_count, bool)
+            or not isinstance(pc_count, int)
+            or previous_pc_count < 0
+            or pc_count < previous_pc_count
+            or pc_count > available_pc_count
+        ):
+            raise ValueError("PC counts are outside the prepared principal components")
+        values = np.asarray(prediction, dtype=float)
+        if values.shape != self.centered_expression.shape:
+            raise ValueError("Prediction has incompatible expression shape")
+        return values + (
+            self.normalized_pcs[:, previous_pc_count:pc_count]
+            @ self.component_scores[previous_pc_count:pc_count]
+        )
+
+    def z_scores(self, prediction: np.ndarray) -> np.ndarray:
+        values = np.asarray(prediction, dtype=float)
+        if values.shape != self.centered_expression.shape:
+            raise ValueError("Prediction has incompatible expression shape")
+        residuals = self.centered_expression - values
+        residual_sd = np.std(residuals, axis=0, ddof=0)
+        z_scores = np.full(residuals.shape, np.nan, dtype=float)
+        valid_columns = np.isfinite(residual_sd) & (residual_sd > 0)
+        z_scores[:, valid_columns] = (
+            residuals[:, valid_columns] / residual_sd[valid_columns]
+        )
+        return z_scores
+
+
+def prepare_complete_data_projection(
+    expression: np.ndarray,
+    principal_components: np.ndarray,
+    requested_pc_counts: Sequence[int],
+) -> CompleteDataProjection:
+    """Prepare complete-data residualization through centered PC projections."""
+
+    expression_values = np.asarray(expression, dtype=float)
+    pc_values = np.asarray(principal_components, dtype=float)
+    if expression_values.ndim != 2 or pc_values.ndim != 2:
+        raise ValueError("Expression and principal components must be two-dimensional")
+    if expression_values.shape[0] != pc_values.shape[0]:
+        raise ValueError("Expression and principal components have incompatible shapes")
+    if not np.all(np.isfinite(expression_values)):
+        raise ValueError("Complete-data projection requires complete finite expression")
+    if not np.all(np.isfinite(pc_values)):
+        raise ValueError("Complete-data projection requires finite principal components")
+
+    available_pc_count = pc_values.shape[1]
+    validated_counts: list[int] = []
+    for pc_count in requested_pc_counts:
+        if (
+            isinstance(pc_count, bool)
+            or not isinstance(pc_count, int)
+            or pc_count < 0
+            or pc_count > available_pc_count
+        ):
+            raise ValueError("PC count is outside the available principal components")
+        validated_counts.append(pc_count)
+    if not validated_counts:
+        raise ValueError("At least one PC count is required")
+
+    maximum_pc_count = max(validated_counts)
+    centered_expression = expression_values - np.mean(expression_values, axis=0)
+    centered_pcs = pc_values[:, :maximum_pc_count] - np.mean(
+        pc_values[:, :maximum_pc_count], axis=0
+    )
+    pc_norms = np.linalg.norm(centered_pcs, axis=0)
+    if np.any(~np.isfinite(pc_norms)) or np.any(pc_norms == 0):
+        raise ValueError("Principal components must have nonzero finite variance")
+    normalized_pcs = centered_pcs / pc_norms
+    component_scores = normalized_pcs.T @ centered_expression
+    return CompleteDataProjection(
+        centered_expression=centered_expression,
+        normalized_pcs=normalized_pcs,
+        component_scores=component_scores,
+    )
+
+
 def normalize_ensembl_id(value: str) -> str:
     return re.sub(r"\.[0-9]+$", "", value, count=1)
 

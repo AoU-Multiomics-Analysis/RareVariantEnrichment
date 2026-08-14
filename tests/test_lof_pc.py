@@ -233,6 +233,60 @@ def test_residualize_expression_keeps_missing_observations_nan():
     np.testing.assert_allclose(fit.z_scores[[0, 2, 3, 4]], [-1, -1, 1, 1])
 
 
+def test_complete_data_projection_matches_legacy_residuals():
+    expression = np.array(
+        [
+            [3.0, 2.0],
+            [1.0, 4.0],
+            [4.0, 1.0],
+            [6.0, 3.0],
+            [8.0, 7.0],
+        ]
+    )
+    pcs = np.array(
+        [[-2.0, 1.0], [-1.0, -1.0], [0.0, 0.0], [1.0, -1.0], [2.0, 1.0]]
+    )
+    module = lof_pc_module()
+    state = module.prepare_complete_data_projection(expression, pcs, [0, 1])
+    prediction = np.zeros_like(expression)
+    previous_pc_count = 0
+
+    for pc_count in [0, 1]:
+        prediction = state.advance_prediction(
+            previous_pc_count, pc_count, prediction
+        )
+        actual = state.z_scores(prediction)
+        expected = np.column_stack(
+            [
+                module.residualize_expression(expression[:, column], pcs, pc_count).z_scores
+                for column in range(expression.shape[1])
+            ]
+        )
+        np.testing.assert_allclose(actual, expected, atol=1e-10, rtol=1e-10)
+        previous_pc_count = pc_count
+
+
+def test_complete_data_projection_marks_zero_variance_expression_as_nan():
+    state = lof_pc_module().prepare_complete_data_projection(
+        np.array([[5.0], [5.0], [5.0]]),
+        np.array([[-1.0], [0.0], [1.0]]),
+        [0, 1],
+    )
+
+    prediction = state.advance_prediction(0, 1, np.zeros((3, 1)))
+
+    assert np.isnan(state.z_scores(prediction)).all()
+
+
+def test_complete_data_projection_rejects_missing_expression_values():
+    with pytest.raises(ValueError, match="complete finite expression"):
+        lof_pc_module().prepare_complete_data_projection(
+            np.array([[1.0], [np.nan], [3.0]]),
+            np.array([[-1.0], [0.0], [1.0]]),
+            [0, 1],
+        )
+
+
 @pytest.mark.parametrize(
     "thresholds", [[], [0.0], [1.0], [-2.0, -2.0], [-2.0, float("nan")]]
 )
