@@ -105,6 +105,11 @@ def test_wdl_has_only_the_four_file_public_inputs_and_required_defaults():
             "type": "Array[Float]",
             "default": [-2.0, -3.0, -4.0, -5.0, -6.0],
         },
+        "selection_z_thresholds": {
+            "type": "Array[Float]",
+            "default": [-3.0, -4.0, -5.0, -6.0],
+        },
+        "plateau_fraction": {"type": "Float", "default": 0.95},
         "pc_counts": {"type": "Array[Int]", "default": []},
         "pc_counts_per_job": {"type": "Int", "default": 10},
         "docker_image": {
@@ -124,6 +129,7 @@ def test_wdl_has_only_the_four_file_public_inputs_and_required_defaults():
 def test_wdl_scatter_and_merge_preserve_the_six_public_outputs():
     contract = _inspect_workflow()
     assert contract["tasks"] == [
+        "AnalyzeLofPcEnrichment",
         "CalculateLofPcEnrichment",
         "MergeLofPcEnrichment",
         "PreparePcChunks",
@@ -133,6 +139,7 @@ def test_wdl_scatter_and_merge_preserve_the_six_public_outputs():
         "PrepareProteinCodingGenes",
         "PreparePcChunks",
         "MergeLofPcEnrichment",
+        "AnalyzeLofPcEnrichment",
     ]
     assert contract["scatters"] == [{
         "variable": "pc_count_chunk",
@@ -160,6 +167,8 @@ def test_wdl_scatter_and_merge_preserve_the_six_public_outputs():
         "summary_json": "File",
         "gene_pc_qc_tsv_gz": "File",
         "analysis_qc_json": "File",
+        "pc_selection_json": "File",
+        "enrichment_plot_svg": "File",
         "protein_coding_genes_tsv": "File",
         "protein_coding_genes_qc_json": "File",
     }
@@ -197,6 +206,16 @@ def test_wdl_wires_chunk_preparation_merge_and_dynamic_disk_floors():
             "docker_image": "docker_image",
             "cpu": "analysis_cpu",
             "memory_gb": "analysis_memory_gb",
+            "disk_gb": "dynamic_merge_disk_gb",
+            "max_retries": "max_retries",
+        },
+        "AnalyzeLofPcEnrichment": {
+            "results_tsv": "MergeLofPcEnrichment.results_tsv",
+            "selection_z_thresholds": "selection_z_thresholds",
+            "plateau_fraction": "plateau_fraction",
+            "docker_image": "docker_image",
+            "cpu": "1",
+            "memory_gb": "4",
             "disk_gb": "dynamic_merge_disk_gb",
             "max_retries": "max_retries",
         },
@@ -281,6 +300,16 @@ def test_wdl_task_interfaces_and_retries_are_complete():
             "disk_gb": "Int",
             "max_retries": "Int",
         },
+        "AnalyzeLofPcEnrichment": {
+            "results_tsv": "File",
+            "selection_z_thresholds": "Array[Float]",
+            "plateau_fraction": "Float",
+            "docker_image": "String",
+            "cpu": "Int",
+            "memory_gb": "Int",
+            "disk_gb": "Int",
+            "max_retries": "Int",
+        },
     }
     assert all("maxRetries" in keys for keys in contract["runtime_keys"].values())
 
@@ -313,6 +342,8 @@ values = {
     'principal_components_tsv': WDL.Value.File('/tmp/principal components.tsv'),
     'protein_coding_genes': WDL.Value.File('/tmp/protein coding.tsv'),
     'negative_z_thresholds': array(WDL.Type.Float(), [WDL.Value.Float(-2.0)]),
+    'selection_z_thresholds': array(WDL.Type.Float(), [WDL.Value.Float(-3.0), WDL.Value.Float(-4.0)]),
+    'plateau_fraction': WDL.Value.Float(0.95),
     'pc_counts': array(WDL.Type.Int(), []),
     'pc_grid_mode': WDL.Value.String('adaptive'),
     'pc_counts_per_job': WDL.Value.Int(1),
@@ -320,6 +351,7 @@ values = {
     'summary_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/summary one.json')]),
     'gene_pc_qc_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/gene qc one.tsv.gz')]),
     'analysis_qc_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/analysis qc one.json')]),
+    'results_tsv': WDL.Value.File('/tmp/results one.tsv'),
     'docker_image': WDL.Value.String(dangerous_image),
     'cpu': WDL.Value.Int(1), 'memory_gb': WDL.Value.Int(1), 'disk_gb': WDL.Value.Int(1),
     'max_retries': WDL.Value.Int(1),
@@ -375,3 +407,9 @@ print(json.dumps(rendered, sort_keys=True))
         "gene_pc_qc_input_list": ["/tmp/gene qc one.tsv.gz"],
         "analysis_qc_input_list": ["/tmp/analysis qc one.json"],
     }
+    plot = rendered["AnalyzeLofPcEnrichment"]
+    assert 'results-input "/tmp/results one.tsv"' in plot["command"]
+    assert '--selection-z-thresholds "$selection_z_thresholds_csv"' in plot["command"]
+    assert '--plateau-fraction "0.950000"' in plot["command"]
+    assert dangerous_image not in plot["command"]
+    assert plot["generated_files"]["selection_z_thresholds_file"] == ["-3.000000", "-4.000000"]

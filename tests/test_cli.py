@@ -26,6 +26,7 @@ def test_cli_lists_workflow_subcommands():
         "prepare-protein-coding-genes",
         "lof-pc-enrichment",
         "merge-lof-pc-enrichment",
+        "analyze-lof-pc-enrichment",
     ):
         assert command in result.stdout
 
@@ -197,6 +198,38 @@ def test_merge_lof_pc_enrichment_cli_reads_input_lists_and_dispatches(tmp_path: 
         Path("summary.json"),
         Path("gene-pc-qc.tsv.gz"),
         Path("analysis-qc.json"),
+    ]
+
+
+def test_analyze_lof_pc_enrichment_cli_dispatches_selection_options(monkeypatch):
+    received: list[object] = []
+
+    def fake_analyze(*arguments: object, **keyword_arguments: object) -> None:
+        received.extend([arguments, keyword_arguments])
+
+    monkeypatch.setattr(cli, "analyze_lof_pc_enrichment", fake_analyze)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "analyze-lof-pc-enrichment",
+            "--results-input",
+            "results.tsv",
+            "--selection-output",
+            "selection.json",
+            "--plot-output",
+            "plot.svg",
+            "--selection-z-thresholds=-3,-4,-5,-6",
+            "--plateau-fraction",
+            "0.95",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received == [
+        (Path("results.tsv"), Path("selection.json"), Path("plot.svg")),
+        {"selection_z_thresholds": [-3.0, -4.0, -5.0, -6.0], "plateau_fraction": 0.95},
     ]
 
 
