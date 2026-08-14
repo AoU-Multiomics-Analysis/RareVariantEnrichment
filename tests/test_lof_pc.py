@@ -113,6 +113,36 @@ def test_explicit_pc_grid_is_strictly_increasing_unique_nonnegative_and_availabl
         lof_pc_module().build_pc_grid(requested, 3)
 
 
+def test_build_pc_chunks_partitions_explicit_grid_with_short_final_chunk():
+    assert lof_pc_module().build_pc_chunks([0, 1, 10, 20, 30], 30, 2) == [
+        [0, 1],
+        [10, 20],
+        [30],
+    ]
+
+
+def test_build_pc_chunks_uses_adaptive_grid_when_requested_grid_is_empty():
+    assert lof_pc_module().build_pc_chunks([], 25, 3) == [
+        [0, 1, 2],
+        [3, 4, 5],
+        [6, 7, 8],
+        [9, 10, 20],
+        [25],
+    ]
+
+
+def test_build_pc_chunks_rejects_nonpositive_chunk_size():
+    with pytest.raises(ValueError, match="positive"):
+        lof_pc_module().build_pc_chunks([0], 1, 0)
+
+
+def test_read_principal_component_header_does_not_parse_data_rows(tmp_path: Path):
+    pcs = tmp_path / "pcs.tsv"
+    pcs.write_text("ID\tPC1\tPC2\nS1\tnot-a-number\tinf\n")
+
+    assert lof_pc_module().read_principal_component_header(pcs) == 2
+
+
 def test_read_principal_components_preserves_string_ids_and_all_finite_values(
     tmp_path: Path,
 ):

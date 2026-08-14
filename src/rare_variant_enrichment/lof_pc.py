@@ -270,13 +270,7 @@ def read_principal_components(path: Path) -> PrincipalComponents:
             header = next(reader)
         except StopIteration as error:
             raise ValueError("Principal-components TSV is empty") from error
-        if len(header) < 2 or header[0] != "ID":
-            raise ValueError("Principal-components TSV header must begin with ID, PC1")
-        expected_pcs = [f"PC{index}" for index in range(1, len(header))]
-        if header[1:] != expected_pcs:
-            raise ValueError(
-                "Principal-components TSV header PCs must be consecutive from PC1"
-            )
+        _principal_component_header_count(header)
         for line_number, fields in enumerate(reader, start=2):
             if not fields or all(not field.strip() for field in fields):
                 continue
@@ -311,6 +305,25 @@ def read_principal_components(path: Path) -> PrincipalComponents:
     return PrincipalComponents(tuple(sample_ids), np.asarray(rows, dtype=float))
 
 
+def read_principal_component_header(path: Path) -> int:
+    with open_text(path) as handle:
+        reader = csv.reader(handle, delimiter="\t")
+        try:
+            header = next(reader)
+        except StopIteration as error:
+            raise ValueError("Principal-components TSV is empty") from error
+    return _principal_component_header_count(header)
+
+
+def _principal_component_header_count(header: list[str]) -> int:
+    if len(header) < 2 or header[0] != "ID":
+        raise ValueError("Principal-components TSV header must begin with ID, PC1")
+    expected_pcs = [f"PC{index}" for index in range(1, len(header))]
+    if header[1:] != expected_pcs:
+        raise ValueError("Principal-components TSV header PCs must be consecutive from PC1")
+    return len(header) - 1
+
+
 def build_pc_grid(requested: Sequence[int], available: int) -> list[int]:
     if isinstance(available, bool) or not isinstance(available, int) or available < 0:
         raise ValueError("Available PC count must be a non-negative integer")
@@ -337,6 +350,24 @@ def build_pc_grid(requested: Sequence[int], available: int) -> list[int]:
     if not values or values[-1] != available:
         values.append(available)
     return values
+
+
+def build_pc_chunks(
+    requested_pc_counts: Sequence[int],
+    available_pc_count: int,
+    pc_counts_per_job: int,
+) -> list[list[int]]:
+    if (
+        isinstance(pc_counts_per_job, bool)
+        or not isinstance(pc_counts_per_job, int)
+        or pc_counts_per_job <= 0
+    ):
+        raise ValueError("pc_counts_per_job must be a positive integer")
+    selected = build_pc_grid(requested_pc_counts, available_pc_count)
+    return [
+        selected[start : start + pc_counts_per_job]
+        for start in range(0, len(selected), pc_counts_per_job)
+    ]
 
 
 def read_lof_carriers(path: Path) -> LofCarriers:

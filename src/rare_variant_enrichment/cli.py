@@ -4,9 +4,12 @@ import math
 from pathlib import Path
 
 from rare_variant_enrichment.aggregation import gather_outputs
+from rare_variant_enrichment.io import write_json
 from rare_variant_enrichment.lof_pc import (
+    build_pc_chunks,
     calculate_lof_pc_enrichment,
     prepare_protein_coding_genes,
+    read_principal_component_header,
 )
 from rare_variant_enrichment.phenotypes import prepare_phenotypes
 from rare_variant_enrichment.statistics import calculate_enrichment
@@ -22,6 +25,7 @@ COMMANDS = (
     "calculate",
     "prepare-protein-coding-genes",
     "lof-pc-enrichment",
+    "pc-chunks",
 )
 
 
@@ -45,6 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
     lof_pc_parser.add_argument("--summary-output", required=True, type=Path)
     lof_pc_parser.add_argument("--gene-pc-qc-output", required=True, type=Path)
     lof_pc_parser.add_argument("--analysis-qc-output", required=True, type=Path)
+    pc_chunks_parser = subparsers.add_parser("pc-chunks")
+    pc_chunks_parser.add_argument("--principal-components", required=True, type=Path)
+    pc_chunks_parser.add_argument("--pc-counts", required=True, type=parse_csv_ints)
+    pc_chunks_parser.add_argument("--pc-counts-per-job", required=True, type=int)
+    pc_chunks_parser.add_argument("--output", required=True, type=Path)
     prepare_parser = subparsers.add_parser("prepare-phenotypes")
     prepare_parser.add_argument("--phenotype-bed", required=True, type=Path)
     prepare_parser.add_argument("--vcf-samples", required=True, type=Path)
@@ -142,6 +151,16 @@ def main() -> int:
             args.summary_output,
             args.gene_pc_qc_output,
             args.analysis_qc_output,
+        )
+    elif args.command == "pc-chunks":
+        available_pc_count = read_principal_component_header(args.principal_components)
+        write_json(
+            args.output,
+            build_pc_chunks(
+                args.pc_counts,
+                available_pc_count,
+                args.pc_counts_per_job,
+            ),
         )
     elif args.command == "prepare-phenotypes":
         prepare_phenotypes(

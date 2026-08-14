@@ -109,6 +109,46 @@ def test_lof_pc_enrichment_cli_dispatches_exact_contract(monkeypatch):
     ]
 
 
+def test_pc_chunks_cli_dispatches_header_count_chunking_and_json_output(monkeypatch):
+    received: list[object] = []
+
+    def fake_read_header(principal_components: Path) -> int:
+        received.append(principal_components)
+        return 30
+
+    def fake_build_chunks(
+        pc_counts: list[int], available_pc_count: int, pc_counts_per_job: int
+    ) -> list[list[int]]:
+        received.extend([pc_counts, available_pc_count, pc_counts_per_job])
+        return [[0, 1], [10]]
+
+    def fake_write_json(output: Path, chunks: list[list[int]]) -> None:
+        received.extend([output, chunks])
+
+    monkeypatch.setattr(cli, "read_principal_component_header", fake_read_header)
+    monkeypatch.setattr(cli, "build_pc_chunks", fake_build_chunks)
+    monkeypatch.setattr(cli, "write_json", fake_write_json)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "pc-chunks",
+            "--principal-components",
+            "pcs.tsv",
+            "--pc-counts",
+            "0,1,10",
+            "--pc-counts-per-job",
+            "2",
+            "--output",
+            "chunks.json",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received == [Path("pcs.tsv"), [0, 1, 10], 30, 2, Path("chunks.json"), [[0, 1], [10]]]
+
+
 def test_prepare_vat_cli_dispatches_paths_and_chromosomes_unchanged(tmp_path: Path, monkeypatch):
     vat = tmp_path / "annotations.tsv.bgz"
     schema_output = tmp_path / "schema.json"
