@@ -105,13 +105,13 @@ class CompleteDataProjection:
     """Cached projection terms for complete-data expression residualization."""
 
     centered_expression: np.ndarray
-    normalized_pcs: np.ndarray
+    orthonormal_pcs: np.ndarray
     component_scores: np.ndarray
 
     def advance_prediction(
         self, previous_pc_count: int, pc_count: int, prediction: np.ndarray
     ) -> np.ndarray:
-        available_pc_count = self.normalized_pcs.shape[1]
+        available_pc_count = self.orthonormal_pcs.shape[1]
         if (
             isinstance(previous_pc_count, bool)
             or not isinstance(previous_pc_count, int)
@@ -126,7 +126,7 @@ class CompleteDataProjection:
         if values.shape != self.centered_expression.shape:
             raise ValueError("Prediction has incompatible expression shape")
         return values + (
-            self.normalized_pcs[:, previous_pc_count:pc_count]
+            self.orthonormal_pcs[:, previous_pc_count:pc_count]
             @ self.component_scores[previous_pc_count:pc_count]
         )
 
@@ -184,11 +184,11 @@ def prepare_complete_data_projection(
     pc_norms = np.linalg.norm(centered_pcs, axis=0)
     if np.any(~np.isfinite(pc_norms)) or np.any(pc_norms == 0):
         raise ValueError("Principal components must have nonzero finite variance")
-    normalized_pcs = centered_pcs / pc_norms
-    component_scores = normalized_pcs.T @ centered_expression
+    orthonormal_pcs, _ = np.linalg.qr(centered_pcs, mode="reduced")
+    component_scores = orthonormal_pcs.T @ centered_expression
     return CompleteDataProjection(
         centered_expression=centered_expression,
-        normalized_pcs=normalized_pcs,
+        orthonormal_pcs=orthonormal_pcs,
         component_scores=component_scores,
     )
 
@@ -699,7 +699,31 @@ def calculate_lof_pc_enrichment(
                         np.count_nonzero(outlier_mask & carrier_masks[definition])
                     )
 
-        if all(np.all(np.isfinite(expression)) for _, expression in coding_expression):
+        complete_expression = all(
+            np.all(np.isfinite(expression)) for _, expression in coding_expression
+        )
+        rank_deficient_requested_prefix = False
+        if complete_expression:
+            for pc_count in pc_counts:
+                try:
+                    rank = int(
+                        np.linalg.matrix_rank(
+                            np.column_stack(
+                                (
+                                    np.ones(len(shared_samples)),
+                                    shared_pc_values[:, :pc_count],
+                                )
+                            )
+                        )
+                    )
+                except (np.linalg.LinAlgError, ValueError, FloatingPointError):
+                    rank_deficient_requested_prefix = True
+                    break
+                if rank < pc_count + 1:
+                    rank_deficient_requested_prefix = True
+                    break
+
+        if complete_expression and not rank_deficient_requested_prefix:
             expression_matrix = np.column_stack(
                 [expression for _, expression in coding_expression]
             )

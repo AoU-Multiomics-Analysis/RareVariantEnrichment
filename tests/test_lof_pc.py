@@ -266,6 +266,41 @@ def test_complete_data_projection_matches_legacy_residuals():
         previous_pc_count = pc_count
 
 
+def test_complete_data_projection_matches_legacy_for_nonorthogonal_pc_prefixes():
+    expression = np.array(
+        [
+            [1.0, 6.0],
+            [2.0, 4.0],
+            [4.0, 7.0],
+            [3.0, 3.0],
+            [7.0, 5.0],
+            [8.0, 9.0],
+        ]
+    )
+    pcs = np.array(
+        [[0.0, 0.0], [1.0, 0.0], [2.0, 1.0], [3.0, 1.0], [4.0, 2.0], [5.0, 3.0]]
+    )
+    module = lof_pc_module()
+    state = module.prepare_complete_data_projection(expression, pcs, [0, 1, 2])
+    prediction = np.zeros_like(expression)
+    previous_pc_count = 0
+
+    for pc_count in [0, 1, 2]:
+        prediction = state.advance_prediction(
+            previous_pc_count, pc_count, prediction
+        )
+        expected = np.column_stack(
+            [
+                module.residualize_expression(expression[:, column], pcs, pc_count).z_scores
+                for column in range(expression.shape[1])
+            ]
+        )
+        np.testing.assert_allclose(
+            state.z_scores(prediction), expected, atol=1e-10, rtol=1e-10
+        )
+        previous_pc_count = pc_count
+
+
 def test_complete_data_projection_marks_zero_variance_expression_as_nan():
     state = lof_pc_module().prepare_complete_data_projection(
         np.array([[5.0], [5.0], [5.0]]),
@@ -467,6 +502,48 @@ def test_missing_expression_fallback_retains_legacy_results_and_qc_exclusions(
             == "insufficient_dof"
         )
         assert by_gene_pc[("ENSG2", pc_count)]["status"] == "included"
+
+
+def test_rank_deficient_complete_data_preserves_legacy_qc_exclusions(tmp_path: Path):
+    inputs = _write_analysis_fixture(tmp_path)
+    inputs["pcs"].write_text(
+        "ID\tPC1\n"
+        "S1\t0\nS2\t0\nS3\t0\nS4\t0\nS5\t0\nS6\t0\nPC_ONLY\t0\n"
+    )
+
+    outputs = _run_analysis(tmp_path, inputs, thresholds=[-0.8], pc_counts=[0, 1])
+
+    rows = list(csv.DictReader(outputs["results"].open(), delimiter="\t"))
+    assert {row["pc_count"] for row in rows} == {"0", "1"}
+    assert {int(row["eligible_gene_count"]) for row in rows if row["pc_count"] == "0"} == {
+        2
+    }
+    assert {int(row["eligible_gene_count"]) for row in rows if row["pc_count"] == "1"} == {
+        0
+    }
+
+    analysis_qc = json.loads(outputs["analysis_qc"].read_text())
+    assert analysis_qc["per_pc"]["0"]["exclusion_counts"] == {
+        "insufficient_dof": 0,
+        "invalid_or_zero_residual_sd": 0,
+        "other": 0,
+        "rank_deficiency": 0,
+    }
+    assert analysis_qc["per_pc"]["1"]["exclusion_counts"] == {
+        "insufficient_dof": 0,
+        "invalid_or_zero_residual_sd": 0,
+        "other": 0,
+        "rank_deficiency": 2,
+    }
+
+    with gzip.open(outputs["gene_qc"], "rt", encoding="utf-8") as handle:
+        gene_qc = list(csv.DictReader(handle, delimiter="\t"))
+    by_gene_pc = {(row["gene_id"], row["pc_count"]): row for row in gene_qc}
+    for gene_id in ("ENSG1", "ENSG2"):
+        assert by_gene_pc[(gene_id, "0")]["status"] == "included"
+        assert by_gene_pc[(gene_id, "1")]["status"] == "excluded"
+        assert by_gene_pc[(gene_id, "1")]["rank"] == "1"
+        assert by_gene_pc[(gene_id, "1")]["exclusion_reason"] == "rank_deficiency"
 
 
 def test_lof_pc_enrichment_emits_hand_checked_pooled_fisher_cells_and_global_fdr(
