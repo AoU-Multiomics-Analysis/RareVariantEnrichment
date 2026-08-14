@@ -2,7 +2,7 @@ import gzip
 import json
 from io import TextIOWrapper
 from pathlib import Path
-from typing import Mapping, TextIO
+from typing import Mapping, Sequence, TextIO
 
 
 def open_text(path: Path) -> TextIO:
@@ -19,5 +19,5 @@ def read_nonempty_lines(path: Path) -> list[str]:
         return [line.strip() for line in handle if line.strip()]
 
 
-def write_json(path: Path, payload: Mapping[str, object]) -> None:
+def write_json(path: Path, payload: Mapping[str, object] | Sequence[object]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")

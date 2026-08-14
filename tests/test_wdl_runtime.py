@@ -58,7 +58,8 @@ def test_wdl_runs_the_four_input_lof_pc_fixture_with_known_cells(tmp_path: Path)
         "RareVariantEnrichment.principal_components_tsv": str((FIXTURES / "principal_components.tsv").resolve()),
         "RareVariantEnrichment.gene_annotation_gtf": str((FIXTURES / "gene_annotation.gtf").resolve()),
         "RareVariantEnrichment.negative_z_thresholds": [-0.8],
-        "RareVariantEnrichment.pc_counts": [0],
+        "RareVariantEnrichment.pc_counts": [0, 1],
+        "RareVariantEnrichment.pc_counts_per_job": 1,
         "RareVariantEnrichment.docker_image": TEST_IMAGE,
         "RareVariantEnrichment.prepare_cpu": 1,
         "RareVariantEnrichment.prepare_memory_gb": 1,
@@ -92,13 +93,15 @@ def test_wdl_runs_the_four_input_lof_pc_fixture_with_known_cells(tmp_path: Path)
         "RareVariantEnrichment.protein_coding_genes_qc_json",
     }
     rows = list(csv.DictReader(Path(outputs["RareVariantEnrichment.results_tsv"]).open(), delimiter="\t"))
-    assert {
-        row["carrier_definition"]: tuple(int(row[cell]) for cell in ("n11", "n10", "n01", "n00"))
-        for row in rows
-    } == {
+    assert {row["carrier_definition"]: tuple(
+        int(row[cell]) for cell in ("n11", "n10", "n01", "n00")
+    ) for row in rows if row["pc_count"] == "0"} == {
         "any_lof": (2, 3, 2, 5),
         "HC": (1, 1, 3, 7),
         "HC_or_LC": (2, 2, 2, 6),
     }
-    assert json.loads(Path(outputs["RareVariantEnrichment.summary_json"]).read_text())["fdr_scope"] == "global_across_all_emitted_rows"
+    summary = json.loads(Path(outputs["RareVariantEnrichment.summary_json"]).read_text())
+    assert {row["pc_count"] for row in rows} == {"0", "1"}
+    assert summary["selected_pc_counts"] == [0, 1]
+    assert summary["fdr_scope"] == "global_across_all_emitted_rows"
     assert Path(outputs["RareVariantEnrichment.gene_pc_qc_tsv_gz"]).read_bytes()[:2] == b"\x1f\x8b"

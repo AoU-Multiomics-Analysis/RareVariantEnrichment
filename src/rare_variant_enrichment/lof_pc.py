@@ -1,6 +1,7 @@
 import csv
 from dataclasses import dataclass
 import gzip
+import json
 import logging
 import math
 import platform
@@ -270,13 +271,7 @@ def read_principal_components(path: Path) -> PrincipalComponents:
             header = next(reader)
         except StopIteration as error:
             raise ValueError("Principal-components TSV is empty") from error
-        if len(header) < 2 or header[0] != "ID":
-            raise ValueError("Principal-components TSV header must begin with ID, PC1")
-        expected_pcs = [f"PC{index}" for index in range(1, len(header))]
-        if header[1:] != expected_pcs:
-            raise ValueError(
-                "Principal-components TSV header PCs must be consecutive from PC1"
-            )
+        _principal_component_header_count(header)
         for line_number, fields in enumerate(reader, start=2):
             if not fields or all(not field.strip() for field in fields):
                 continue
@@ -311,6 +306,25 @@ def read_principal_components(path: Path) -> PrincipalComponents:
     return PrincipalComponents(tuple(sample_ids), np.asarray(rows, dtype=float))
 
 
+def read_principal_component_header(path: Path) -> int:
+    with open_text(path) as handle:
+        reader = csv.reader(handle, delimiter="\t")
+        try:
+            header = next(reader)
+        except StopIteration as error:
+            raise ValueError("Principal-components TSV is empty") from error
+    return _principal_component_header_count(header)
+
+
+def _principal_component_header_count(header: list[str]) -> int:
+    if len(header) < 2 or header[0] != "ID":
+        raise ValueError("Principal-components TSV header must begin with ID, PC1")
+    expected_pcs = [f"PC{index}" for index in range(1, len(header))]
+    if header[1:] != expected_pcs:
+        raise ValueError("Principal-components TSV header PCs must be consecutive from PC1")
+    return len(header) - 1
+
+
 def build_pc_grid(requested: Sequence[int], available: int) -> list[int]:
     if isinstance(available, bool) or not isinstance(available, int) or available < 0:
         raise ValueError("Available PC count must be a non-negative integer")
@@ -337,6 +351,24 @@ def build_pc_grid(requested: Sequence[int], available: int) -> list[int]:
     if not values or values[-1] != available:
         values.append(available)
     return values
+
+
+def build_pc_chunks(
+    requested_pc_counts: Sequence[int],
+    available_pc_count: int,
+    pc_counts_per_job: int,
+) -> list[list[int]]:
+    if (
+        isinstance(pc_counts_per_job, bool)
+        or not isinstance(pc_counts_per_job, int)
+        or pc_counts_per_job <= 0
+    ):
+        raise ValueError("pc_counts_per_job must be a positive integer")
+    selected = build_pc_grid(requested_pc_counts, available_pc_count)
+    return [
+        selected[start : start + pc_counts_per_job]
+        for start in range(0, len(selected), pc_counts_per_job)
+    ]
 
 
 def read_lof_carriers(path: Path) -> LofCarriers:
@@ -514,12 +546,19 @@ def calculate_lof_pc_enrichment(
     summary_output: Path,
     gene_pc_qc_output: Path,
     analysis_qc_output: Path,
+    *,
+    pc_grid_mode: str | None = None,
 ) -> None:
     thresholds = validate_negative_z_thresholds(negative_z_thresholds)
     principal_components = read_principal_components(principal_components_path)
     pc_counts = build_pc_grid(
         requested_pc_counts, principal_components.available_pc_count
     )
+    resolved_pc_grid_mode = "adaptive" if not requested_pc_counts else "explicit"
+    if pc_grid_mode is not None:
+        if pc_grid_mode not in {"adaptive", "explicit"}:
+            raise ValueError("pc_grid_mode must be adaptive or explicit")
+        resolved_pc_grid_mode = pc_grid_mode
     coding_genes = _read_protein_coding_genes(protein_coding_genes_path)
     carriers = read_lof_carriers(lof_carriers_path)
     LOGGER.info(
@@ -864,7 +903,7 @@ def calculate_lof_pc_enrichment(
             "fdr_scope": "global_across_all_emitted_rows",
             "negative_z_thresholds": thresholds,
             "observation_unit": "eligible sample-gene residual",
-            "pc_grid_mode": "adaptive" if not requested_pc_counts else "explicit",
+            "pc_grid_mode": resolved_pc_grid_mode,
             "provenance": {
                 "input_files": {
                     "lof_carriers": str(lof_carriers_path),
@@ -997,6 +1036,481 @@ def _write_result_rows(path: Path, rows: Sequence[Mapping[str, object]]) -> None
         )
         writer.writeheader()
         writer.writerows(rows)
+
+
+def merge_lof_pc_enrichment(
+    results_inputs: Sequence[Path],
+    summary_inputs: Sequence[Path],
+    gene_pc_qc_inputs: Sequence[Path],
+    analysis_qc_inputs: Sequence[Path],
+    results_output: Path,
+    summary_output: Path,
+    gene_pc_qc_output: Path,
+    analysis_qc_output: Path,
+) -> None:
+    shard_count = len(results_inputs)
+    if shard_count == 0 or any(
+        len(inputs) != shard_count
+        for inputs in (summary_inputs, gene_pc_qc_inputs, analysis_qc_inputs)
+    ):
+        raise ValueError("All merge input lists must have the same nonzero shard count")
+
+    summaries = [_read_json_object(path, "summary") for path in summary_inputs]
+    first_summary = summaries[0]
+    metadata_keys = (
+        "negative_z_thresholds",
+        "carrier_definitions",
+        "available_pc_count",
+        "provenance",
+        "observation_unit",
+        "pc_grid_mode",
+        "residualization",
+        "statistical_limitation",
+    )
+    for summary in summaries:
+        _validate_merge_summary_metadata(summary)
+    for summary in summaries[1:]:
+        for key in metadata_keys:
+            if summary.get(key) != first_summary.get(key):
+                raise ValueError(f"Shard summaries have incompatible {key}")
+
+    thresholds = validate_negative_z_thresholds(
+        _read_ordered_floats(first_summary, "negative_z_thresholds")
+    )
+    carrier_definitions = _read_ordered_strings(first_summary, "carrier_definitions")
+    selected_pc_counts: list[int] = []
+    selected_pc_set: set[int] = set()
+    for summary in summaries:
+        shard_pc_counts = _read_ordered_ints(summary, "selected_pc_counts")
+        available_pc_count = _read_available_pc_count(summary)
+        for pc_count in shard_pc_counts:
+            if pc_count > available_pc_count:
+                raise ValueError("Summary selected_pc_counts exceed available_pc_count")
+            if pc_count in selected_pc_set:
+                raise ValueError(f"Duplicate PC count across merge shards: {pc_count}")
+            selected_pc_set.add(pc_count)
+            selected_pc_counts.append(pc_count)
+    selected_pc_counts.sort()
+
+    all_rows: list[dict[str, str]] = []
+    for results_path, summary in zip(results_inputs, summaries, strict=True):
+        shard_pc_counts = set(_read_ordered_ints(summary, "selected_pc_counts"))
+        expected_combinations = {
+            (pc_count, threshold, carrier_definition)
+            for pc_count in shard_pc_counts
+            for threshold in thresholds
+            for carrier_definition in carrier_definitions
+        }
+        observed_combinations: set[tuple[int, float, str]] = set()
+        shard_row_count = 0
+        with results_path.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            if reader.fieldnames != list(RESULT_HEADER):
+                raise ValueError(f"Results TSV {results_path} does not match the result schema")
+            for line_number, row in enumerate(reader, start=2):
+                if None in row or set(row) != set(RESULT_HEADER):
+                    raise ValueError(f"Results TSV {results_path} line {line_number} is malformed")
+                pc_count = _parse_merge_pc_count(row["pc_count"], results_path, line_number)
+                if pc_count not in shard_pc_counts:
+                    raise ValueError(
+                        f"Results TSV {results_path} line {line_number} has an unselected PC count"
+                    )
+                threshold = _parse_merge_float(
+                    row["z_threshold"], results_path, line_number, "z_threshold"
+                )
+                if threshold not in thresholds:
+                    raise ValueError(
+                        f"Results TSV {results_path} line {line_number} has an unknown z_threshold"
+                    )
+                if row["carrier_definition"] not in carrier_definitions:
+                    raise ValueError(
+                        f"Results TSV {results_path} line {line_number} has an unknown carrier definition"
+                    )
+                combination = (pc_count, threshold, row["carrier_definition"])
+                if combination in observed_combinations:
+                    raise ValueError(
+                        f"Results TSV {results_path} has duplicate result combinations"
+                    )
+                observed_combinations.add(combination)
+                p_value = _parse_merge_float(
+                    row["fisher_p_value"], results_path, line_number, "fisher_p_value"
+                )
+                if not 0.0 <= p_value <= 1.0:
+                    raise ValueError(
+                        f"Results TSV {results_path} line {line_number} has an invalid fisher_p_value"
+                    )
+                all_rows.append({column: row[column] for column in RESULT_HEADER})
+                shard_row_count += 1
+        if observed_combinations != expected_combinations:
+            raise ValueError(
+                f"Results TSV {results_path} result combinations do not match the shard summary"
+            )
+        if shard_row_count != _read_emitted_result_rows(summary):
+            raise ValueError(f"Results TSV {results_path} row count does not match the shard summary")
+
+    threshold_order = {value: index for index, value in enumerate(thresholds)}
+    carrier_order = {value: index for index, value in enumerate(carrier_definitions)}
+    all_rows.sort(
+        key=lambda row: (
+            int(row["pc_count"]),
+            threshold_order[float(row["z_threshold"])],
+            carrier_order[row["carrier_definition"]],
+        )
+    )
+    p_values = [float(row["fisher_p_value"]) for row in all_rows]
+    for row, adjusted in zip(all_rows, benjamini_hochberg(p_values), strict=True):
+        row["fisher_fdr_bh"] = _format_optional_float(adjusted)
+
+    analysis_qcs = [_read_json_object(path, "analysis QC") for path in analysis_qc_inputs]
+    first_analysis_qc_metadata = {
+        key: value for key, value in analysis_qcs[0].items() if key != "per_pc"
+    }
+    for analysis_qc in analysis_qcs[1:]:
+        metadata = {key: value for key, value in analysis_qc.items() if key != "per_pc"}
+        if metadata != first_analysis_qc_metadata:
+            raise ValueError("Analysis QC shards have incompatible top-level metadata")
+
+    validated_per_pc_by_shard: list[dict[str, dict[str, object]]] = []
+    for summary, analysis_qc in zip(summaries, analysis_qcs, strict=True):
+        per_pc = analysis_qc.get("per_pc")
+        if not isinstance(per_pc, dict):
+            raise ValueError("Analysis QC must contain a per_pc object")
+        shard_pc_counts = _read_ordered_ints(summary, "selected_pc_counts")
+        if set(per_pc) != {str(pc_count) for pc_count in shard_pc_counts}:
+            raise ValueError("Analysis QC per_pc keys do not match the shard summary")
+        validated_per_pc_by_shard.append(
+            {
+                str(pc_count): _merge_pc_qc(per_pc[str(pc_count)])
+                for pc_count in shard_pc_counts
+            }
+        )
+
+    gene_qc_rows: list[list[str]] = []
+    for path, summary, analysis_qc, validated_per_pc in zip(
+        gene_pc_qc_inputs,
+        summaries,
+        analysis_qcs,
+        validated_per_pc_by_shard,
+        strict=True,
+    ):
+        gene_qc_rows.extend(
+            _read_and_validate_gene_pc_qc_shard(
+                path, summary, analysis_qc, validated_per_pc
+            )
+        )
+
+    merged_analysis_qc = first_analysis_qc_metadata
+    merged_per_pc: dict[str, dict[str, object]] = {}
+    for summary, validated_per_pc in zip(
+        summaries, validated_per_pc_by_shard, strict=True
+    ):
+        shard_pc_counts = _read_ordered_ints(summary, "selected_pc_counts")
+        for pc_count in shard_pc_counts:
+            merged_per_pc[str(pc_count)] = validated_per_pc[str(pc_count)]
+    merged_analysis_qc["per_pc"] = {
+        str(pc_count): merged_per_pc[str(pc_count)] for pc_count in selected_pc_counts
+    }
+
+    merged_summary = dict(first_summary)
+    merged_summary["selected_pc_counts"] = selected_pc_counts
+    merged_summary["emitted_result_rows"] = len(all_rows)
+    merged_summary["fdr_scope"] = "global_across_all_emitted_rows"
+    _write_result_rows(results_output, all_rows)
+    with gzip.open(gene_pc_qc_output, "wt", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(GENE_PC_QC_HEADER)
+        writer.writerows(gene_qc_rows)
+    write_json(analysis_qc_output, merged_analysis_qc)
+    write_json(summary_output, merged_summary)
+
+
+def _read_json_object(path: Path, description: str) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{description.capitalize()} JSON {path} is invalid") from error
+    if not isinstance(payload, dict):
+        raise ValueError(f"{description.capitalize()} JSON {path} must contain an object")
+    return payload
+
+
+def _validate_merge_summary_metadata(summary: Mapping[str, object]) -> None:
+    _read_available_pc_count(summary)
+    carrier_definitions = _read_ordered_strings(summary, "carrier_definitions")
+    if carrier_definitions != list(CARRIER_DEFINITIONS):
+        raise ValueError("Summary carrier_definitions do not match the result schema")
+    validate_negative_z_thresholds(_read_ordered_floats(summary, "negative_z_thresholds"))
+    _read_emitted_result_rows(summary)
+    _read_nonempty_summary_string(summary, "fdr_scope")
+    _read_nonempty_summary_string(summary, "observation_unit")
+    _read_nonempty_summary_string(summary, "statistical_limitation")
+    if summary.get("pc_grid_mode") not in {"adaptive", "explicit"}:
+        raise ValueError("Summary pc_grid_mode must be adaptive or explicit")
+    residualization = summary.get("residualization")
+    if not isinstance(residualization, dict) or not all(
+        isinstance(residualization.get(key), str) and residualization[key]
+        for key in ("design", "outlier_rule")
+    ):
+        raise ValueError("Summary residualization must contain design and outlier_rule strings")
+    residual_sd_ddof = residualization.get("residual_standard_deviation_ddof")
+    if (
+        isinstance(residual_sd_ddof, bool)
+        or not isinstance(residual_sd_ddof, int)
+        or residual_sd_ddof < 0
+    ):
+        raise ValueError("Summary residualization ddof must be a non-negative integer")
+    _validate_provenance(summary.get("provenance"))
+
+
+def _read_available_pc_count(summary: Mapping[str, object]) -> int:
+    value = summary.get("available_pc_count")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("Summary available_pc_count must be a non-negative integer")
+    return value
+
+
+def _read_emitted_result_rows(summary: Mapping[str, object]) -> int:
+    value = summary.get("emitted_result_rows")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("Summary emitted_result_rows must be a non-negative integer")
+    return value
+
+
+def _read_nonempty_summary_string(summary: Mapping[str, object], key: str) -> str:
+    value = summary.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Summary {key} must be a non-empty string")
+    return value
+
+
+def _validate_provenance(value: object) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("Summary provenance must be an object")
+    required_sections = {
+        "input_files": (
+            "lof_carriers",
+            "phenotype_bed",
+            "principal_components",
+            "protein_coding_genes",
+        ),
+        "software_versions": ("numpy", "python", "rare_variant_enrichment"),
+    }
+    for section, keys in required_sections.items():
+        entries = value.get(section)
+        if not isinstance(entries, dict) or any(
+            not isinstance(entries.get(key), str) or not entries[key] for key in keys
+        ):
+            raise ValueError(f"Summary provenance {section} is malformed")
+
+
+def _read_ordered_strings(summary: Mapping[str, object], key: str) -> list[str]:
+    values = summary.get(key)
+    if (
+        not isinstance(values, list)
+        or not values
+        or any(not isinstance(value, str) or not value for value in values)
+        or len(values) != len(set(values))
+    ):
+        raise ValueError(f"Summary {key} must be a non-empty unique string list")
+    return values
+
+
+def _read_ordered_ints(summary: Mapping[str, object], key: str) -> list[int]:
+    values = summary.get(key)
+    if (
+        not isinstance(values, list)
+        or not values
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values)
+        or len(values) != len(set(values))
+    ):
+        raise ValueError(f"Summary {key} must be a non-empty unique integer list")
+    return values
+
+
+def _read_ordered_floats(summary: Mapping[str, object], key: str) -> list[float]:
+    values = summary.get(key)
+    if not isinstance(values, list) or not values:
+        raise ValueError(f"Summary {key} must be a non-empty finite number list")
+    parsed: list[float] = []
+    for value in values:
+        if isinstance(value, bool):
+            raise ValueError(f"Summary {key} must be a non-empty finite number list")
+        try:
+            parsed_value = float(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Summary {key} must be a non-empty finite number list") from error
+        if not math.isfinite(parsed_value):
+            raise ValueError(f"Summary {key} must be a non-empty finite number list")
+        parsed.append(parsed_value)
+    if len(parsed) != len(set(parsed)):
+        raise ValueError(f"Summary {key} must be a non-empty finite number list")
+    return parsed
+
+
+def _parse_merge_pc_count(value: str, path: Path, line_number: int) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise ValueError(
+            f"Results TSV {path} line {line_number} has an invalid pc_count"
+        ) from error
+    if parsed < 0 or str(parsed) != value:
+        raise ValueError(f"Results TSV {path} line {line_number} has an invalid pc_count")
+    return parsed
+
+
+def _parse_merge_float(value: str, path: Path, line_number: int, column: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise ValueError(
+            f"Results TSV {path} line {line_number} has an invalid {column}"
+        ) from error
+    if not math.isfinite(parsed):
+        raise ValueError(f"Results TSV {path} line {line_number} has an invalid {column}")
+    return parsed
+
+
+def _read_and_validate_gene_pc_qc_shard(
+    path: Path,
+    summary: Mapping[str, object],
+    analysis_qc: Mapping[str, object],
+    per_pc: Mapping[str, Mapping[str, object]],
+) -> list[list[str]]:
+    shard_pc_counts = _read_ordered_ints(summary, "selected_pc_counts")
+    shard_pc_count_set = set(shard_pc_counts)
+    expected_gene_count = _read_qc_count(analysis_qc, "protein_coding_bed_gene_count")
+    rows_by_pc = {pc_count: [] for pc_count in shard_pc_counts}
+    gene_ids_by_pc = {pc_count: set() for pc_count in shard_pc_counts}
+    observed_gene_pc: set[tuple[str, int]] = set()
+    all_rows: list[list[str]] = []
+
+    with gzip.open(path, "rt", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle, delimiter="\t")
+        try:
+            header = next(reader)
+        except StopIteration as error:
+            raise ValueError(f"Gene-PC QC TSV {path} is empty") from error
+        if header != list(GENE_PC_QC_HEADER):
+            raise ValueError(f"Gene-PC QC TSV {path} does not match the QC schema")
+        for line_number, row in enumerate(reader, start=2):
+            if len(row) != len(GENE_PC_QC_HEADER):
+                raise ValueError(f"Gene-PC QC TSV {path} line {line_number} is malformed")
+            gene_id, pc_count_text, usable_sample_count_text, *_, status, reason = row
+            if not gene_id:
+                raise ValueError(f"Gene-PC QC TSV {path} line {line_number} has an empty gene_id")
+            pc_count = _parse_gene_pc_qc_pc_count(pc_count_text, path, line_number)
+            if pc_count not in shard_pc_count_set:
+                raise ValueError(
+                    f"Gene-PC QC TSV {path} line {line_number} has an unselected PC count"
+                )
+            gene_pc = (gene_id, pc_count)
+            if gene_pc in observed_gene_pc:
+                raise ValueError(f"Gene-PC QC TSV {path} has a duplicate gene-PC QC row")
+            observed_gene_pc.add(gene_pc)
+            usable_sample_count = _parse_gene_pc_qc_count(
+                usable_sample_count_text, path, line_number, "usable_sample_count"
+            )
+            if status == "included":
+                if reason:
+                    raise ValueError(
+                        f"Gene-PC QC TSV {path} line {line_number} has an included row with an exclusion reason"
+                    )
+            elif status == "excluded":
+                if reason not in EXCLUSION_REASONS:
+                    raise ValueError(
+                        f"Gene-PC QC TSV {path} line {line_number} has an invalid exclusion reason"
+                    )
+            else:
+                raise ValueError(f"Gene-PC QC TSV {path} line {line_number} has an invalid status")
+            rows_by_pc[pc_count].append((row, usable_sample_count))
+            gene_ids_by_pc[pc_count].add(gene_id)
+            all_rows.append(row)
+
+    expected_gene_ids: set[str] | None = None
+    for pc_count in shard_pc_counts:
+        rows = rows_by_pc[pc_count]
+        if len(rows) != expected_gene_count:
+            raise ValueError(
+                f"Gene-PC QC TSV {path} does not contain expected gene-PC QC rows for PC count {pc_count}"
+            )
+        if expected_gene_ids is None:
+            expected_gene_ids = gene_ids_by_pc[pc_count]
+        elif gene_ids_by_pc[pc_count] != expected_gene_ids:
+            raise ValueError(
+                f"Gene-PC QC TSV {path} has incompatible gene membership across PC counts"
+            )
+        pc_qc = per_pc[str(pc_count)]
+        included_rows = [(row, count) for row, count in rows if row[6] == "included"]
+        if len(included_rows) != int(pc_qc["eligible_gene_count"]):
+            raise ValueError(
+                f"Gene-PC QC TSV {path} included row count does not match analysis QC for PC count {pc_count}"
+            )
+        if sum(count for _, count in included_rows) != int(pc_qc["total_observations"]):
+            raise ValueError(
+                f"Gene-PC QC TSV {path} total_observations do not match analysis QC for PC count {pc_count}"
+            )
+        exclusion_counts = {reason: 0 for reason in EXCLUSION_REASONS}
+        for row, _ in rows:
+            if row[6] == "excluded":
+                exclusion_counts[row[7]] += 1
+        if exclusion_counts != pc_qc["exclusion_counts"]:
+            raise ValueError(
+                f"Gene-PC QC TSV {path} exclusion counts do not match analysis QC for PC count {pc_count}"
+            )
+    return all_rows
+
+
+def _parse_gene_pc_qc_pc_count(value: str, path: Path, line_number: int) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise ValueError(
+            f"Gene-PC QC TSV {path} line {line_number} has an invalid pc_count"
+        ) from error
+    if parsed < 0 or str(parsed) != value:
+        raise ValueError(f"Gene-PC QC TSV {path} line {line_number} has an invalid pc_count")
+    return parsed
+
+
+def _parse_gene_pc_qc_count(
+    value: str, path: Path, line_number: int, column: str
+) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise ValueError(
+            f"Gene-PC QC TSV {path} line {line_number} has an invalid {column}"
+        ) from error
+    if parsed < 0 or str(parsed) != value:
+        raise ValueError(f"Gene-PC QC TSV {path} line {line_number} has an invalid {column}")
+    return parsed
+
+
+def _merge_pc_qc(pc_qc: Mapping[str, object]) -> dict[str, object]:
+    carrier_observations = pc_qc.get("carrier_observations")
+    exclusion_counts = pc_qc.get("exclusion_counts")
+    if not isinstance(carrier_observations, dict) or not isinstance(exclusion_counts, dict):
+        raise ValueError("Analysis QC per_pc counters must be objects")
+    return {
+        "eligible_gene_count": _read_qc_count(pc_qc, "eligible_gene_count"),
+        "total_observations": _read_qc_count(pc_qc, "total_observations"),
+        "carrier_observations": {
+            definition: _read_qc_count(carrier_observations, definition)
+            for definition in CARRIER_DEFINITIONS
+        },
+        "exclusion_counts": {
+            reason: _read_qc_count(exclusion_counts, reason)
+            for reason in EXCLUSION_REASONS
+        },
+    }
+
+
+def _read_qc_count(values: Mapping[str, object], key: str) -> int:
+    value = values.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"Analysis QC counter {key} must be a non-negative integer")
+    return value
 
 
 def _divide_or_none(numerator: int, denominator: int) -> float | None:

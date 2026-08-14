@@ -113,6 +113,36 @@ def test_explicit_pc_grid_is_strictly_increasing_unique_nonnegative_and_availabl
         lof_pc_module().build_pc_grid(requested, 3)
 
 
+def test_build_pc_chunks_partitions_explicit_grid_with_short_final_chunk():
+    assert lof_pc_module().build_pc_chunks([0, 1, 10, 20, 30], 30, 2) == [
+        [0, 1],
+        [10, 20],
+        [30],
+    ]
+
+
+def test_build_pc_chunks_uses_adaptive_grid_when_requested_grid_is_empty():
+    assert lof_pc_module().build_pc_chunks([], 25, 3) == [
+        [0, 1, 2],
+        [3, 4, 5],
+        [6, 7, 8],
+        [9, 10, 20],
+        [25],
+    ]
+
+
+def test_build_pc_chunks_rejects_nonpositive_chunk_size():
+    with pytest.raises(ValueError, match="positive"):
+        lof_pc_module().build_pc_chunks([0], 1, 0)
+
+
+def test_read_principal_component_header_does_not_parse_data_rows(tmp_path: Path):
+    pcs = tmp_path / "pcs.tsv"
+    pcs.write_text("ID\tPC1\tPC2\nS1\tnot-a-number\tinf\n")
+
+    assert lof_pc_module().read_principal_component_header(pcs) == 2
+
+
 def test_read_principal_components_preserves_string_ids_and_all_finite_values(
     tmp_path: Path,
 ):
@@ -395,6 +425,370 @@ def _run_analysis(
     return outputs
 
 
+def test_calculate_lof_pc_enrichment_preserves_supplied_adaptive_grid_mode(
+    tmp_path: Path,
+):
+    """A chunked adaptive WDL shard must not be relabeled as an explicit grid."""
+    inputs = _write_analysis_fixture(tmp_path)
+    outputs = _run_analysis(
+        tmp_path, inputs, thresholds=[-0.8], pc_counts=[0, 1]
+    )
+
+    lof_pc_module().calculate_lof_pc_enrichment(
+        inputs["phenotype"],
+        inputs["carriers"],
+        inputs["pcs"],
+        inputs["genes"],
+        [-0.8],
+        [0, 1],
+        outputs["results"],
+        outputs["summary"],
+        outputs["gene_qc"],
+        outputs["analysis_qc"],
+        pc_grid_mode="adaptive",
+    )
+
+    assert json.loads(outputs["summary"].read_text())["pc_grid_mode"] == "adaptive"
+
+
+def _write_merge_shard(
+    tmp_path: Path,
+    name: str,
+    *,
+    pc_counts: list[int],
+    p_values: list[float],
+) -> dict[str, Path]:
+    carrier_definitions = list(lof_pc_module().CARRIER_DEFINITIONS)
+    assert len(p_values) == len(carrier_definitions)
+    shard_dir = tmp_path / name
+    shard_dir.mkdir()
+    outputs = {
+        "results": shard_dir / "results.tsv",
+        "summary": shard_dir / "summary.json",
+        "gene_qc": shard_dir / "gene-pc-qc.tsv.gz",
+        "analysis_qc": shard_dir / "analysis-qc.json",
+    }
+    result_header = lof_pc_module().RESULT_HEADER
+    with outputs["results"].open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=result_header, delimiter="\t")
+        writer.writeheader()
+        for pc_count in pc_counts:
+            for index, p_value in enumerate(p_values):
+                writer.writerow(
+                    {
+                        "pc_count": pc_count,
+                        "z_threshold": -2.0,
+                        "carrier_definition": carrier_definitions[index],
+                        "eligible_gene_count": 1,
+                        "total_observations": 4,
+                        "outlier_observations": 1,
+                        "carrier_observations": 1,
+                        "n11": 1,
+                        "n10": 0,
+                        "n01": 0,
+                        "n00": 3,
+                        "outlier_carrier_rate": "1.0",
+                        "nonoutlier_carrier_rate": "0.0",
+                        "carrier_rate_ratio": "NA",
+                        "odds_ratio": "NA",
+                        "odds_ratio_corrected_0_5": "21.0",
+                        "fisher_p_value": p_value,
+                        "fisher_fdr_bh": "1.0",
+                    }
+                )
+    with gzip.open(outputs["gene_qc"], "wt", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(lof_pc_module().GENE_PC_QC_HEADER)
+        for pc_count in pc_counts:
+            writer.writerow([f"GENE_{pc_count}", pc_count, 4, 1, 0.0, 1.0, "included", ""])
+    summary = {
+        "available_pc_count": 2,
+        "carrier_definitions": carrier_definitions,
+        "emitted_result_rows": len(pc_counts) * len(p_values),
+        "fdr_scope": "global_across_all_emitted_rows",
+        "negative_z_thresholds": [-2.0],
+        "observation_unit": "eligible sample-gene residual",
+        "pc_grid_mode": "explicit",
+        "provenance": {
+            "input_files": {
+                "lof_carriers": "lof.tsv",
+                "phenotype_bed": "input.bed",
+                "principal_components": "pcs.tsv",
+                "protein_coding_genes": "genes.tsv",
+            },
+            "software_versions": {
+                "numpy": "2.0.0",
+                "python": "3.12.0",
+                "rare_variant_enrichment": "0.3.0",
+            },
+        },
+        "residualization": {
+            "design": "intercept plus first k principal components",
+            "outlier_rule": "residual_z <= z_threshold",
+            "residual_standard_deviation_ddof": 0,
+        },
+        "selected_pc_counts": pc_counts,
+        "statistical_limitation": "screening",
+    }
+    outputs["summary"].write_text(json.dumps(summary))
+    analysis_qc = {
+        "bed_gene_count": 1,
+        "bed_sample_count": 4,
+        "pc_sample_count": 4,
+        "protein_coding_bed_gene_count": 1,
+        "protein_coding_gene_count": 1,
+        "shared_bed_pc_sample_count": 4,
+        "pre_join_carrier_pair_counts": {"any_lof": 1, "HC": 1, "HC_or_LC": 1},
+        "lof_carrier_table": {"input_row_count": 1},
+        "per_pc": {
+            str(pc_count): {
+                "eligible_gene_count": 1,
+                "total_observations": 4,
+                "carrier_observations": {"any_lof": 1, "HC": 1, "HC_or_LC": 1},
+                "exclusion_counts": {
+                    "insufficient_dof": 0,
+                    "invalid_or_zero_residual_sd": 0,
+                    "other": 0,
+                    "rank_deficiency": 0,
+                },
+            }
+            for pc_count in pc_counts
+        },
+    }
+    outputs["analysis_qc"].write_text(json.dumps(analysis_qc))
+    return outputs
+
+
+def _read_merge_result_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle, delimiter="\t"))
+
+
+def _write_merge_result_rows(path: Path, rows: list[dict[str, str]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=lof_pc_module().RESULT_HEADER, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _read_gene_pc_qc_rows(path: Path) -> list[list[str]]:
+    with gzip.open(path, "rt", encoding="utf-8", newline="") as handle:
+        return list(csv.reader(handle, delimiter="\t"))
+
+
+def _write_gene_pc_qc_rows(path: Path, rows: list[list[str]]) -> None:
+    with gzip.open(path, "wt", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerows(rows)
+
+
+def _rewrite_merge_summary(path: Path, **changes: object) -> None:
+    summary = json.loads(path.read_text())
+    summary.update(changes)
+    path.write_text(json.dumps(summary))
+
+
+def _rewrite_analysis_qc(path: Path, **changes: object) -> None:
+    analysis_qc = json.loads(path.read_text())
+    analysis_qc.update(changes)
+    path.write_text(json.dumps(analysis_qc))
+
+
+def _merge_shards(tmp_path: Path, shards: list[dict[str, Path]]) -> dict[str, Path]:
+    outputs = {
+        "results": tmp_path / "merged-results.tsv",
+        "summary": tmp_path / "merged-summary.json",
+        "gene_qc": tmp_path / "merged-gene-pc-qc.tsv.gz",
+        "analysis_qc": tmp_path / "merged-analysis-qc.json",
+    }
+    lof_pc_module().merge_lof_pc_enrichment(
+        [shard["results"] for shard in shards],
+        [shard["summary"] for shard in shards],
+        [shard["gene_qc"] for shard in shards],
+        [shard["analysis_qc"] for shard in shards],
+        outputs["results"],
+        outputs["summary"],
+        outputs["gene_qc"],
+        outputs["analysis_qc"],
+    )
+    return outputs
+
+
+def test_merge_lof_pc_enrichment_recomputes_global_fdr_and_combines_qc(tmp_path: Path):
+    shard_one = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    shard_two = _write_merge_shard(
+        tmp_path, "two", pc_counts=[1], p_values=[0.02, 0.50, 0.60]
+    )
+
+    outputs = _merge_shards(tmp_path, [shard_one, shard_two])
+
+    rows = list(csv.DictReader(outputs["results"].open(), delimiter="\t"))
+    assert [(row["pc_count"], row["z_threshold"], row["carrier_definition"]) for row in rows] == [
+        ("0", "-2.0", "any_lof"),
+        ("0", "-2.0", "HC"),
+        ("0", "-2.0", "HC_or_LC"),
+        ("1", "-2.0", "any_lof"),
+        ("1", "-2.0", "HC"),
+        ("1", "-2.0", "HC_or_LC"),
+    ]
+    assert [row["fisher_fdr_bh"] for row in rows] == [
+        "0.06",
+        "0.4000000000000001",
+        "0.44999999999999996",
+        "0.06",
+        "0.6",
+        "0.6",
+    ]
+    with gzip.open(outputs["gene_qc"], "rt", encoding="utf-8") as handle:
+        assert len(list(csv.DictReader(handle, delimiter="\t"))) == 2
+    analysis_qc = json.loads(outputs["analysis_qc"].read_text())
+    assert set(analysis_qc["per_pc"]) == {"0", "1"}
+    assert analysis_qc["bed_gene_count"] == 1
+    summary = json.loads(outputs["summary"].read_text())
+    assert summary["selected_pc_counts"] == [0, 1]
+    assert summary["emitted_result_rows"] == 6
+    assert summary["fdr_scope"] == "global_across_all_emitted_rows"
+
+
+def test_merge_lof_pc_enrichment_rejects_duplicate_pc_counts(tmp_path: Path):
+    shard_one = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    shard_two = _write_merge_shard(
+        tmp_path, "two", pc_counts=[0], p_values=[0.02, 0.50, 0.60]
+    )
+
+    with pytest.raises(ValueError, match="Duplicate PC count"):
+        _merge_shards(tmp_path, [shard_one, shard_two])
+
+
+def test_merge_lof_pc_enrichment_rejects_results_missing_a_selected_pc(tmp_path: Path):
+    shard = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    shard["results"].write_text("\t".join(lof_pc_module().RESULT_HEADER) + "\n")
+
+    with pytest.raises(ValueError, match="do not match the shard summary"):
+        _merge_shards(tmp_path, [shard])
+
+
+def test_merge_lof_pc_enrichment_rejects_fisher_p_value_outside_probability_range(
+    tmp_path: Path,
+):
+    shard = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    rows = _read_merge_result_rows(shard["results"])
+    rows[0]["fisher_p_value"] = "1.01"
+    _write_merge_result_rows(shard["results"], rows)
+
+    with pytest.raises(ValueError, match="fisher_p_value"):
+        _merge_shards(tmp_path, [shard])
+
+
+@pytest.mark.parametrize("row_index", [0, -1], ids=["duplicate", "missing"])
+def test_merge_lof_pc_enrichment_rejects_duplicate_or_missing_result_combinations(
+    tmp_path: Path, row_index: int
+):
+    shard = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    rows = _read_merge_result_rows(shard["results"])
+    if row_index == 0:
+        rows[1]["carrier_definition"] = rows[0]["carrier_definition"]
+    else:
+        rows.pop()
+    _write_merge_result_rows(shard["results"], rows)
+
+    with pytest.raises(ValueError, match="result combinations"):
+        _merge_shards(tmp_path, [shard])
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("duplicate", "duplicate gene-PC QC row"),
+        ("missing", "expected gene-PC QC rows"),
+        ("wrong_pc", "unselected PC count"),
+        ("excluded", "included row count"),
+        ("wrong_usable_count", "total_observations"),
+    ],
+)
+def test_merge_lof_pc_enrichment_rejects_incompatible_gene_pc_qc(
+    tmp_path: Path, mutation: str, message: str
+):
+    shard = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    rows = _read_gene_pc_qc_rows(shard["gene_qc"])
+    if mutation == "duplicate":
+        rows.append(rows[1])
+    elif mutation == "missing":
+        rows.pop()
+    elif mutation == "wrong_pc":
+        rows[1][1] = "1"
+    elif mutation == "excluded":
+        rows[1][6:] = ["excluded", "rank_deficiency"]
+    elif mutation == "wrong_usable_count":
+        rows[1][2] = "3"
+    else:
+        raise AssertionError(f"Unhandled mutation: {mutation}")
+    _write_gene_pc_qc_rows(shard["gene_qc"], rows)
+
+    with pytest.raises(ValueError, match=message):
+        _merge_shards(tmp_path, [shard])
+
+
+def test_merge_lof_pc_enrichment_requires_identical_analysis_qc_metadata(
+    tmp_path: Path,
+):
+    shard_one = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    shard_two = _write_merge_shard(
+        tmp_path, "two", pc_counts=[1], p_values=[0.02, 0.50, 0.60]
+    )
+    _rewrite_analysis_qc(shard_two["analysis_qc"], bed_sample_count=5)
+
+    with pytest.raises(ValueError, match="top-level metadata"):
+        _merge_shards(tmp_path, [shard_one, shard_two])
+
+
+def test_merge_lof_pc_enrichment_rejects_invalid_available_pc_count(tmp_path: Path):
+    shard = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    _rewrite_merge_summary(shard["summary"], available_pc_count=True)
+
+    with pytest.raises(ValueError, match="available_pc_count"):
+        _merge_shards(tmp_path, [shard])
+
+
+def test_merge_lof_pc_enrichment_rejects_malformed_provenance(tmp_path: Path):
+    shard = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    _rewrite_merge_summary(shard["summary"], provenance={"input_files": {}})
+
+    with pytest.raises(ValueError, match="provenance"):
+        _merge_shards(tmp_path, [shard])
+
+
+def test_merge_lof_pc_enrichment_forces_global_fdr_scope(tmp_path: Path):
+    shard = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    _rewrite_merge_summary(shard["summary"], fdr_scope="shard_local")
+
+    outputs = _merge_shards(tmp_path, [shard])
+
+    assert json.loads(outputs["summary"].read_text())["fdr_scope"] == (
+        "global_across_all_emitted_rows"
+    )
+
+
 def test_analysis_logs_configuration_progress_and_outputs(tmp_path: Path, caplog):
     inputs = _write_analysis_fixture(tmp_path)
 
@@ -456,6 +850,58 @@ def test_pc_major_complete_data_analysis_uses_incremental_projection_and_logs_in
         for pc_count in (0, 1)
     }
     assert completion_indexes[0] < completion_indexes[1]
+
+
+def test_vectorized_multi_pc_nonorthogonal_analysis_matches_legacy_results_and_qc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The complete-data optimization must retain legacy outputs for nonorthogonal PCs."""
+    inputs = _write_analysis_fixture(tmp_path)
+    vectorized_directory = tmp_path / "vectorized"
+    vectorized_directory.mkdir()
+    vectorized_outputs = _run_analysis(
+        vectorized_directory, inputs, thresholds=[-0.8], pc_counts=[0, 1, 2]
+    )
+
+    module = lof_pc_module()
+    original_matrix_rank = module.np.linalg.matrix_rank
+    rank_calls = 0
+
+    def force_initial_rank_deficiency(*arguments, **kwargs):
+        nonlocal rank_calls
+        rank_calls += 1
+        if rank_calls == 1:
+            return 0
+        return original_matrix_rank(*arguments, **kwargs)
+
+    monkeypatch.setattr(module.np.linalg, "matrix_rank", force_initial_rank_deficiency)
+    legacy_directory = tmp_path / "legacy"
+    legacy_directory.mkdir()
+    legacy_outputs = _run_analysis(
+        legacy_directory, inputs, thresholds=[-0.8], pc_counts=[0, 1, 2]
+    )
+
+    assert _read_merge_result_rows(vectorized_outputs["results"]) == _read_merge_result_rows(
+        legacy_outputs["results"]
+    )
+    vectorized_qc_rows = _read_gene_pc_qc_rows(vectorized_outputs["gene_qc"])
+    legacy_qc_rows = _read_gene_pc_qc_rows(legacy_outputs["gene_qc"])
+    assert [row[:4] + row[6:] for row in vectorized_qc_rows] == [
+        row[:4] + row[6:] for row in legacy_qc_rows
+    ]
+    for vectorized_row, legacy_row in zip(
+        vectorized_qc_rows[1:], legacy_qc_rows[1:], strict=True
+    ):
+        for column in (4, 5):
+            if vectorized_row[column] == "NA":
+                assert legacy_row[column] == "NA"
+            else:
+                assert float(vectorized_row[column]) == pytest.approx(
+                    float(legacy_row[column]), abs=1e-12
+                )
+    assert json.loads(vectorized_outputs["analysis_qc"].read_text()) == json.loads(
+        legacy_outputs["analysis_qc"].read_text()
+    )
 
 
 def test_missing_expression_fallback_retains_legacy_results_and_qc_exclusions(

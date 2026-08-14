@@ -31,12 +31,21 @@ for declaration in workflow.inputs:
         default = declaration.expr.eval(WDL.Env.Bindings(), stdlib).json
     inputs[declaration.name] = {"type": str(declaration.type), "default": default}
 calls = [item for item in workflow.body if isinstance(item, WDL.Tree.Call)]
+scatters = [item for item in workflow.body if isinstance(item, WDL.Tree.Scatter)]
 print(json.dumps({
     "inputs": inputs,
     "outputs": {item.name: str(item.type) for item in workflow.outputs},
     "tasks": sorted(item.name for item in document.tasks),
     "calls": [item.name for item in calls],
     "call_inputs": {item.name: {key: str(value) for key, value in item.inputs.items()} for item in calls},
+    "scatters": [{
+        "variable": item.variable,
+        "expr": str(item.expr),
+        "calls": [{
+            "name": child.name,
+            "inputs": {key: str(value) for key, value in child.inputs.items()},
+        } for child in item.body if isinstance(child, WDL.Tree.Call)],
+    } for item in scatters],
     "runtime_keys": {item.name: sorted(item.runtime) for item in document.tasks},
     "task_inputs": {item.name: {decl.name: str(decl.type) for decl in item.inputs} for item in document.tasks},
     "workflow_body_kinds": [type(item).__name__ for item in workflow.body],
@@ -97,6 +106,7 @@ def test_wdl_has_only_the_four_file_public_inputs_and_required_defaults():
             "default": [-2.0, -3.0, -4.0, -5.0, -6.0],
         },
         "pc_counts": {"type": "Array[Int]", "default": []},
+        "pc_counts_per_job": {"type": "Int", "default": 10},
         "docker_image": {
             "type": "String",
             "default": "ghcr.io/aou-multiomics-analysis/rarevariantenrichment:main",
@@ -111,11 +121,40 @@ def test_wdl_has_only_the_four_file_public_inputs_and_required_defaults():
     }
 
 
-def test_wdl_has_exactly_two_tasks_two_calls_and_six_outputs_without_legacy_path():
+def test_wdl_scatter_and_merge_preserve_the_six_public_outputs():
     contract = _inspect_workflow()
-    assert contract["tasks"] == ["CalculateLofPcEnrichment", "PrepareProteinCodingGenes"]
-    assert contract["calls"] == ["PrepareProteinCodingGenes", "CalculateLofPcEnrichment"]
-    assert set(contract["workflow_body_kinds"]) <= {"Decl", "Call"}
+    assert contract["tasks"] == [
+        "CalculateLofPcEnrichment",
+        "MergeLofPcEnrichment",
+        "PreparePcChunks",
+        "PrepareProteinCodingGenes",
+    ]
+    assert contract["calls"] == [
+        "PrepareProteinCodingGenes",
+        "PreparePcChunks",
+        "MergeLofPcEnrichment",
+    ]
+    assert contract["scatters"] == [{
+        "variable": "pc_count_chunk",
+        "expr": "pc_count_chunks",
+        "calls": [{
+            "name": "CalculateLofPcEnrichment",
+            "inputs": {
+                "phenotype_bed": "phenotype_bed",
+                "lof_carrier_table": "lof_carrier_table",
+                "principal_components_tsv": "principal_components_tsv",
+                "protein_coding_genes": "PrepareProteinCodingGenes.protein_coding_genes_tsv",
+                "negative_z_thresholds": "negative_z_thresholds",
+                "pc_counts": "pc_count_chunk",
+                "pc_grid_mode": "pc_grid_mode",
+                "docker_image": "docker_image",
+                "cpu": "analysis_cpu",
+                "memory_gb": "analysis_memory_gb",
+                "disk_gb": "dynamic_analysis_disk_gb",
+                "max_retries": "max_retries",
+            },
+        }],
+    }]
     assert contract["outputs"] == {
         "results_tsv": "File",
         "summary_json": "File",
@@ -125,11 +164,11 @@ def test_wdl_has_exactly_two_tasks_two_calls_and_six_outputs_without_legacy_path
         "protein_coding_genes_qc_json": "File",
     }
     serialized = WORKFLOW.read_text()
-    for forbidden in ("VCF", "vcf", "VAT", "vat", "tabix", "scatter", "conditional"):
+    for forbidden in ("VCF", "vcf", "VAT", "vat", "tabix", "conditional"):
         assert forbidden not in serialized
 
 
-def test_wdl_wires_the_two_calls_and_dynamic_disk_floors():
+def test_wdl_wires_chunk_preparation_merge_and_dynamic_disk_floors():
     contract = _inspect_workflow()
     assert contract["call_inputs"] == {
         "PrepareProteinCodingGenes": {
@@ -140,17 +179,25 @@ def test_wdl_wires_the_two_calls_and_dynamic_disk_floors():
             "disk_gb": "dynamic_prepare_disk_gb",
             "max_retries": "max_retries",
         },
-        "CalculateLofPcEnrichment": {
-            "phenotype_bed": "phenotype_bed",
-            "lof_carrier_table": "lof_carrier_table",
+        "PreparePcChunks": {
             "principal_components_tsv": "principal_components_tsv",
-            "protein_coding_genes": "PrepareProteinCodingGenes.protein_coding_genes_tsv",
-            "negative_z_thresholds": "negative_z_thresholds",
             "pc_counts": "pc_counts",
+            "pc_counts_per_job": "pc_counts_per_job",
+            "docker_image": "docker_image",
+            "cpu": "1",
+            "memory_gb": "4",
+            "disk_gb": "calculated_pc_chunk_disk_gb",
+            "max_retries": "max_retries",
+        },
+        "MergeLofPcEnrichment": {
+            "results_inputs": "CalculateLofPcEnrichment.results_tsv",
+            "summary_inputs": "CalculateLofPcEnrichment.summary_json",
+            "gene_pc_qc_inputs": "CalculateLofPcEnrichment.gene_pc_qc_tsv_gz",
+            "analysis_qc_inputs": "CalculateLofPcEnrichment.analysis_qc_json",
             "docker_image": "docker_image",
             "cpu": "analysis_cpu",
             "memory_gb": "analysis_memory_gb",
-            "disk_gb": "dynamic_analysis_disk_gb",
+            "disk_gb": "dynamic_merge_disk_gb",
             "max_retries": "max_retries",
         },
     }
@@ -162,6 +209,12 @@ def test_wdl_wires_the_two_calls_and_dynamic_disk_floors():
         "if calculated_prepare_disk_gb > prepare_disk_gb then "
         "calculated_prepare_disk_gb else prepare_disk_gb"
     )
+    assert declarations["calculated_pc_chunk_disk_gb"] == (
+        'ceil((size(principal_components_tsv,"GiB") * 2.0 + 20.0))'
+    )
+    assert declarations["pc_grid_mode"] == (
+        'if length(pc_counts) == 0 then "adaptive" else "explicit"'
+    )
     assert declarations["calculated_analysis_disk_gb"] == (
         'ceil(((size(phenotype_bed,"GiB") + size(lof_carrier_table,"GiB") + '
         'size(principal_components_tsv,"GiB") + size(gene_annotation_gtf,"GiB")) * 2.0 + 20.0))'
@@ -169,6 +222,16 @@ def test_wdl_wires_the_two_calls_and_dynamic_disk_floors():
     assert declarations["dynamic_analysis_disk_gb"] == (
         "if calculated_analysis_disk_gb > analysis_disk_gb then "
         "calculated_analysis_disk_gb else analysis_disk_gb"
+    )
+    assert declarations["calculated_merge_disk_gb"] == (
+        'ceil(((size(CalculateLofPcEnrichment.results_tsv,"GiB") + '
+        'size(CalculateLofPcEnrichment.summary_json,"GiB") + '
+        'size(CalculateLofPcEnrichment.gene_pc_qc_tsv_gz,"GiB") + '
+        'size(CalculateLofPcEnrichment.analysis_qc_json,"GiB")) * 2.0 + 20.0))'
+    )
+    assert declarations["dynamic_merge_disk_gb"] == (
+        "if calculated_merge_disk_gb > analysis_disk_gb then "
+        "calculated_merge_disk_gb else analysis_disk_gb"
     )
 
 
@@ -190,6 +253,28 @@ def test_wdl_task_interfaces_and_retries_are_complete():
             "protein_coding_genes": "File",
             "negative_z_thresholds": "Array[Float]",
             "pc_counts": "Array[Int]",
+            "pc_grid_mode": "String",
+            "docker_image": "String",
+            "cpu": "Int",
+            "memory_gb": "Int",
+            "disk_gb": "Int",
+            "max_retries": "Int",
+        },
+        "PreparePcChunks": {
+            "principal_components_tsv": "File",
+            "pc_counts": "Array[Int]",
+            "pc_counts_per_job": "Int",
+            "docker_image": "String",
+            "cpu": "Int",
+            "memory_gb": "Int",
+            "disk_gb": "Int",
+            "max_retries": "Int",
+        },
+        "MergeLofPcEnrichment": {
+            "results_inputs": "Array[File]",
+            "summary_inputs": "Array[File]",
+            "gene_pc_qc_inputs": "Array[File]",
+            "analysis_qc_inputs": "Array[File]",
             "docker_image": "String",
             "cpu": "Int",
             "memory_gb": "Int",
@@ -229,6 +314,12 @@ values = {
     'protein_coding_genes': WDL.Value.File('/tmp/protein coding.tsv'),
     'negative_z_thresholds': array(WDL.Type.Float(), [WDL.Value.Float(-2.0)]),
     'pc_counts': array(WDL.Type.Int(), []),
+    'pc_grid_mode': WDL.Value.String('adaptive'),
+    'pc_counts_per_job': WDL.Value.Int(1),
+    'results_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/results one.tsv')]),
+    'summary_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/summary one.json')]),
+    'gene_pc_qc_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/gene qc one.tsv.gz')]),
+    'analysis_qc_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/analysis qc one.json')]),
     'docker_image': WDL.Value.String(dangerous_image),
     'cpu': WDL.Value.Int(1), 'memory_gb': WDL.Value.Int(1), 'disk_gb': WDL.Value.Int(1),
     'max_retries': WDL.Value.Int(1),
@@ -265,6 +356,22 @@ print(json.dumps(rendered, sort_keys=True))
     assert '"/tmp/principal components.tsv"' in analysis["command"]
     assert '"/tmp/protein coding.tsv"' in analysis["command"]
     assert '--negative-z-thresholds="$negative_z_thresholds_csv"' in analysis["command"]
+    assert '--pc-grid-mode "adaptive"' in analysis["command"]
     assert dangerous_image not in analysis["command"]
     assert analysis["generated_files"]["negative_z_thresholds_file"] == ["-2.000000"]
     assert analysis["generated_files"]["pc_counts_file"] == []
+    chunks = rendered["PreparePcChunks"]
+    assert '"/tmp/principal components.tsv"' in chunks["command"]
+    assert '--pc-counts "$pc_counts_csv"' in chunks["command"]
+    assert chunks["generated_files"]["pc_counts_file"] == []
+    merge = rendered["MergeLofPcEnrichment"]
+    assert '--results-input-list "' in merge["command"]
+    assert '--summary-input-list "' in merge["command"]
+    assert '--gene-pc-qc-input-list "' in merge["command"]
+    assert '--analysis-qc-input-list "' in merge["command"]
+    assert merge["generated_files"] == {
+        "results_input_list": ["/tmp/results one.tsv"],
+        "summary_input_list": ["/tmp/summary one.json"],
+        "gene_pc_qc_input_list": ["/tmp/gene qc one.tsv.gz"],
+        "analysis_qc_input_list": ["/tmp/analysis qc one.json"],
+    }

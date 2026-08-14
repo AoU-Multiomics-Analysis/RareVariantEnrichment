@@ -62,11 +62,13 @@ SAMPLE_1  -0.14  1.02  0.37  ...
 
 `pc_counts` defaults to `[]`, which selects an adaptive grid: every count 0–10, every 10 through 100, every 50 through 500, every 100 above 500, and always the final available PC count. Provide an explicit strictly increasing, unique list of non-negative counts no greater than the available PC count to override it.
 
+`pc_counts_per_job` defaults to `10`. It controls how many selected PC-count settings are evaluated by each analysis job; it does not change the number of PCA columns available to a model. The workflow validates the PC header, partitions the selected grid into jobs of at most this size, and merges their intermediate outputs before publishing the final analysis files.
+
 For each PC count and coding gene, the workflow fits finite expression observations to an intercept plus the first `k` PCs. It requires observations greater than fitted rank plus one, rejects rank-deficient designs and zero/non-finite residual SD, centers residuals, and divides by population SD (`ddof=0`). Missing BED values remain missing rather than becoming residuals.
 
 ## Run
 
-Build or choose a container image that includes this package and NumPy 2 or later. The WDL defaults are intentionally high for cohort-scale input localization: preparation uses 2 CPUs, 32 GB RAM, and 500 GB disk; analysis uses 8 CPUs, 128 GB RAM, and 1000 GB disk. Both disks are dynamically raised to `ceil(2 × localized input GiB + 20)` when required. `max_retries` defaults to 1 for both tasks.
+Build or choose a container image that includes this package and NumPy 2 or later. The WDL defaults are intentionally high for cohort-scale input localization: preparation uses 2 CPUs, 32 GB RAM, and 500 GB disk; analysis shards and shard merging use 8 CPUs, 128 GB RAM, and the 1000 GB analysis-disk baseline; header-only PC-grid chunk preparation uses 1 CPU and 4 GB RAM. Disk is dynamically raised to `ceil(2 × localized input GiB + 20)` when required: from the GTF for preparation, the PC file for chunk preparation, analysis inputs for each shard, and all localized shard outputs for merging. `max_retries` defaults to 1 for every task.
 
 ```bash
 miniwdl run workflows/rare_variant_enrichment.wdl \
@@ -96,7 +98,7 @@ Legacy Python CLI commands remain available for compatibility, but are not part 
 
 The workflow emits exactly six files:
 
-- `results_tsv`: one row per PC count × negative threshold × carrier definition.
+- `results_tsv`: one row per PC count × negative threshold × carrier definition, merged across analysis shards.
 - `summary_json`: selected grid/settings, global FDR scope, residualization description, provenance, and the screening limitation.
 - `gene_pc_qc_tsv_gz`: compressed per-normalized-gene/per-PC QC with usable samples, rank, residual mean/SD, status, and exclusion reason.
 - `analysis_qc_json`: BED/PC overlap counts, pre-join carrier-pair counts, LoF input QC, and per-PC eligibility, actual carrier-observation, and structured exclusion counters.
@@ -115,6 +117,8 @@ The workflow emits exactly six files:
 | `fisher_p_value`, `fisher_fdr_bh` | Two-sided Fisher exact p-value and global Benjamini–Hochberg FDR across every emitted row. |
 
 The `analysis_qc_json` reconciles each PC-specific `carrier_observations` count with every result row: `carrier_observations = n11 + n10`. Pre-join carrier counts are intentionally reported separately because carriers absent from the BED/PC-gene observation set do not enter a Fisher table.
+
+Per-shard analysis files are workflow intermediates, not public outputs. During merge, `fisher_fdr_bh` is recomputed across every final result row, preserving a global FDR scope rather than retaining shard-local adjustments.
 
 ## Interpretation
 

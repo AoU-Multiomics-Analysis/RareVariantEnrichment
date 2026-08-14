@@ -25,6 +25,7 @@ def test_cli_lists_workflow_subcommands():
         "calculate",
         "prepare-protein-coding-genes",
         "lof-pc-enrichment",
+        "merge-lof-pc-enrichment",
     ):
         assert command in result.stdout
 
@@ -102,6 +103,96 @@ def test_lof_pc_enrichment_cli_dispatches_exact_contract(monkeypatch):
         Path("genes.tsv"),
         [-2.0, -3.0],
         [0, 10],
+        Path("results.tsv"),
+        Path("summary.json"),
+        Path("gene-pc-qc.tsv.gz"),
+        Path("analysis-qc.json"),
+    ]
+
+
+def test_pc_chunks_cli_dispatches_header_count_chunking_and_json_output(monkeypatch):
+    received: list[object] = []
+
+    def fake_read_header(principal_components: Path) -> int:
+        received.append(principal_components)
+        return 30
+
+    def fake_build_chunks(
+        pc_counts: list[int], available_pc_count: int, pc_counts_per_job: int
+    ) -> list[list[int]]:
+        received.extend([pc_counts, available_pc_count, pc_counts_per_job])
+        return [[0, 1], [10]]
+
+    def fake_write_json(output: Path, chunks: list[list[int]]) -> None:
+        received.extend([output, chunks])
+
+    monkeypatch.setattr(cli, "read_principal_component_header", fake_read_header)
+    monkeypatch.setattr(cli, "build_pc_chunks", fake_build_chunks)
+    monkeypatch.setattr(cli, "write_json", fake_write_json)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "pc-chunks",
+            "--principal-components",
+            "pcs.tsv",
+            "--pc-counts",
+            "0,1,10",
+            "--pc-counts-per-job",
+            "2",
+            "--output",
+            "chunks.json",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received == [Path("pcs.tsv"), [0, 1, 10], 30, 2, Path("chunks.json"), [[0, 1], [10]]]
+
+
+def test_merge_lof_pc_enrichment_cli_reads_input_lists_and_dispatches(tmp_path: Path, monkeypatch):
+    lists = {}
+    for name in ("results", "summary", "gene-qc", "analysis-qc"):
+        input_list = tmp_path / f"{name}-inputs.txt"
+        input_list.write_text(f"one-{name}\ntwo-{name}\n")
+        lists[name] = input_list
+    received: list[object] = []
+
+    def fake_merge(*arguments: object) -> None:
+        received.extend(arguments)
+
+    monkeypatch.setattr(cli, "merge_lof_pc_enrichment", fake_merge)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "merge-lof-pc-enrichment",
+            "--results-input-list",
+            str(lists["results"]),
+            "--summary-input-list",
+            str(lists["summary"]),
+            "--gene-pc-qc-input-list",
+            str(lists["gene-qc"]),
+            "--analysis-qc-input-list",
+            str(lists["analysis-qc"]),
+            "--results-output",
+            "results.tsv",
+            "--summary-output",
+            "summary.json",
+            "--gene-pc-qc-output",
+            "gene-pc-qc.tsv.gz",
+            "--analysis-qc-output",
+            "analysis-qc.json",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received == [
+        [Path("one-results"), Path("two-results")],
+        [Path("one-summary"), Path("two-summary")],
+        [Path("one-gene-qc"), Path("two-gene-qc")],
+        [Path("one-analysis-qc"), Path("two-analysis-qc")],
         Path("results.tsv"),
         Path("summary.json"),
         Path("gene-pc-qc.tsv.gz"),
