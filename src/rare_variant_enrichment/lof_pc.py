@@ -100,6 +100,99 @@ class ResidualFit:
     exclusion_reason: str | None
 
 
+@dataclass(frozen=True)
+class CompleteDataProjection:
+    """Cached projection terms for complete-data expression residualization."""
+
+    centered_expression: np.ndarray
+    orthonormal_pcs: np.ndarray
+    component_scores: np.ndarray
+
+    def advance_prediction(
+        self, previous_pc_count: int, pc_count: int, prediction: np.ndarray
+    ) -> np.ndarray:
+        available_pc_count = self.orthonormal_pcs.shape[1]
+        if (
+            isinstance(previous_pc_count, bool)
+            or not isinstance(previous_pc_count, int)
+            or isinstance(pc_count, bool)
+            or not isinstance(pc_count, int)
+            or previous_pc_count < 0
+            or pc_count < previous_pc_count
+            or pc_count > available_pc_count
+        ):
+            raise ValueError("PC counts are outside the prepared principal components")
+        values = np.asarray(prediction, dtype=float)
+        if values.shape != self.centered_expression.shape:
+            raise ValueError("Prediction has incompatible expression shape")
+        return values + (
+            self.orthonormal_pcs[:, previous_pc_count:pc_count]
+            @ self.component_scores[previous_pc_count:pc_count]
+        )
+
+    def z_scores(self, prediction: np.ndarray) -> np.ndarray:
+        values = np.asarray(prediction, dtype=float)
+        if values.shape != self.centered_expression.shape:
+            raise ValueError("Prediction has incompatible expression shape")
+        residuals = self.centered_expression - values
+        residual_sd = np.std(residuals, axis=0, ddof=0)
+        z_scores = np.full(residuals.shape, np.nan, dtype=float)
+        valid_columns = np.isfinite(residual_sd) & (residual_sd > 0)
+        z_scores[:, valid_columns] = (
+            residuals[:, valid_columns] / residual_sd[valid_columns]
+        )
+        return z_scores
+
+
+def prepare_complete_data_projection(
+    expression: np.ndarray,
+    principal_components: np.ndarray,
+    requested_pc_counts: Sequence[int],
+) -> CompleteDataProjection:
+    """Prepare complete-data residualization through centered PC projections."""
+
+    expression_values = np.asarray(expression, dtype=float)
+    pc_values = np.asarray(principal_components, dtype=float)
+    if expression_values.ndim != 2 or pc_values.ndim != 2:
+        raise ValueError("Expression and principal components must be two-dimensional")
+    if expression_values.shape[0] != pc_values.shape[0]:
+        raise ValueError("Expression and principal components have incompatible shapes")
+    if not np.all(np.isfinite(expression_values)):
+        raise ValueError("Complete-data projection requires complete finite expression")
+    if not np.all(np.isfinite(pc_values)):
+        raise ValueError("Complete-data projection requires finite principal components")
+
+    available_pc_count = pc_values.shape[1]
+    validated_counts: list[int] = []
+    for pc_count in requested_pc_counts:
+        if (
+            isinstance(pc_count, bool)
+            or not isinstance(pc_count, int)
+            or pc_count < 0
+            or pc_count > available_pc_count
+        ):
+            raise ValueError("PC count is outside the available principal components")
+        validated_counts.append(pc_count)
+    if not validated_counts:
+        raise ValueError("At least one PC count is required")
+
+    maximum_pc_count = max(validated_counts)
+    centered_expression = expression_values - np.mean(expression_values, axis=0)
+    centered_pcs = pc_values[:, :maximum_pc_count] - np.mean(
+        pc_values[:, :maximum_pc_count], axis=0
+    )
+    pc_norms = np.linalg.norm(centered_pcs, axis=0)
+    if np.any(~np.isfinite(pc_norms)) or np.any(pc_norms == 0):
+        raise ValueError("Principal components must have nonzero finite variance")
+    orthonormal_pcs, _ = np.linalg.qr(centered_pcs, mode="reduced")
+    component_scores = orthonormal_pcs.T @ centered_expression
+    return CompleteDataProjection(
+        centered_expression=centered_expression,
+        orthonormal_pcs=orthonormal_pcs,
+        component_scores=component_scores,
+    )
+
+
 def normalize_ensembl_id(value: str) -> str:
     return re.sub(r"\.[0-9]+$", "", value, count=1)
 
@@ -466,6 +559,7 @@ def calculate_lof_pc_enrichment(
     coding_bed_gene_count = 0
     seen_genes: set[str] = set()
 
+    coding_expression: list[tuple[str, np.ndarray]] = []
     with open_text(phenotype_bed) as bed_handle:
         header = _read_header(bed_handle)
         bed_samples = [sample.strip() for sample in header[4:]]
@@ -485,135 +579,260 @@ def calculate_lof_pc_enrichment(
         shared_pc_rows = [pc_sample_indexes[sample] for sample in shared_samples]
         shared_pc_values = principal_components.values[shared_pc_rows, :]
 
-        with gzip.open(
-            gene_pc_qc_output, "wt", encoding="utf-8", newline=""
-        ) as qc_handle:
-            qc_writer = csv.writer(
-                qc_handle, delimiter="\t", lineterminator="\n"
-            )
-            qc_writer.writerow(GENE_PC_QC_HEADER)
-
-            for line_number, raw_line in enumerate(bed_handle, start=2):
-                if not raw_line.strip():
-                    continue
-                fields = raw_line.rstrip("\r\n").split("\t")
-                if len(fields) != len(header):
-                    raise ValueError(
-                        f"Line {line_number} has {len(fields)} columns; expected {len(header)}"
-                    )
-                chrom, start_text, end_text, feature_id = fields[:4]
-                _parse_tss_interval(start_text, end_text, line_number)
-                if not chrom:
-                    raise ValueError(f"Line {line_number} has an empty chromosome")
-                gene_id = normalize_ensembl_id(feature_id.strip())
-                if not gene_id:
-                    raise ValueError(f"Line {line_number} has an empty feature ID")
-                if gene_id in seen_genes:
-                    raise ValueError(f"Duplicate normalized phenotype gene ID: {gene_id}")
-                seen_genes.add(gene_id)
-                bed_gene_count += 1
-                values = [
-                    _parse_phenotype_value(value, line_number)
-                    for value in fields[4:]
-                ]
-                if gene_id not in coding_genes:
-                    continue
-                coding_bed_gene_count += 1
-                if coding_bed_gene_count % PROGRESS_INTERVAL_GENES == 0:
-                    LOGGER.info(
-                        "Processed %d protein-coding BED genes",
-                        coding_bed_gene_count,
-                    )
-                expression = np.asarray(
-                    [
-                        np.nan if values[column] is None else values[column]
-                        for column in shared_bed_columns
-                    ],
-                    dtype=float,
+        for line_number, raw_line in enumerate(bed_handle, start=2):
+            if not raw_line.strip():
+                continue
+            fields = raw_line.rstrip("\r\n").split("\t")
+            if len(fields) != len(header):
+                raise ValueError(
+                    f"Line {line_number} has {len(fields)} columns; expected {len(header)}"
                 )
-
-                for pc_count in pc_counts:
-                    fit = residualize_expression(
-                        expression, shared_pc_values, pc_count
-                    )
-                    rank_text = "NA" if fit.rank is None else str(fit.rank)
-                    mean_text = _format_optional_float(fit.residual_mean)
-                    sd_text = _format_optional_float(fit.residual_sd)
-                    if fit.exclusion_reason is not None:
-                        reason = (
-                            fit.exclusion_reason
-                            if fit.exclusion_reason in EXCLUSION_REASONS
-                            else "other"
-                        )
-                        per_pc[str(pc_count)]["exclusion_counts"][reason] += 1
-                        qc_writer.writerow(
-                            [
-                                gene_id,
-                                pc_count,
-                                fit.usable_sample_count,
-                                rank_text,
-                                mean_text,
-                                sd_text,
-                                "excluded",
-                                reason,
-                            ]
-                        )
-                        continue
-
-                    qc_writer.writerow(
+            chrom, start_text, end_text, feature_id = fields[:4]
+            _parse_tss_interval(start_text, end_text, line_number)
+            if not chrom:
+                raise ValueError(f"Line {line_number} has an empty chromosome")
+            gene_id = normalize_ensembl_id(feature_id.strip())
+            if not gene_id:
+                raise ValueError(f"Line {line_number} has an empty feature ID")
+            if gene_id in seen_genes:
+                raise ValueError(f"Duplicate normalized phenotype gene ID: {gene_id}")
+            seen_genes.add(gene_id)
+            bed_gene_count += 1
+            values = [
+                _parse_phenotype_value(value, line_number) for value in fields[4:]
+            ]
+            if gene_id not in coding_genes:
+                continue
+            coding_bed_gene_count += 1
+            if coding_bed_gene_count % PROGRESS_INTERVAL_GENES == 0:
+                LOGGER.info(
+                    "Processed %d protein-coding BED genes",
+                    coding_bed_gene_count,
+                )
+            coding_expression.append(
+                (
+                    gene_id,
+                    np.asarray(
                         [
-                            gene_id,
-                            pc_count,
-                            fit.usable_sample_count,
-                            rank_text,
-                            mean_text,
-                            sd_text,
-                            "included",
-                            "",
-                        ]
-                    )
-                    pc_qc = per_pc[str(pc_count)]
-                    pc_qc["eligible_gene_count"] += 1
-                    pc_qc["total_observations"] += fit.usable_sample_count
-                    finite = np.isfinite(fit.z_scores)
-                    carrier_masks: dict[str, np.ndarray] = {}
-                    for definition in CARRIER_DEFINITIONS:
-                        mask = np.asarray(
-                            [
-                                finite[index]
-                                and (sample_id, gene_id)
-                                in carriers.pairs_by_definition[definition]
-                                for index, sample_id in enumerate(shared_samples)
-                            ],
-                            dtype=bool,
-                        )
-                        carrier_masks[definition] = mask
-                        pc_qc["carrier_observations"][definition] += int(
-                            np.count_nonzero(mask)
-                        )
-                    for threshold in thresholds:
-                        outlier_mask = finite & (fit.z_scores <= threshold)
-                        outlier_observations[pc_count][threshold] += int(
-                            np.count_nonzero(outlier_mask)
-                        )
-                        for definition in CARRIER_DEFINITIONS:
-                            outlier_carriers[pc_count][threshold][definition] += int(
-                                np.count_nonzero(
-                                    outlier_mask & carrier_masks[definition]
-                                )
-                            )
+                            np.nan if values[column] is None else values[column]
+                            for column in shared_bed_columns
+                        ],
+                        dtype=float,
+                    ),
+                )
+            )
 
     if coding_bed_gene_count == 0:
-        raise ValueError("No protein-coding genes from the supplied list occur in the phenotype BED")
-
-    for pc_count in pc_counts:
-        pc_qc = per_pc[str(pc_count)]
-        LOGGER.info(
-            "Completed PC count %d: eligible_genes=%d observations=%d",
-            pc_count,
-            pc_qc["eligible_gene_count"],
-            pc_qc["total_observations"],
+        raise ValueError(
+            "No protein-coding genes from the supplied list occur in the phenotype BED"
         )
+
+    with gzip.open(
+        gene_pc_qc_output, "wt", encoding="utf-8", newline=""
+    ) as qc_handle:
+        qc_writer = csv.writer(qc_handle, delimiter="\t", lineterminator="\n")
+        qc_writer.writerow(GENE_PC_QC_HEADER)
+
+        def record_fit(gene_id: str, pc_count: int, fit: ResidualFit) -> None:
+            rank_text = "NA" if fit.rank is None else str(fit.rank)
+            mean_text = _format_optional_float(fit.residual_mean)
+            sd_text = _format_optional_float(fit.residual_sd)
+            if fit.exclusion_reason is not None:
+                reason = (
+                    fit.exclusion_reason
+                    if fit.exclusion_reason in EXCLUSION_REASONS
+                    else "other"
+                )
+                per_pc[str(pc_count)]["exclusion_counts"][reason] += 1
+                qc_writer.writerow(
+                    [
+                        gene_id,
+                        pc_count,
+                        fit.usable_sample_count,
+                        rank_text,
+                        mean_text,
+                        sd_text,
+                        "excluded",
+                        reason,
+                    ]
+                )
+                return
+
+            qc_writer.writerow(
+                [
+                    gene_id,
+                    pc_count,
+                    fit.usable_sample_count,
+                    rank_text,
+                    mean_text,
+                    sd_text,
+                    "included",
+                    "",
+                ]
+            )
+            pc_qc = per_pc[str(pc_count)]
+            pc_qc["eligible_gene_count"] += 1
+            pc_qc["total_observations"] += fit.usable_sample_count
+            finite = np.isfinite(fit.z_scores)
+            carrier_masks: dict[str, np.ndarray] = {}
+            for definition in CARRIER_DEFINITIONS:
+                mask = np.asarray(
+                    [
+                        finite[index]
+                        and (sample_id, gene_id)
+                        in carriers.pairs_by_definition[definition]
+                        for index, sample_id in enumerate(shared_samples)
+                    ],
+                    dtype=bool,
+                )
+                carrier_masks[definition] = mask
+                pc_qc["carrier_observations"][definition] += int(
+                    np.count_nonzero(mask)
+                )
+            for threshold in thresholds:
+                outlier_mask = finite & (fit.z_scores <= threshold)
+                outlier_observations[pc_count][threshold] += int(
+                    np.count_nonzero(outlier_mask)
+                )
+                for definition in CARRIER_DEFINITIONS:
+                    outlier_carriers[pc_count][threshold][definition] += int(
+                        np.count_nonzero(outlier_mask & carrier_masks[definition])
+                    )
+
+        complete_expression = all(
+            np.all(np.isfinite(expression)) for _, expression in coding_expression
+        )
+        rank_deficient_requested_prefix = False
+        if complete_expression:
+            for pc_count in pc_counts:
+                try:
+                    rank = int(
+                        np.linalg.matrix_rank(
+                            np.column_stack(
+                                (
+                                    np.ones(len(shared_samples)),
+                                    shared_pc_values[:, :pc_count],
+                                )
+                            )
+                        )
+                    )
+                except (np.linalg.LinAlgError, ValueError, FloatingPointError):
+                    rank_deficient_requested_prefix = True
+                    break
+                if rank < pc_count + 1:
+                    rank_deficient_requested_prefix = True
+                    break
+
+        if complete_expression and not rank_deficient_requested_prefix:
+            expression_matrix = np.column_stack(
+                [expression for _, expression in coding_expression]
+            )
+            projection = prepare_complete_data_projection(
+                expression_matrix, shared_pc_values, pc_counts
+            )
+            prediction = np.zeros_like(expression_matrix)
+            previous_pc_count = 0
+
+            for pc_count in pc_counts:
+                prediction = projection.advance_prediction(
+                    previous_pc_count, pc_count, prediction
+                )
+                z_scores = projection.z_scores(prediction)
+                residuals = projection.centered_expression - prediction
+                usable_sample_count = len(shared_samples)
+                try:
+                    rank = int(
+                        np.linalg.matrix_rank(
+                            np.column_stack(
+                                (
+                                    np.ones(usable_sample_count),
+                                    shared_pc_values[:, :pc_count],
+                                )
+                            )
+                        )
+                    )
+                except (np.linalg.LinAlgError, ValueError, FloatingPointError):
+                    rank = None
+
+                for gene_index, (gene_id, expression) in enumerate(coding_expression):
+                    if rank is None:
+                        fit = ResidualFit(
+                            np.full(usable_sample_count, np.nan),
+                            usable_sample_count,
+                            None,
+                            None,
+                            None,
+                            "other",
+                        )
+                    elif usable_sample_count <= rank + 1:
+                        fit = ResidualFit(
+                            np.full(usable_sample_count, np.nan),
+                            usable_sample_count,
+                            rank,
+                            None,
+                            None,
+                            "insufficient_dof",
+                        )
+                    elif rank < pc_count + 1:
+                        fit = ResidualFit(
+                            np.full(usable_sample_count, np.nan),
+                            usable_sample_count,
+                            rank,
+                            None,
+                            None,
+                            "rank_deficiency",
+                        )
+                    else:
+                        residual_mean = float(np.mean(residuals[:, gene_index]))
+                        residual_sd = float(np.std(residuals[:, gene_index], ddof=0))
+                        numerical_zero = (
+                            np.finfo(float).eps
+                            * max(1.0, float(np.max(np.abs(expression))))
+                            * 16.0
+                        )
+                        exclusion_reason = None
+                        if (
+                            not math.isfinite(residual_sd)
+                            or residual_sd <= numerical_zero
+                            or not np.all(np.isfinite(z_scores[:, gene_index]))
+                        ):
+                            exclusion_reason = "invalid_or_zero_residual_sd"
+                        fit = ResidualFit(
+                            z_scores[:, gene_index],
+                            usable_sample_count,
+                            rank,
+                            residual_mean,
+                            residual_sd,
+                            exclusion_reason,
+                        )
+                    record_fit(gene_id, pc_count, fit)
+
+                pc_qc = per_pc[str(pc_count)]
+                LOGGER.info(
+                    "Completed PC count %d: eligible_genes=%d observations=%d",
+                    pc_count,
+                    pc_qc["eligible_gene_count"],
+                    pc_qc["total_observations"],
+                )
+                previous_pc_count = pc_count
+        else:
+            for pc_count in pc_counts:
+                for gene_id, expression in coding_expression:
+                    record_fit(
+                        gene_id,
+                        pc_count,
+                        residualize_expression(
+                            expression, shared_pc_values, pc_count
+                        ),
+                    )
+
+                pc_qc = per_pc[str(pc_count)]
+                LOGGER.info(
+                    "Completed PC count %d: eligible_genes=%d observations=%d",
+                    pc_count,
+                    pc_qc["eligible_gene_count"],
+                    pc_qc["total_observations"],
+                )
 
     rows = _build_result_rows(
         pc_counts, thresholds, per_pc, outlier_observations, outlier_carriers
