@@ -5,6 +5,7 @@
   "RareVariantEnrichment.gene_annotation_gtf": "genes.gtf.gz",
   "RareVariantEnrichment.negative_z_thresholds": [-2.0, -3.0, -4.0, -5.0, -6.0],
   "RareVariantEnrichment.pc_counts": [],
+  "RareVariantEnrichment.pc_counts_per_job": 10,
   "RareVariantEnrichment.docker_image": "ghcr.io/aou-multiomics-analysis/rarevariantenrichment:main",
   "RareVariantEnrichment.prepare_cpu": 2,
   "RareVariantEnrichment.prepare_memory_gb": 32,
