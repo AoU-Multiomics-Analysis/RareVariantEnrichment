@@ -27,7 +27,7 @@
 
 **Interfaces:**
 - Consumes: an expression matrix `(samples, genes)`, PC matrix `(samples, available_pcs)`, and requested PC counts.
-- Produces: `CompleteDataProjection` with `z_scores_for(pc_count: int) -> np.ndarray`.
+- Produces: `CompleteDataProjection` with `advance_prediction(previous_pc_count: int, pc_count: int, prediction: np.ndarray) -> np.ndarray` and `z_scores(prediction: np.ndarray) -> np.ndarray`.
 
 - [ ] **Step 1: Write failing equivalence tests**
 
@@ -35,7 +35,8 @@
 def test_complete_data_projection_matches_legacy_residuals():
     state = prepare_complete_data_projection(expression, pcs, [0, 1])
     for pc_count in [0, 1]:
-        actual = state.z_scores_for(pc_count)
+        prediction = state.advance_prediction(previous_pc_count, pc_count, prediction)
+        actual = state.z_scores(prediction)
         expected = np.column_stack([
             residualize_expression(expression[:, column], pcs, pc_count).z_scores
             for column in range(expression.shape[1])
@@ -59,11 +60,13 @@ Expected: FAIL because the projection API does not exist.
 class CompleteDataProjection:
     centered_expression: np.ndarray
     normalized_pcs: np.ndarray
-    coefficients: np.ndarray
+    component_scores: np.ndarray
 
-    def z_scores_for(self, pc_count: int) -> np.ndarray:
-        predicted = self.normalized_pcs[:, :pc_count] @ self.coefficients[:pc_count]
-        residuals = self.centered_expression - predicted
+    def advance_prediction(self, previous_pc_count, pc_count, prediction):
+        return prediction + self.normalized_pcs[:, previous_pc_count:pc_count] @ self.component_scores[previous_pc_count:pc_count]
+
+    def z_scores(self, prediction: np.ndarray) -> np.ndarray:
+        residuals = self.centered_expression - prediction
         return residuals / np.std(residuals, axis=0, ddof=0)
 ```
 
@@ -113,11 +116,13 @@ projection path.
 - [ ] **Step 3: Integrate PC-major processing**
 
 Read all coding BED rows for the complete-data path, construct the projection
-state, then process every requested PC count using `z_scores_for`. Aggregate
-carrier masks, outlier cells, and gene-PC QC rows with existing headers and
-definitions. Emit `Completed PC count` immediately after each count. Retain
-the current line-by-line implementation as the path selected if any coding
-expression entry is missing.
+state, and initialize one zero-valued prediction matrix. For each requested
+PC count, add only the PC interval since the preceding requested count with
+`advance_prediction`, standardize its residual matrix with `z_scores`, then
+aggregate carrier masks, outlier cells, and gene-PC QC rows with existing
+headers and definitions. Emit `Completed PC count` immediately after each
+count. Retain the current line-by-line implementation as the path selected if
+any coding expression entry is missing.
 
 - [ ] **Step 4: Verify GREEN**
 
