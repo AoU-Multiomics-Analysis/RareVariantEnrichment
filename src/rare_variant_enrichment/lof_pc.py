@@ -1055,19 +1055,30 @@ def merge_lof_pc_enrichment(
         "carrier_definitions",
         "available_pc_count",
         "provenance",
+        "observation_unit",
+        "pc_grid_mode",
+        "residualization",
+        "statistical_limitation",
     )
+    for summary in summaries:
+        _validate_merge_summary_metadata(summary)
     for summary in summaries[1:]:
         for key in metadata_keys:
             if summary.get(key) != first_summary.get(key):
                 raise ValueError(f"Shard summaries have incompatible {key}")
 
-    thresholds = _read_ordered_floats(first_summary, "negative_z_thresholds")
+    thresholds = validate_negative_z_thresholds(
+        _read_ordered_floats(first_summary, "negative_z_thresholds")
+    )
     carrier_definitions = _read_ordered_strings(first_summary, "carrier_definitions")
     selected_pc_counts: list[int] = []
     selected_pc_set: set[int] = set()
     for summary in summaries:
         shard_pc_counts = _read_ordered_ints(summary, "selected_pc_counts")
+        available_pc_count = _read_available_pc_count(summary)
         for pc_count in shard_pc_counts:
+            if pc_count > available_pc_count:
+                raise ValueError("Summary selected_pc_counts exceed available_pc_count")
             if pc_count in selected_pc_set:
                 raise ValueError(f"Duplicate PC count across merge shards: {pc_count}")
             selected_pc_set.add(pc_count)
@@ -1077,7 +1088,14 @@ def merge_lof_pc_enrichment(
     all_rows: list[dict[str, str]] = []
     for results_path, summary in zip(results_inputs, summaries, strict=True):
         shard_pc_counts = set(_read_ordered_ints(summary, "selected_pc_counts"))
-        observed_pc_counts: set[int] = set()
+        expected_combinations = {
+            (pc_count, threshold, carrier_definition)
+            for pc_count in shard_pc_counts
+            for threshold in thresholds
+            for carrier_definition in carrier_definitions
+        }
+        observed_combinations: set[tuple[int, float, str]] = set()
+        shard_row_count = 0
         with results_path.open(encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle, delimiter="\t")
             if reader.fieldnames != list(RESULT_HEADER):
@@ -1090,7 +1108,6 @@ def merge_lof_pc_enrichment(
                     raise ValueError(
                         f"Results TSV {results_path} line {line_number} has an unselected PC count"
                     )
-                observed_pc_counts.add(pc_count)
                 threshold = _parse_merge_float(
                     row["z_threshold"], results_path, line_number, "z_threshold"
                 )
@@ -1102,14 +1119,27 @@ def merge_lof_pc_enrichment(
                     raise ValueError(
                         f"Results TSV {results_path} line {line_number} has an unknown carrier definition"
                     )
-                _parse_merge_float(
+                combination = (pc_count, threshold, row["carrier_definition"])
+                if combination in observed_combinations:
+                    raise ValueError(
+                        f"Results TSV {results_path} has duplicate result combinations"
+                    )
+                observed_combinations.add(combination)
+                p_value = _parse_merge_float(
                     row["fisher_p_value"], results_path, line_number, "fisher_p_value"
                 )
+                if not 0.0 <= p_value <= 1.0:
+                    raise ValueError(
+                        f"Results TSV {results_path} line {line_number} has an invalid fisher_p_value"
+                    )
                 all_rows.append({column: row[column] for column in RESULT_HEADER})
-        if observed_pc_counts != shard_pc_counts:
+                shard_row_count += 1
+        if observed_combinations != expected_combinations:
             raise ValueError(
-                f"Results TSV {results_path} PC counts do not match the shard summary"
+                f"Results TSV {results_path} result combinations do not match the shard summary"
             )
+        if shard_row_count != _read_emitted_result_rows(summary):
+            raise ValueError(f"Results TSV {results_path} row count does not match the shard summary")
 
     threshold_order = {value: index for index, value in enumerate(thresholds)}
     carrier_order = {value: index for index, value in enumerate(carrier_definitions)}
@@ -1163,6 +1193,7 @@ def merge_lof_pc_enrichment(
     merged_summary = dict(first_summary)
     merged_summary["selected_pc_counts"] = selected_pc_counts
     merged_summary["emitted_result_rows"] = len(all_rows)
+    merged_summary["fdr_scope"] = "global_across_all_emitted_rows"
     _write_result_rows(results_output, all_rows)
     with gzip.open(gene_pc_qc_output, "wt", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
@@ -1180,6 +1211,75 @@ def _read_json_object(path: Path, description: str) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError(f"{description.capitalize()} JSON {path} must contain an object")
     return payload
+
+
+def _validate_merge_summary_metadata(summary: Mapping[str, object]) -> None:
+    _read_available_pc_count(summary)
+    carrier_definitions = _read_ordered_strings(summary, "carrier_definitions")
+    if carrier_definitions != list(CARRIER_DEFINITIONS):
+        raise ValueError("Summary carrier_definitions do not match the result schema")
+    validate_negative_z_thresholds(_read_ordered_floats(summary, "negative_z_thresholds"))
+    _read_emitted_result_rows(summary)
+    _read_nonempty_summary_string(summary, "fdr_scope")
+    _read_nonempty_summary_string(summary, "observation_unit")
+    _read_nonempty_summary_string(summary, "statistical_limitation")
+    if summary.get("pc_grid_mode") not in {"adaptive", "explicit"}:
+        raise ValueError("Summary pc_grid_mode must be adaptive or explicit")
+    residualization = summary.get("residualization")
+    if not isinstance(residualization, dict) or not all(
+        isinstance(residualization.get(key), str) and residualization[key]
+        for key in ("design", "outlier_rule")
+    ):
+        raise ValueError("Summary residualization must contain design and outlier_rule strings")
+    residual_sd_ddof = residualization.get("residual_standard_deviation_ddof")
+    if (
+        isinstance(residual_sd_ddof, bool)
+        or not isinstance(residual_sd_ddof, int)
+        or residual_sd_ddof < 0
+    ):
+        raise ValueError("Summary residualization ddof must be a non-negative integer")
+    _validate_provenance(summary.get("provenance"))
+
+
+def _read_available_pc_count(summary: Mapping[str, object]) -> int:
+    value = summary.get("available_pc_count")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("Summary available_pc_count must be a non-negative integer")
+    return value
+
+
+def _read_emitted_result_rows(summary: Mapping[str, object]) -> int:
+    value = summary.get("emitted_result_rows")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("Summary emitted_result_rows must be a non-negative integer")
+    return value
+
+
+def _read_nonempty_summary_string(summary: Mapping[str, object], key: str) -> str:
+    value = summary.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Summary {key} must be a non-empty string")
+    return value
+
+
+def _validate_provenance(value: object) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("Summary provenance must be an object")
+    required_sections = {
+        "input_files": (
+            "lof_carriers",
+            "phenotype_bed",
+            "principal_components",
+            "protein_coding_genes",
+        ),
+        "software_versions": ("numpy", "python", "rare_variant_enrichment"),
+    }
+    for section, keys in required_sections.items():
+        entries = value.get(section)
+        if not isinstance(entries, dict) or any(
+            not isinstance(entries.get(key), str) or not entries[key] for key in keys
+        ):
+            raise ValueError(f"Summary provenance {section} is malformed")
 
 
 def _read_ordered_strings(summary: Mapping[str, object], key: str) -> list[str]:

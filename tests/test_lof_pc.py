@@ -432,6 +432,8 @@ def _write_merge_shard(
     pc_counts: list[int],
     p_values: list[float],
 ) -> dict[str, Path]:
+    carrier_definitions = list(lof_pc_module().CARRIER_DEFINITIONS)
+    assert len(p_values) == len(carrier_definitions)
     shard_dir = tmp_path / name
     shard_dir.mkdir()
     outputs = {
@@ -449,8 +451,8 @@ def _write_merge_shard(
                 writer.writerow(
                     {
                         "pc_count": pc_count,
-                        "z_threshold": [-2.0, -3.0][index],
-                        "carrier_definition": ["HC", "any_lof"][index],
+                        "z_threshold": -2.0,
+                        "carrier_definition": carrier_definitions[index],
                         "eligible_gene_count": 1,
                         "total_observations": 4,
                         "outlier_observations": 1,
@@ -475,13 +477,25 @@ def _write_merge_shard(
             writer.writerow([f"GENE_{pc_count}", pc_count, 4, 1, 0.0, 1.0, "included", ""])
     summary = {
         "available_pc_count": 2,
-        "carrier_definitions": ["any_lof", "HC", "HC_or_LC"],
+        "carrier_definitions": carrier_definitions,
         "emitted_result_rows": len(pc_counts) * len(p_values),
         "fdr_scope": "global_across_all_emitted_rows",
-        "negative_z_thresholds": [-2.0, -3.0],
+        "negative_z_thresholds": [-2.0],
         "observation_unit": "eligible sample-gene residual",
         "pc_grid_mode": "explicit",
-        "provenance": {"input_files": {"phenotype_bed": "input.bed"}},
+        "provenance": {
+            "input_files": {
+                "lof_carriers": "lof.tsv",
+                "phenotype_bed": "input.bed",
+                "principal_components": "pcs.tsv",
+                "protein_coding_genes": "genes.tsv",
+            },
+            "software_versions": {
+                "numpy": "2.0.0",
+                "python": "3.12.0",
+                "rare_variant_enrichment": "0.3.0",
+            },
+        },
         "residualization": {
             "design": "intercept plus first k principal components",
             "outlier_rule": "residual_z <= z_threshold",
@@ -519,6 +533,24 @@ def _write_merge_shard(
     return outputs
 
 
+def _read_merge_result_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle, delimiter="\t"))
+
+
+def _write_merge_result_rows(path: Path, rows: list[dict[str, str]]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=lof_pc_module().RESULT_HEADER, delimiter="\t")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _rewrite_merge_summary(path: Path, **changes: object) -> None:
+    summary = json.loads(path.read_text())
+    summary.update(changes)
+    path.write_text(json.dumps(summary))
+
+
 def _merge_shards(tmp_path: Path, shards: list[dict[str, Path]]) -> dict[str, Path]:
     outputs = {
         "results": tmp_path / "merged-results.tsv",
@@ -540,23 +572,31 @@ def _merge_shards(tmp_path: Path, shards: list[dict[str, Path]]) -> dict[str, Pa
 
 
 def test_merge_lof_pc_enrichment_recomputes_global_fdr_and_combines_qc(tmp_path: Path):
-    shard_one = _write_merge_shard(tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20])
-    shard_two = _write_merge_shard(tmp_path, "two", pc_counts=[1], p_values=[0.02, 0.50])
+    shard_one = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    shard_two = _write_merge_shard(
+        tmp_path, "two", pc_counts=[1], p_values=[0.02, 0.50, 0.60]
+    )
 
     outputs = _merge_shards(tmp_path, [shard_one, shard_two])
 
     rows = list(csv.DictReader(outputs["results"].open(), delimiter="\t"))
     assert [(row["pc_count"], row["z_threshold"], row["carrier_definition"]) for row in rows] == [
+        ("0", "-2.0", "any_lof"),
         ("0", "-2.0", "HC"),
-        ("0", "-3.0", "any_lof"),
+        ("0", "-2.0", "HC_or_LC"),
+        ("1", "-2.0", "any_lof"),
         ("1", "-2.0", "HC"),
-        ("1", "-3.0", "any_lof"),
+        ("1", "-2.0", "HC_or_LC"),
     ]
     assert [row["fisher_fdr_bh"] for row in rows] == [
-        "0.04",
-        "0.26666666666666666",
-        "0.04",
-        "0.5",
+        "0.06",
+        "0.4000000000000001",
+        "0.44999999999999996",
+        "0.06",
+        "0.6",
+        "0.6",
     ]
     with gzip.open(outputs["gene_qc"], "rt", encoding="utf-8") as handle:
         assert len(list(csv.DictReader(handle, delimiter="\t"))) == 2
@@ -565,23 +605,95 @@ def test_merge_lof_pc_enrichment_recomputes_global_fdr_and_combines_qc(tmp_path:
     assert analysis_qc["bed_gene_count"] == 1
     summary = json.loads(outputs["summary"].read_text())
     assert summary["selected_pc_counts"] == [0, 1]
-    assert summary["emitted_result_rows"] == 4
+    assert summary["emitted_result_rows"] == 6
+    assert summary["fdr_scope"] == "global_across_all_emitted_rows"
 
 
 def test_merge_lof_pc_enrichment_rejects_duplicate_pc_counts(tmp_path: Path):
-    shard_one = _write_merge_shard(tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20])
-    shard_two = _write_merge_shard(tmp_path, "two", pc_counts=[0], p_values=[0.02, 0.50])
+    shard_one = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    shard_two = _write_merge_shard(
+        tmp_path, "two", pc_counts=[0], p_values=[0.02, 0.50, 0.60]
+    )
 
     with pytest.raises(ValueError, match="Duplicate PC count"):
         _merge_shards(tmp_path, [shard_one, shard_two])
 
 
 def test_merge_lof_pc_enrichment_rejects_results_missing_a_selected_pc(tmp_path: Path):
-    shard = _write_merge_shard(tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20])
+    shard = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
     shard["results"].write_text("\t".join(lof_pc_module().RESULT_HEADER) + "\n")
 
     with pytest.raises(ValueError, match="do not match the shard summary"):
         _merge_shards(tmp_path, [shard])
+
+
+def test_merge_lof_pc_enrichment_rejects_fisher_p_value_outside_probability_range(
+    tmp_path: Path,
+):
+    shard = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    rows = _read_merge_result_rows(shard["results"])
+    rows[0]["fisher_p_value"] = "1.01"
+    _write_merge_result_rows(shard["results"], rows)
+
+    with pytest.raises(ValueError, match="fisher_p_value"):
+        _merge_shards(tmp_path, [shard])
+
+
+@pytest.mark.parametrize("row_index", [0, -1], ids=["duplicate", "missing"])
+def test_merge_lof_pc_enrichment_rejects_duplicate_or_missing_result_combinations(
+    tmp_path: Path, row_index: int
+):
+    shard = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    rows = _read_merge_result_rows(shard["results"])
+    if row_index == 0:
+        rows[1]["carrier_definition"] = rows[0]["carrier_definition"]
+    else:
+        rows.pop()
+    _write_merge_result_rows(shard["results"], rows)
+
+    with pytest.raises(ValueError, match="result combinations"):
+        _merge_shards(tmp_path, [shard])
+
+
+def test_merge_lof_pc_enrichment_rejects_invalid_available_pc_count(tmp_path: Path):
+    shard = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    _rewrite_merge_summary(shard["summary"], available_pc_count=True)
+
+    with pytest.raises(ValueError, match="available_pc_count"):
+        _merge_shards(tmp_path, [shard])
+
+
+def test_merge_lof_pc_enrichment_rejects_malformed_provenance(tmp_path: Path):
+    shard = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    _rewrite_merge_summary(shard["summary"], provenance={"input_files": {}})
+
+    with pytest.raises(ValueError, match="provenance"):
+        _merge_shards(tmp_path, [shard])
+
+
+def test_merge_lof_pc_enrichment_forces_global_fdr_scope(tmp_path: Path):
+    shard = _write_merge_shard(
+        tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    _rewrite_merge_summary(shard["summary"], fdr_scope="shard_local")
+
+    outputs = _merge_shards(tmp_path, [shard])
+
+    assert json.loads(outputs["summary"].read_text())["fdr_scope"] == (
+        "global_across_all_emitted_rows"
+    )
 
 
 def test_analysis_logs_configuration_progress_and_outputs(tmp_path: Path, caplog):
