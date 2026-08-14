@@ -68,7 +68,7 @@ For each PC count and coding gene, the workflow fits finite expression observati
 
 ## Run
 
-Build or choose a container image that includes this package and NumPy 2 or later. The WDL defaults are intentionally high for cohort-scale input localization: preparation uses 2 CPUs, 32 GB RAM, and 500 GB disk; analysis, PC-grid chunk preparation, and shard merging use 8 CPUs, 128 GB RAM, and the 1000 GB analysis-disk baseline. Disk is dynamically raised to `ceil(2 × localized input GiB + 20)` when required: from the GTF for preparation, the PC file for chunk preparation, analysis inputs for each shard, and all localized shard outputs for merging. `max_retries` defaults to 1 for every task.
+Build or choose a container image that includes this package and NumPy 2 or later. The WDL defaults are intentionally high for cohort-scale input localization: preparation uses 2 CPUs, 32 GB RAM, and 500 GB disk; analysis shards and shard merging use 8 CPUs, 128 GB RAM, and the 1000 GB analysis-disk baseline; header-only PC-grid chunk preparation uses 1 CPU and 4 GB RAM. Disk is dynamically raised to `ceil(2 × localized input GiB + 20)` when required: from the GTF for preparation, the PC file for chunk preparation, analysis inputs for each shard, and all localized shard outputs for merging. `max_retries` defaults to 1 for every task.
 
 ```bash
 miniwdl run workflows/rare_variant_enrichment.wdl \
