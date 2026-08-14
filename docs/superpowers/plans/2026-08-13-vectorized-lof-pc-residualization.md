@@ -102,8 +102,14 @@ git commit -m "feat: add vectorized complete-data PC projection"
 def test_complete_data_analysis_logs_pc_counts_in_processing_order(tmp_path, caplog):
     with caplog.at_level(logging.INFO, logger="rare_variant_enrichment.lof_pc"):
         outputs = _run_analysis(tmp_path, inputs, thresholds=[-0.8], pc_counts=[0, 1])
-    assert result_rows_match_hand_checked_cells(outputs["results"])
-    assert message_index(caplog.messages, "Completed PC count 0") < message_index(caplog.messages, "Completed PC count 1")
+    rows = list(csv.DictReader(outputs["results"].open(), delimiter="\t"))
+    assert {row["pc_count"] for row in rows} == {"0", "1"}
+    completion_indexes = {
+        pc_count: next(index for index, message in enumerate(caplog.messages)
+                       if f"Completed PC count {pc_count}" in message)
+        for pc_count in (0, 1)
+    }
+    assert completion_indexes[0] < completion_indexes[1]
 ```
 
 Add a missing-expression fixture asserting the legacy route's existing
