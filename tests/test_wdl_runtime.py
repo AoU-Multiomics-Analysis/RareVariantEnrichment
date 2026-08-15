@@ -58,6 +58,7 @@ def test_wdl_runs_the_four_input_lof_pc_fixture_with_known_cells(tmp_path: Path)
         "RareVariantEnrichment.principal_components_tsv": str((FIXTURES / "principal_components.tsv").resolve()),
         "RareVariantEnrichment.gene_annotation_gtf": str((FIXTURES / "gene_annotation.gtf").resolve()),
         "RareVariantEnrichment.negative_z_thresholds": [-0.8],
+        "RareVariantEnrichment.selection_z_thresholds": [-0.8],
         "RareVariantEnrichment.pc_counts": [0, 1],
         "RareVariantEnrichment.pc_counts_per_job": 1,
         "RareVariantEnrichment.docker_image": TEST_IMAGE,
