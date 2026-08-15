@@ -411,6 +411,12 @@ print(json.dumps(rendered, sort_keys=True))
     assert 'summary_args+=(--summary-input "$path")' in merge["command"]
     assert 'gene_pc_qc_args+=(--gene-pc-qc-input "$path")' in merge["command"]
     assert 'analysis_qc_args+=(--analysis-qc-input "$path")' in merge["command"]
+    assert "<<'EOF'" not in merge["command"]
+    assert 'done < <(printf' in merge["command"]
+    shell_check = subprocess.run(
+        ["bash", "-n"], input=merge["command"], text=True, capture_output=True
+    )
+    assert shell_check.returncode == 0, shell_check.stderr
     assert merge["generated_files"] == {}
     plot = rendered["AnalyzeLofPcEnrichment"]
     assert 'results-input "/tmp/results one.tsv"' in plot["command"]
