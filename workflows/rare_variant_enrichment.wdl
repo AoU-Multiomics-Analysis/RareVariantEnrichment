@@ -236,11 +236,19 @@ task AnalyzeLofPcEnrichment {
             --plot-output "lof_pc_enrichment.svg" \
             --selection-z-thresholds "$selection_z_thresholds_csv" \
             --plateau-fraction "~{plateau_fraction}"
+
+        Rscript "/opt/rare-variant-enrichment/pc_sweep_qc.R" \
+            --results-input "~{results_tsv}" \
+            --selection-z-thresholds "$selection_z_thresholds_csv" \
+            --summary-output "pc_sweep_qc_summary.tsv" \
+            --plot-output "pc_sweep_qc_percent_max.png"
     >>>
 
     output {
         File selection_json = "lof_pc_selection.json"
         File plot_svg = "lof_pc_enrichment.svg"
+        File pc_sweep_qc_summary_tsv = "pc_sweep_qc_summary.tsv"
+        File pc_sweep_qc_plot_png = "pc_sweep_qc_percent_max.png"
     }
 
     runtime {
@@ -357,6 +365,8 @@ workflow RareVariantEnrichment {
         File analysis_qc_json = MergeLofPcEnrichment.analysis_qc_json
         File pc_selection_json = AnalyzeLofPcEnrichment.selection_json
         File enrichment_plot_svg = AnalyzeLofPcEnrichment.plot_svg
+        File pc_sweep_qc_summary_tsv = AnalyzeLofPcEnrichment.pc_sweep_qc_summary_tsv
+        File pc_sweep_qc_plot_png = AnalyzeLofPcEnrichment.pc_sweep_qc_plot_png
         File protein_coding_genes_tsv = PrepareProteinCodingGenes.protein_coding_genes_tsv
         File protein_coding_genes_qc_json = PrepareProteinCodingGenes.protein_coding_genes_qc_json
     }

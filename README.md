@@ -68,7 +68,7 @@ For each PC count and coding gene, the workflow fits finite expression observati
 
 ## Run
 
-Build or choose a container image that includes this package and NumPy 2 or later. The WDL defaults are intentionally high for cohort-scale input localization: preparation uses 2 CPUs, 32 GB RAM, and 500 GB disk; analysis shards and shard merging use 8 CPUs, 128 GB RAM, and the 1000 GB analysis-disk baseline; header-only PC-grid chunk preparation uses 1 CPU and 4 GB RAM. Disk is dynamically raised to `ceil(2 × localized input GiB + 20)` when required: from the GTF for preparation, the PC file for chunk preparation, analysis inputs for each shard, and all localized shard outputs for merging. `max_retries` defaults to 1 for every task.
+Build or choose a container image that includes this package and NumPy 2 or later. The default image also includes R, `data.table`, `ggplot2`, and `ggrepel` for the PC-sweep QC plot. The WDL defaults are intentionally high for cohort-scale input localization: preparation uses 2 CPUs, 32 GB RAM, and 500 GB disk; analysis shards and shard merging use 8 CPUs, 128 GB RAM, and the 1000 GB analysis-disk baseline; header-only PC-grid chunk preparation uses 1 CPU and 4 GB RAM. Disk is dynamically raised to `ceil(2 × localized input GiB + 20)` when required: from the GTF for preparation, the PC file for chunk preparation, analysis inputs for each shard, and all localized shard outputs for merging. `max_retries` defaults to 1 for every task.
 
 ```bash
 miniwdl run workflows/rare_variant_enrichment.wdl \
@@ -96,7 +96,7 @@ Legacy Python CLI commands remain available for compatibility, but are not part 
 
 ## Outputs
 
-The workflow emits exactly eight files:
+The workflow emits exactly ten files:
 
 - `results_tsv`: one row per PC count × negative threshold × carrier definition, merged across analysis shards.
 - `summary_json`: selected grid/settings, global FDR scope, residualization description, provenance, and the screening limitation.
@@ -104,6 +104,8 @@ The workflow emits exactly eight files:
 - `analysis_qc_json`: BED/PC overlap counts, pre-join carrier-pair counts, LoF input QC, and per-PC eligibility, actual carrier-observation, and structured exclusion counters.
 - `pc_selection_json`: median-logOR plateau summaries, excluded/included z thresholds, and the minimum common PC count selected by the 95% plateau rule.
 - `enrichment_plot_svg`: threshold-specific enrichment curves for `HC` and `any_lof`, median logOR curves, and reference lines for the selected PC positions.
+- `pc_sweep_qc_summary_tsv`: analysis-ready PC-sweep values containing the median log odds ratio across the selected z thresholds, the maximum-enrichment PC and odds ratio, and each PC's percentage of the maximum.
+- `pc_sweep_qc_plot_png`: percentage-of-maximum QC plot with exact odds-ratio annotations at selected PC checkpoints and ggrepel-style labels for the maximum enrichment values.
 - `protein_coding_genes_tsv`: the prepared sorted coding-gene list.
 - `protein_coding_genes_qc_json`: GTF record and normalization QC.
 
@@ -123,6 +125,8 @@ The `analysis_qc_json` reconciles each PC-specific `carrier_observations` count 
 Per-shard analysis files are workflow intermediates, not public outputs. During merge, `fisher_fdr_bh` is recomputed across every final result row, preserving a global FDR scope rather than retaining shard-local adjustments.
 
 The workflow also emits `pc_selection_json` and `enrichment_plot_svg`. PC selection summarizes the enrichment curves after excluding `z = -2` by default, because that threshold is not intended to represent the true outlier set. For each of `HC` and `any_lof`, it computes the median log odds ratio across `z = -3, -4, -5, -6`, finds the maximum median log odds ratio, and identifies the earliest PC count reaching 95% of that maximum. The reported selected PC count is the larger of those two definition-specific plateau-entry counts, so both carrier definitions meet the criterion while the number of PCs remains minimal. The SVG retains each threshold curve, overlays the median log-odds curve, and marks both definition-specific plateau entries and the common selected PC count.
+
+The `pc_sweep_qc_summary_tsv` and `pc_sweep_qc_plot_png` outputs use the same `z = -3, -4, -5, -6` median-logOR summary. Each carrier definition is normalized to its own maximum median odds ratio; the plot displays percentage of maximum on the y-axis, a 95% plateau reference, and exact median odds-ratio labels at selected PC counts.
 
 ## Interpretation
 

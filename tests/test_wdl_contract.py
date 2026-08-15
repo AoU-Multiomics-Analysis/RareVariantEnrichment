@@ -126,7 +126,7 @@ def test_wdl_has_only_the_four_file_public_inputs_and_required_defaults():
     }
 
 
-def test_wdl_scatter_and_merge_preserve_the_six_public_outputs():
+def test_wdl_scatter_and_merge_preserve_the_ten_public_outputs():
     contract = _inspect_workflow()
     assert contract["tasks"] == [
         "AnalyzeLofPcEnrichment",
@@ -169,6 +169,8 @@ def test_wdl_scatter_and_merge_preserve_the_six_public_outputs():
         "analysis_qc_json": "File",
         "pc_selection_json": "File",
         "enrichment_plot_svg": "File",
+        "pc_sweep_qc_summary_tsv": "File",
+        "pc_sweep_qc_plot_png": "File",
         "protein_coding_genes_tsv": "File",
         "protein_coding_genes_qc_json": "File",
     }
@@ -411,5 +413,9 @@ print(json.dumps(rendered, sort_keys=True))
     assert 'results-input "/tmp/results one.tsv"' in plot["command"]
     assert '--selection-z-thresholds "$selection_z_thresholds_csv"' in plot["command"]
     assert '--plateau-fraction "0.950000"' in plot["command"]
+    assert 'Rscript "/opt/rare-variant-enrichment/pc_sweep_qc.R"' in plot["command"]
+    assert '--results-input "' in plot["command"]
+    assert '--summary-output "pc_sweep_qc_summary.tsv"' in plot["command"]
+    assert '--plot-output "pc_sweep_qc_percent_max.png"' in plot["command"]
     assert dangerous_image not in plot["command"]
     assert plot["generated_files"]["selection_z_thresholds_file"] == ["-3.000000", "-4.000000"]
