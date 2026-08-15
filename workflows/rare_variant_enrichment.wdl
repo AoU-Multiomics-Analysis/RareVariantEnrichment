@@ -167,19 +167,31 @@ task MergeLofPcEnrichment {
         Int max_retries
     }
 
-    File results_input_list = write_lines(results_inputs)
-    File summary_input_list = write_lines(summary_inputs)
-    File gene_pc_qc_input_list = write_lines(gene_pc_qc_inputs)
-    File analysis_qc_input_list = write_lines(analysis_qc_inputs)
-
     command <<<
         set -euo pipefail
 
+        results_args=()
+        while IFS= read -r path; do results_args+=(--results-input "$path"); done <<'EOF'
+        ~{sep="\n" results_inputs}
+        EOF
+        summary_args=()
+        while IFS= read -r path; do summary_args+=(--summary-input "$path"); done <<'EOF'
+        ~{sep="\n" summary_inputs}
+        EOF
+        gene_pc_qc_args=()
+        while IFS= read -r path; do gene_pc_qc_args+=(--gene-pc-qc-input "$path"); done <<'EOF'
+        ~{sep="\n" gene_pc_qc_inputs}
+        EOF
+        analysis_qc_args=()
+        while IFS= read -r path; do analysis_qc_args+=(--analysis-qc-input "$path"); done <<'EOF'
+        ~{sep="\n" analysis_qc_inputs}
+        EOF
+
         rare-variant-enrichment merge-lof-pc-enrichment \
-            --results-input-list "~{results_input_list}" \
-            --summary-input-list "~{summary_input_list}" \
-            --gene-pc-qc-input-list "~{gene_pc_qc_input_list}" \
-            --analysis-qc-input-list "~{analysis_qc_input_list}" \
+            "${results_args[@]}" \
+            "${summary_args[@]}" \
+            "${gene_pc_qc_args[@]}" \
+            "${analysis_qc_args[@]}" \
             --results-output "lof_pc_enrichment.tsv" \
             --summary-output "lof_pc_enrichment.summary.json" \
             --gene-pc-qc-output "lof_pc_enrichment.gene_pc_qc.tsv.gz" \

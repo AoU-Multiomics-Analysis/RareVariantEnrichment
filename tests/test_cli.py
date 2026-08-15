@@ -201,6 +201,59 @@ def test_merge_lof_pc_enrichment_cli_reads_input_lists_and_dispatches(tmp_path: 
     ]
 
 
+def test_merge_lof_pc_enrichment_cli_dispatches_direct_inputs(monkeypatch):
+    received: list[object] = []
+
+    def fake_merge(*arguments: object) -> None:
+        received.extend(arguments)
+
+    monkeypatch.setattr(cli, "merge_lof_pc_enrichment", fake_merge)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "merge-lof-pc-enrichment",
+            "--results-input",
+            "/cromwell/results-0.tsv",
+            "--results-input",
+            "/cromwell/results-1.tsv",
+            "--summary-input",
+            "/cromwell/summary-0.json",
+            "--summary-input",
+            "/cromwell/summary-1.json",
+            "--gene-pc-qc-input",
+            "/cromwell/gene-0.tsv.gz",
+            "--gene-pc-qc-input",
+            "/cromwell/gene-1.tsv.gz",
+            "--analysis-qc-input",
+            "/cromwell/analysis-0.json",
+            "--analysis-qc-input",
+            "/cromwell/analysis-1.json",
+            "--results-output",
+            "results.tsv",
+            "--summary-output",
+            "summary.json",
+            "--gene-pc-qc-output",
+            "gene-pc-qc.tsv.gz",
+            "--analysis-qc-output",
+            "analysis-qc.json",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received == [
+        [Path("/cromwell/results-0.tsv"), Path("/cromwell/results-1.tsv")],
+        [Path("/cromwell/summary-0.json"), Path("/cromwell/summary-1.json")],
+        [Path("/cromwell/gene-0.tsv.gz"), Path("/cromwell/gene-1.tsv.gz")],
+        [Path("/cromwell/analysis-0.json"), Path("/cromwell/analysis-1.json")],
+        Path("results.tsv"),
+        Path("summary.json"),
+        Path("gene-pc-qc.tsv.gz"),
+        Path("analysis-qc.json"),
+    ]
+
+
 def test_analyze_lof_pc_enrichment_cli_dispatches_selection_options(monkeypatch):
     received: list[object] = []
 

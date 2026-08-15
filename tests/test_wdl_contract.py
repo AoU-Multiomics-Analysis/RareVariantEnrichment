@@ -399,16 +399,19 @@ print(json.dumps(rendered, sort_keys=True))
     assert '--pc-counts "$pc_counts_csv"' in chunks["command"]
     assert chunks["generated_files"]["pc_counts_file"] == []
     merge = rendered["MergeLofPcEnrichment"]
-    assert '--results-input-list "' in merge["command"]
-    assert '--summary-input-list "' in merge["command"]
-    assert '--gene-pc-qc-input-list "' in merge["command"]
-    assert '--analysis-qc-input-list "' in merge["command"]
-    assert merge["generated_files"] == {
-        "results_input_list": ["/tmp/results one.tsv"],
-        "summary_input_list": ["/tmp/summary one.json"],
-        "gene_pc_qc_input_list": ["/tmp/gene qc one.tsv.gz"],
-        "analysis_qc_input_list": ["/tmp/analysis qc one.json"],
-    }
+    assert "--results-input-list" not in merge["command"]
+    assert "--summary-input-list" not in merge["command"]
+    assert "--gene-pc-qc-input-list" not in merge["command"]
+    assert "--analysis-qc-input-list" not in merge["command"]
+    assert "/tmp/results one.tsv" in merge["command"]
+    assert "/tmp/summary one.json" in merge["command"]
+    assert "/tmp/gene qc one.tsv.gz" in merge["command"]
+    assert "/tmp/analysis qc one.json" in merge["command"]
+    assert 'results_args+=(--results-input "$path")' in merge["command"]
+    assert 'summary_args+=(--summary-input "$path")' in merge["command"]
+    assert 'gene_pc_qc_args+=(--gene-pc-qc-input "$path")' in merge["command"]
+    assert 'analysis_qc_args+=(--analysis-qc-input "$path")' in merge["command"]
+    assert merge["generated_files"] == {}
     plot = rendered["AnalyzeLofPcEnrichment"]
     assert 'results-input "/tmp/results one.tsv"' in plot["command"]
     assert '--selection-z-thresholds "$selection_z_thresholds_csv"' in plot["command"]
