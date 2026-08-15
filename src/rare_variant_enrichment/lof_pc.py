@@ -328,28 +328,29 @@ def _principal_component_header_count(header: list[str]) -> int:
 def build_pc_grid(requested: Sequence[int], available: int) -> list[int]:
     if isinstance(available, bool) or not isinstance(available, int) or available < 0:
         raise ValueError("Available PC count must be a non-negative integer")
+    maximum_pc_count = max(available - 1, 0)
     if requested:
         values = list(requested)
         if any(
             isinstance(value, bool)
             or not isinstance(value, int)
             or value < 0
-            or value > available
+            or value > maximum_pc_count
             for value in values
         ):
             raise ValueError(
-                "PC counts must be non-negative integers no greater than available PCs"
+                "PC counts must be non-negative integers no greater than available PCs minus one"
             )
         if any(left >= right for left, right in zip(values, values[1:])):
             raise ValueError("PC counts must be strictly increasing and unique")
         return values
 
-    values = list(range(0, min(available, 10) + 1))
-    values.extend(range(20, min(available, 100) + 1, 10))
-    values.extend(range(150, min(available, 500) + 1, 50))
-    values.extend(range(600, available + 1, 100))
-    if not values or values[-1] != available:
-        values.append(available)
+    values = list(range(0, min(maximum_pc_count, 10) + 1))
+    values.extend(range(20, min(maximum_pc_count, 100) + 1, 10))
+    values.extend(range(150, min(maximum_pc_count, 500) + 1, 50))
+    values.extend(range(600, maximum_pc_count + 1, 100))
+    if not values or values[-1] != maximum_pc_count:
+        values.append(maximum_pc_count)
     return values
 
 
@@ -1084,8 +1085,8 @@ def merge_lof_pc_enrichment(
         shard_pc_counts = _read_ordered_ints(summary, "selected_pc_counts")
         available_pc_count = _read_available_pc_count(summary)
         for pc_count in shard_pc_counts:
-            if pc_count > available_pc_count:
-                raise ValueError("Summary selected_pc_counts exceed available_pc_count")
+            if pc_count > max(available_pc_count - 1, 0):
+                raise ValueError("Summary selected_pc_counts exceed available_pc_count minus one")
             if pc_count in selected_pc_set:
                 raise ValueError(f"Duplicate PC count across merge shards: {pc_count}")
             selected_pc_set.add(pc_count)

@@ -80,9 +80,9 @@ def test_prepare_protein_coding_genes_rejects_gtf_without_coding_genes(tmp_path:
 @pytest.mark.parametrize(
     ("available", "expected"),
     [
-        (3, [0, 1, 2, 3]),
-        (12, [*range(0, 11), 12]),
-        (105, [*range(0, 11), *range(20, 101, 10), 105]),
+        (3, [0, 1, 2]),
+        (12, [*range(0, 11), 11]),
+        (105, [*range(0, 11), *range(20, 101, 10), 104]),
         (
             603,
             [
@@ -90,7 +90,7 @@ def test_prepare_protein_coding_genes_rejects_gtf_without_coding_genes(tmp_path:
                 *range(20, 101, 10),
                 *range(150, 501, 50),
                 600,
-                603,
+                602,
             ],
         ),
     ],
@@ -103,7 +103,7 @@ def test_adaptive_pc_grid_spans_all_required_intervals(
 
 @pytest.mark.parametrize(
     "requested",
-    [[0, 0], [1, 0], [-1], [0, 4], [True]],
+    [[0, 0], [1, 0], [-1], [0, 3], [True]],
     ids=["duplicate", "decreasing", "negative", "unavailable", "boolean"],
 )
 def test_explicit_pc_grid_is_strictly_increasing_unique_nonnegative_and_available(
@@ -114,7 +114,7 @@ def test_explicit_pc_grid_is_strictly_increasing_unique_nonnegative_and_availabl
 
 
 def test_build_pc_chunks_partitions_explicit_grid_with_short_final_chunk():
-    assert lof_pc_module().build_pc_chunks([0, 1, 10, 20, 30], 30, 2) == [
+    assert lof_pc_module().build_pc_chunks([0, 1, 10, 20, 30], 31, 2) == [
         [0, 1],
         [10, 20],
         [30],
@@ -127,8 +127,18 @@ def test_build_pc_chunks_uses_adaptive_grid_when_requested_grid_is_empty():
         [3, 4, 5],
         [6, 7, 8],
         [9, 10, 20],
-        [25],
+        [24],
     ]
+
+
+def test_explicit_pc_grid_rejects_the_full_available_pc_count():
+    with pytest.raises(ValueError, match="PC counts"):
+        lof_pc_module().build_pc_grid([0, 3], 3)
+
+
+@pytest.mark.parametrize("available", [0, 1])
+def test_adaptive_pc_grid_keeps_intercept_only_model_when_no_pc_is_allowed(available: int):
+    assert lof_pc_module().build_pc_grid([], available) == [0]
 
 
 def test_build_pc_chunks_rejects_nonpositive_chunk_size():
@@ -860,7 +870,7 @@ def test_vectorized_multi_pc_nonorthogonal_analysis_matches_legacy_results_and_q
     vectorized_directory = tmp_path / "vectorized"
     vectorized_directory.mkdir()
     vectorized_outputs = _run_analysis(
-        vectorized_directory, inputs, thresholds=[-0.8], pc_counts=[0, 1, 2]
+        vectorized_directory, inputs, thresholds=[-0.8], pc_counts=[0, 1]
     )
 
     module = lof_pc_module()
@@ -878,7 +888,7 @@ def test_vectorized_multi_pc_nonorthogonal_analysis_matches_legacy_results_and_q
     legacy_directory = tmp_path / "legacy"
     legacy_directory.mkdir()
     legacy_outputs = _run_analysis(
-        legacy_directory, inputs, thresholds=[-0.8], pc_counts=[0, 1, 2]
+        legacy_directory, inputs, thresholds=[-0.8], pc_counts=[0, 1]
     )
 
     assert _read_merge_result_rows(vectorized_outputs["results"]) == _read_merge_result_rows(
@@ -953,8 +963,8 @@ def test_missing_expression_fallback_retains_legacy_results_and_qc_exclusions(
 def test_rank_deficient_complete_data_preserves_legacy_qc_exclusions(tmp_path: Path):
     inputs = _write_analysis_fixture(tmp_path)
     inputs["pcs"].write_text(
-        "ID\tPC1\n"
-        "S1\t0\nS2\t0\nS3\t0\nS4\t0\nS5\t0\nS6\t0\nPC_ONLY\t0\n"
+        "ID\tPC1\tPC2\n"
+        "S1\t0\t0\nS2\t0\t1\nS3\t0\t2\nS4\t0\t3\nS5\t0\t4\nS6\t0\t5\nPC_ONLY\t0\t6\n"
     )
 
     outputs = _run_analysis(tmp_path, inputs, thresholds=[-0.8], pc_counts=[0, 1])
@@ -1084,7 +1094,7 @@ def test_analysis_qc_reports_pc_specific_exclusion_reasons_and_carriers(tmp_path
         "chr1\t3\t4\tZERO\t5\t5\t5\t5\t5\n"
     )
     pcs = tmp_path / "pcs.tsv"
-    pcs.write_text("ID\tPC1\nS1\t0\nS2\t0\nS3\t0\nS4\t1\nS5\t2\n")
+    pcs.write_text("ID\tPC1\tPC2\nS1\t0\t0\nS2\t0\t1\nS3\t0\t2\nS4\t1\t3\nS5\t2\t4\n")
     genes = tmp_path / "genes.tsv"
     genes.write_text("gene_id\nGOOD\nSPARSE\nRANK\nZERO\n")
     carriers = tmp_path / "lof.tsv"
