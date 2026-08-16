@@ -59,10 +59,10 @@ def build_parser() -> argparse.ArgumentParser:
     lof_pc_parser.add_argument("--analysis-qc-output", required=True, type=Path)
     lof_pc_parser.add_argument("--pc-grid-mode", choices=("adaptive", "explicit"))
     merge_lof_pc_parser = subparsers.add_parser("merge-lof-pc-enrichment")
-    merge_lof_pc_parser.add_argument("--results-input-list", required=True, type=Path)
-    merge_lof_pc_parser.add_argument("--summary-input-list", required=True, type=Path)
-    merge_lof_pc_parser.add_argument("--gene-pc-qc-input-list", required=True, type=Path)
-    merge_lof_pc_parser.add_argument("--analysis-qc-input-list", required=True, type=Path)
+    merge_lof_pc_parser.add_argument("--results-input", action="append", required=True, type=Path)
+    merge_lof_pc_parser.add_argument("--summary-input", action="append", required=True, type=Path)
+    merge_lof_pc_parser.add_argument("--gene-pc-qc-input", action="append", required=True, type=Path)
+    merge_lof_pc_parser.add_argument("--analysis-qc-input", action="append", required=True, type=Path)
     merge_lof_pc_parser.add_argument("--results-output", required=True, type=Path)
     merge_lof_pc_parser.add_argument("--summary-output", required=True, type=Path)
     merge_lof_pc_parser.add_argument("--gene-pc-qc-output", required=True, type=Path)
@@ -200,10 +200,10 @@ def main() -> int:
         )
     elif args.command == "merge-lof-pc-enrichment":
         merge_lof_pc_enrichment(
-            [Path(path) for path in read_nonempty_lines(args.results_input_list)],
-            [Path(path) for path in read_nonempty_lines(args.summary_input_list)],
-            [Path(path) for path in read_nonempty_lines(args.gene_pc_qc_input_list)],
-            [Path(path) for path in read_nonempty_lines(args.analysis_qc_input_list)],
+            args.results_input,
+            args.summary_input,
+            args.gene_pc_qc_input,
+            args.analysis_qc_input,
             args.results_output,
             args.summary_output,
             args.gene_pc_qc_output,

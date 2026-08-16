@@ -170,16 +170,11 @@ task MergeLofPcEnrichment {
     command <<<
         set -euo pipefail
 
-        printf '%s\n' "~{sep="\n" results_inputs}" > results_input_list.txt
-        printf '%s\n' "~{sep="\n" summary_inputs}" > summary_input_list.txt
-        printf '%s\n' "~{sep="\n" gene_pc_qc_inputs}" > gene_pc_qc_input_list.txt
-        printf '%s\n' "~{sep="\n" analysis_qc_inputs}" > analysis_qc_input_list.txt
-
         rare-variant-enrichment merge-lof-pc-enrichment \
-            --results-input-list "results_input_list.txt" \
-            --summary-input-list "summary_input_list.txt" \
-            --gene-pc-qc-input-list "gene_pc_qc_input_list.txt" \
-            --analysis-qc-input-list "analysis_qc_input_list.txt" \
+            --results-input "~{sep="\" --results-input \"" results_inputs}" \
+            --summary-input "~{sep="\" --summary-input \"" summary_inputs}" \
+            --gene-pc-qc-input "~{sep="\" --gene-pc-qc-input \"" gene_pc_qc_inputs}" \
+            --analysis-qc-input "~{sep="\" --analysis-qc-input \"" analysis_qc_inputs}" \
             --results-output "lof_pc_enrichment.tsv" \
             --summary-output "lof_pc_enrichment.summary.json" \
             --gene-pc-qc-output "lof_pc_enrichment.gene_pc_qc.tsv.gz" \

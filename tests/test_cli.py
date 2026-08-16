@@ -151,12 +151,7 @@ def test_pc_chunks_cli_dispatches_header_count_chunking_and_json_output(monkeypa
     assert received == [Path("pcs.tsv"), [0, 1, 10], 30, 2, Path("chunks.json"), [[0, 1], [10]]]
 
 
-def test_merge_lof_pc_enrichment_cli_reads_input_lists_and_dispatches(tmp_path: Path, monkeypatch):
-    lists = {}
-    for name in ("results", "summary", "gene-qc", "analysis-qc"):
-        input_list = tmp_path / f"{name}-inputs.txt"
-        input_list.write_text(f"one-{name}\ntwo-{name}\n")
-        lists[name] = input_list
+def test_merge_lof_pc_enrichment_cli_dispatches_direct_inputs(monkeypatch):
     received: list[object] = []
 
     def fake_merge(*arguments: object) -> None:
@@ -169,14 +164,22 @@ def test_merge_lof_pc_enrichment_cli_reads_input_lists_and_dispatches(tmp_path: 
         [
             "rare-variant-enrichment",
             "merge-lof-pc-enrichment",
-            "--results-input-list",
-            str(lists["results"]),
-            "--summary-input-list",
-            str(lists["summary"]),
-            "--gene-pc-qc-input-list",
-            str(lists["gene-qc"]),
-            "--analysis-qc-input-list",
-            str(lists["analysis-qc"]),
+            "--results-input",
+            "/cromwell/results-0.tsv",
+            "--results-input",
+            "/cromwell/results-1.tsv",
+            "--summary-input",
+            "/cromwell/summary-0.json",
+            "--summary-input",
+            "/cromwell/summary-1.json",
+            "--gene-pc-qc-input",
+            "/cromwell/gene-0.tsv.gz",
+            "--gene-pc-qc-input",
+            "/cromwell/gene-1.tsv.gz",
+            "--analysis-qc-input",
+            "/cromwell/analysis-0.json",
+            "--analysis-qc-input",
+            "/cromwell/analysis-1.json",
             "--results-output",
             "results.tsv",
             "--summary-output",
@@ -190,10 +193,10 @@ def test_merge_lof_pc_enrichment_cli_reads_input_lists_and_dispatches(tmp_path: 
 
     assert cli.main() == 0
     assert received == [
-        [Path("one-results"), Path("two-results")],
-        [Path("one-summary"), Path("two-summary")],
-        [Path("one-gene-qc"), Path("two-gene-qc")],
-        [Path("one-analysis-qc"), Path("two-analysis-qc")],
+        [Path("/cromwell/results-0.tsv"), Path("/cromwell/results-1.tsv")],
+        [Path("/cromwell/summary-0.json"), Path("/cromwell/summary-1.json")],
+        [Path("/cromwell/gene-0.tsv.gz"), Path("/cromwell/gene-1.tsv.gz")],
+        [Path("/cromwell/analysis-0.json"), Path("/cromwell/analysis-1.json")],
         Path("results.tsv"),
         Path("summary.json"),
         Path("gene-pc-qc.tsv.gz"),

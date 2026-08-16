@@ -349,10 +349,10 @@ values = {
     'pc_counts': array(WDL.Type.Int(), []),
     'pc_grid_mode': WDL.Value.String('adaptive'),
     'pc_counts_per_job': WDL.Value.Int(1),
-    'results_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/results one.tsv')]),
-    'summary_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/summary one.json')]),
-    'gene_pc_qc_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/gene qc one.tsv.gz')]),
-    'analysis_qc_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/analysis qc one.json')]),
+    'results_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/results one.tsv'), WDL.Value.File('/tmp/results two.tsv')]),
+    'summary_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/summary one.json'), WDL.Value.File('/tmp/summary two.json')]),
+    'gene_pc_qc_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/gene qc one.tsv.gz'), WDL.Value.File('/tmp/gene qc two.tsv.gz')]),
+    'analysis_qc_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/analysis qc one.json'), WDL.Value.File('/tmp/analysis qc two.json')]),
     'results_tsv': WDL.Value.File('/tmp/results one.tsv'),
     'docker_image': WDL.Value.String(dangerous_image),
     'cpu': WDL.Value.Int(1), 'memory_gb': WDL.Value.Int(1), 'disk_gb': WDL.Value.Int(1),
@@ -399,17 +399,21 @@ print(json.dumps(rendered, sort_keys=True))
     assert '--pc-counts "$pc_counts_csv"' in chunks["command"]
     assert chunks["generated_files"]["pc_counts_file"] == []
     merge = rendered["MergeLofPcEnrichment"]
-    assert '--results-input-list "results_input_list.txt"' in merge["command"]
-    assert '--summary-input-list "summary_input_list.txt"' in merge["command"]
-    assert '--gene-pc-qc-input-list "gene_pc_qc_input_list.txt"' in merge["command"]
-    assert '--analysis-qc-input-list "analysis_qc_input_list.txt"' in merge["command"]
-    assert "/tmp/results one.tsv" in merge["command"]
-    assert "/tmp/summary one.json" in merge["command"]
-    assert "/tmp/gene qc one.tsv.gz" in merge["command"]
-    assert "/tmp/analysis qc one.json" in merge["command"]
-    assert "printf '%s\\n' \"/tmp/results one.tsv\"" in merge["command"]
-    assert "<<" not in merge["command"]
-    assert "done <" not in merge["command"]
+    assert '--results-input-list' not in merge["command"]
+    assert '--summary-input-list' not in merge["command"]
+    assert '--gene-pc-qc-input-list' not in merge["command"]
+    assert '--analysis-qc-input-list' not in merge["command"]
+    assert '--results-input "/tmp/results one.tsv"' in merge["command"]
+    assert '--summary-input "/tmp/summary one.json"' in merge["command"]
+    assert '--gene-pc-qc-input "/tmp/gene qc one.tsv.gz"' in merge["command"]
+    assert '--analysis-qc-input "/tmp/analysis qc one.json"' in merge["command"]
+    assert '--results-input "/tmp/results one.tsv" --results-input "/tmp/results two.tsv"' in merge["command"]
+    assert '--summary-input "/tmp/summary one.json" --summary-input "/tmp/summary two.json"' in merge["command"]
+    assert '--gene-pc-qc-input "/tmp/gene qc one.tsv.gz" --gene-pc-qc-input "/tmp/gene qc two.tsv.gz"' in merge["command"]
+    assert '--analysis-qc-input "/tmp/analysis qc one.json" --analysis-qc-input "/tmp/analysis qc two.json"' in merge["command"]
+    assert 'printf ' not in merge["command"]
+    assert '<<' not in merge["command"]
+    assert 'done <' not in merge["command"]
     shell_check = subprocess.run(
         ["bash", "-n"], input=merge["command"], text=True, capture_output=True
     )
