@@ -421,7 +421,8 @@ print(json.dumps(rendered, sort_keys=True))
     assert merge["generated_files"] == {}
     plot = rendered["AnalyzeLofPcEnrichment"]
     assert 'results-input "/tmp/results one.tsv"' in plot["command"]
-    assert '--selection-z-thresholds "$selection_z_thresholds_csv"' in plot["command"]
+    assert '--selection-z-thresholds="$selection_z_thresholds_csv"' in plot["command"]
+    assert plot["command"].count('--selection-z-thresholds="$selection_z_thresholds_csv"') == 2
     assert '--plateau-fraction "0.950000"' in plot["command"]
     assert 'Rscript "/opt/rare-variant-enrichment/pc_sweep_qc.R"' in plot["command"]
     assert '--results-input "' in plot["command"]
