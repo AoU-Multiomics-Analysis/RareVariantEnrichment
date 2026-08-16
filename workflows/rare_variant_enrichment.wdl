@@ -234,7 +234,7 @@ task AnalyzeLofPcEnrichment {
 
         Rscript "/opt/rare-variant-enrichment/pc_sweep_qc.R" \
             --results-input "~{results_tsv}" \
-            --selection-z-thresholds="$selection_z_thresholds_csv" \
+            --selection-z-thresholds "$selection_z_thresholds_csv" \
             --summary-output "pc_sweep_qc_summary.tsv" \
             --plot-output "pc_sweep_qc_percent_max.png"
     >>>
