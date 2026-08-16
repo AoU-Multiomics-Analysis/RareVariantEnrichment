@@ -229,7 +229,7 @@ task AnalyzeLofPcEnrichment {
             --results-input "~{results_tsv}" \
             --selection-output "lof_pc_selection.json" \
             --plot-output "lof_pc_enrichment.svg" \
-            --selection-z-thresholds "$selection_z_thresholds_csv" \
+            --selection-z-thresholds="$selection_z_thresholds_csv" \
             --plateau-fraction "~{plateau_fraction}"
 
         Rscript "/opt/rare-variant-enrichment/pc_sweep_qc.R" \
