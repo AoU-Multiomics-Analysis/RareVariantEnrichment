@@ -59,18 +59,10 @@ def build_parser() -> argparse.ArgumentParser:
     lof_pc_parser.add_argument("--analysis-qc-output", required=True, type=Path)
     lof_pc_parser.add_argument("--pc-grid-mode", choices=("adaptive", "explicit"))
     merge_lof_pc_parser = subparsers.add_parser("merge-lof-pc-enrichment")
-    results_inputs = merge_lof_pc_parser.add_mutually_exclusive_group(required=True)
-    results_inputs.add_argument("--results-input", action="append", type=Path)
-    results_inputs.add_argument("--results-input-list", type=Path)
-    summary_inputs = merge_lof_pc_parser.add_mutually_exclusive_group(required=True)
-    summary_inputs.add_argument("--summary-input", action="append", type=Path)
-    summary_inputs.add_argument("--summary-input-list", type=Path)
-    gene_pc_qc_inputs = merge_lof_pc_parser.add_mutually_exclusive_group(required=True)
-    gene_pc_qc_inputs.add_argument("--gene-pc-qc-input", action="append", type=Path)
-    gene_pc_qc_inputs.add_argument("--gene-pc-qc-input-list", type=Path)
-    analysis_qc_inputs = merge_lof_pc_parser.add_mutually_exclusive_group(required=True)
-    analysis_qc_inputs.add_argument("--analysis-qc-input", action="append", type=Path)
-    analysis_qc_inputs.add_argument("--analysis-qc-input-list", type=Path)
+    merge_lof_pc_parser.add_argument("--results-input", action="append", required=True, type=Path)
+    merge_lof_pc_parser.add_argument("--summary-input", action="append", required=True, type=Path)
+    merge_lof_pc_parser.add_argument("--gene-pc-qc-input", action="append", required=True, type=Path)
+    merge_lof_pc_parser.add_argument("--analysis-qc-input", action="append", required=True, type=Path)
     merge_lof_pc_parser.add_argument("--results-output", required=True, type=Path)
     merge_lof_pc_parser.add_argument("--summary-output", required=True, type=Path)
     merge_lof_pc_parser.add_argument("--gene-pc-qc-output", required=True, type=Path)
@@ -208,18 +200,10 @@ def main() -> int:
         )
     elif args.command == "merge-lof-pc-enrichment":
         merge_lof_pc_enrichment(
-            args.results_input
-            if args.results_input is not None
-            else [Path(path) for path in read_nonempty_lines(args.results_input_list)],
-            args.summary_input
-            if args.summary_input is not None
-            else [Path(path) for path in read_nonempty_lines(args.summary_input_list)],
-            args.gene_pc_qc_input
-            if args.gene_pc_qc_input is not None
-            else [Path(path) for path in read_nonempty_lines(args.gene_pc_qc_input_list)],
-            args.analysis_qc_input
-            if args.analysis_qc_input is not None
-            else [Path(path) for path in read_nonempty_lines(args.analysis_qc_input_list)],
+            args.results_input,
+            args.summary_input,
+            args.gene_pc_qc_input,
+            args.analysis_qc_input,
             args.results_output,
             args.summary_output,
             args.gene_pc_qc_output,
