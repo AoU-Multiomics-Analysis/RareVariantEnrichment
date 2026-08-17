@@ -23,7 +23,13 @@ The public WDL has four required file inputs.
 chr1  999    1000 ENSG000001.2 -1.8      NA        ...
 ```
 
-Each interval must be one base wide. Feature IDs are normalized by removing exactly one terminal `.<digits>` suffix, so `ENSG000001.2` becomes `ENSG000001` and `ENSG000001.2.3` becomes `ENSG000001.2`. Empty values, `.`, `NA`, and `NaN` are missing; non-finite numeric values are rejected.
+Each interval must be one base wide. Feature IDs are normalized by extracting exactly one Ensembl gene token and removing its numeric version suffix. This supports the molecular-phenotype IDs used by the Susie merged files:
+
+- expression: `ENSG00000000419.14` → `ENSG00000000419`;
+- proteomics: `A0JNW5_ENSG00000111647.13` → `ENSG00000111647`;
+- splicing: `chr20:50941209:50942031:clu_63027_-:ENSG00000000419.14` → `ENSG00000000419`.
+
+Empty, unsupported, or ambiguous IDs are rejected with the input line number. If multiple phenotype rows normalize to the same gene, the analysis collapses them to one gene-level vector by retaining the minimum finite z-score independently for each sample. This represents the most extreme negative splice outlier for that gene; missing values are ignored, and a value remains missing only when all rows for that gene are missing. The downstream residualization and enrichment tests remain gene-level. Empty values, `.`, `NA`, and `NaN` are missing; non-finite numeric values are rejected.
 
 ### LoF carrier table
 
