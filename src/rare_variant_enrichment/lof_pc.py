@@ -89,6 +89,21 @@ class PrincipalComponents:
 
 
 @dataclass(frozen=True)
+class AdditionalCovariates:
+    sample_ids: tuple[str, ...]
+    names: tuple[str, ...]
+    values: np.ndarray
+
+    @property
+    def sample_count(self) -> int:
+        return len(self.sample_ids)
+
+    @property
+    def covariate_count(self) -> int:
+        return len(self.names)
+
+
+@dataclass(frozen=True)
 class LofCarriers:
     pairs_by_definition: dict[str, set[tuple[str, str]]]
     qc: dict[str, int]
@@ -199,6 +214,13 @@ def prepare_complete_data_projection(
 
 def normalize_ensembl_id(value: str) -> str:
     return re.sub(r"\.[0-9]+$", "", value, count=1)
+
+
+def normalize_sample_id(value: object, context: str) -> str:
+    normalized = str(value).strip()
+    if not normalized:
+        raise ValueError(f"{context} has an empty sample ID")
+    return normalized
 
 
 def normalize_molecular_phenotype_id(value: str, line_number: int) -> str:
@@ -316,11 +338,9 @@ def read_principal_components(path: Path) -> PrincipalComponents:
                     f"Principal-components TSV line {line_number} has {len(fields)} "
                     f"columns; expected {len(header)}"
                 )
-            sample_id = fields[0].strip()
-            if not sample_id:
-                raise ValueError(
-                    f"Principal-components TSV line {line_number} has an empty sample ID"
-                )
+            sample_id = normalize_sample_id(
+                fields[0], f"Principal-components TSV line {line_number}"
+            )
             if sample_id in seen:
                 raise ValueError(f"Duplicate PC sample ID: {sample_id}")
             seen.add(sample_id)
@@ -340,6 +360,72 @@ def read_principal_components(path: Path) -> PrincipalComponents:
     if not sample_ids:
         raise ValueError("Principal-components TSV must contain at least one sample")
     return PrincipalComponents(tuple(sample_ids), np.asarray(rows, dtype=float))
+
+
+def read_additional_covariates(path: Path) -> AdditionalCovariates:
+    sample_ids: list[str] = []
+    names: list[str] = []
+    rows: list[list[float]] = []
+    seen: set[str] = set()
+    with open_text(path) as handle:
+        reader = csv.reader(handle, delimiter="\t")
+        try:
+            raw_header = next(reader)
+        except StopIteration as error:
+            raise ValueError("Additional-covariates TSV is empty") from error
+        header = [field.strip() for field in raw_header]
+        if not header or any(not field for field in header):
+            raise ValueError("Additional-covariates TSV header contains an empty column")
+        if len(header) != len(set(header)):
+            raise ValueError("Additional-covariates TSV header contains duplicate columns")
+        sample_columns = [
+            index for index, field in enumerate(header) if field in {"sample_id", "ID"}
+        ]
+        if len(sample_columns) != 1:
+            raise ValueError(
+                "Additional-covariates TSV header must contain exactly one sample_id or ID column"
+            )
+        sample_index = sample_columns[0]
+        covariate_indexes = [index for index in range(len(header)) if index != sample_index]
+        if not covariate_indexes:
+            raise ValueError("Additional-covariates TSV must contain at least one covariate")
+        names = [header[index] for index in covariate_indexes]
+
+        for line_number, fields in enumerate(reader, start=2):
+            if not fields or all(not field.strip() for field in fields):
+                continue
+            if len(fields) != len(header):
+                raise ValueError(
+                    f"Additional-covariates TSV line {line_number} has {len(fields)} columns; "
+                    f"expected {len(header)}"
+                )
+            sample_id = normalize_sample_id(
+                fields[sample_index], f"Additional-covariates TSV line {line_number}"
+            )
+            if sample_id in seen:
+                raise ValueError(f"Duplicate additional-covariate sample ID: {sample_id}")
+            seen.add(sample_id)
+            values: list[float] = []
+            for index in covariate_indexes:
+                try:
+                    value = float(fields[index])
+                except ValueError as error:
+                    raise ValueError(
+                        f"Additional-covariates TSV line {line_number} has a non-numeric value"
+                    ) from error
+                if not math.isfinite(value):
+                    raise ValueError(
+                        f"Additional-covariates TSV line {line_number} has a non-finite value"
+                    )
+                values.append(value)
+            sample_ids.append(sample_id)
+            rows.append(values)
+
+    if not sample_ids:
+        raise ValueError("Additional-covariates TSV must contain at least one sample")
+    return AdditionalCovariates(
+        tuple(sample_ids), tuple(names), np.asarray(rows, dtype=float)
+    )
 
 
 def read_principal_component_header(path: Path) -> int:
@@ -433,10 +519,11 @@ def read_lof_carriers(path: Path) -> LofCarriers:
                     f"LoF carrier table line {line_number} has {len(fields)} columns; "
                     f"expected {len(header)}"
                 )
-            sample_id = fields[indexes["sample_id"]].strip()
+            sample_id = normalize_sample_id(
+                fields[indexes["sample_id"]],
+                f"LoF carrier table line {line_number}",
+            )
             gene_id = normalize_ensembl_id(fields[indexes["gene_id"]].strip())
-            if not sample_id:
-                raise ValueError(f"LoF carrier table line {line_number} has an empty sample ID")
             if not gene_id:
                 raise ValueError(f"LoF carrier table line {line_number} has an empty gene ID")
             if not _parse_truth_value(

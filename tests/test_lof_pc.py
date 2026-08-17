@@ -222,6 +222,71 @@ def test_read_principal_components_rejects_header_only_file(tmp_path: Path):
         lof_pc_module().read_principal_components(pcs)
 
 
+def test_read_additional_covariates_accepts_sample_id_as_final_column(
+    tmp_path: Path,
+):
+    path = tmp_path / "genetic-pcs.tsv"
+    path.write_text(
+        "GENETICPC1\tGENETICPC2\tsample_id\n"
+        "0.1\t-0.2\t001\n"
+        "0.3\t0.4\t1000291\n"
+    )
+
+    matrix = lof_pc_module().read_additional_covariates(path)
+
+    assert matrix.sample_ids == ("001", "1000291")
+    assert matrix.names == ("GENETICPC1", "GENETICPC2")
+    assert matrix.sample_count == 2
+    assert matrix.covariate_count == 2
+    np.testing.assert_allclose(matrix.values, [[0.1, -0.2], [0.3, 0.4]])
+
+
+def test_read_additional_covariates_accepts_id_column_in_any_position(
+    tmp_path: Path,
+):
+    path = tmp_path / "covariates.tsv"
+    path.write_text("ID\tGENETICPC1\n001\t0.1\n")
+
+    matrix = lof_pc_module().read_additional_covariates(path)
+
+    assert matrix.sample_ids == ("001",)
+    assert matrix.names == ("GENETICPC1",)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "GENETICPC1\tsample_id\n0.1\tS1\n0.2\tS1\n",
+        "GENETICPC1\tother\n0.1\tS1\n",
+        "sample_id\tGENETICPC1\nS1\tNA\n",
+        "sample_id\tGENETICPC1\nS1\tinf\n",
+        "sample_id\tGENETICPC1\n\t0.1\n",
+        "sample_id\tsample_id\nS1\t0.1\n",
+        "sample_id\nS1\n",
+    ],
+)
+def test_read_additional_covariates_rejects_invalid_schema_or_values(
+    tmp_path: Path, text: str
+):
+    path = tmp_path / "invalid.tsv"
+    path.write_text(text)
+
+    with pytest.raises(ValueError):
+        lof_pc_module().read_additional_covariates(path)
+
+
+def test_lof_pc_sample_id_readers_preserve_numeric_looking_ids_as_strings(
+    tmp_path: Path,
+):
+    pcs = tmp_path / "pcs.tsv"
+    pcs.write_text("ID\tPC1\n001\t0.1\n1000291\t0.2\n")
+
+    assert lof_pc_module().read_principal_components(pcs).sample_ids == (
+        "001",
+        "1000291",
+    )
+
+
 @pytest.mark.parametrize(
     ("text", "message"),
     [
