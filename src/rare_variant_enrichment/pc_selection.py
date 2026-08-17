@@ -4,6 +4,7 @@ from collections import defaultdict
 import csv
 from dataclasses import dataclass
 import html
+import logging
 import math
 from pathlib import Path
 import statistics
@@ -23,6 +24,7 @@ PLOT_COLORS = {
     -6.0: "#dc2626",
 }
 REQUIRED_RESULT_COLUMNS = ("pc_count", "z_threshold", "carrier_definition", "odds_ratio")
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -64,19 +66,36 @@ def median_log_or_by_pc(
     thresholds = _validate_selection_thresholds(selection_z_thresholds)
     definitions = _validate_definitions(carrier_definitions)
     grouped: dict[tuple[int, str], dict[float, float]] = defaultdict(dict)
+    skipped_unestimable = 0
     for row in rows:
         try:
             pc_count = int(row["pc_count"])
             threshold = float(row["z_threshold"])
             definition = str(row["carrier_definition"])
-            odds_ratio = float(row["odds_ratio"])
         except (KeyError, TypeError, ValueError) as error:
             raise ValueError("Enrichment result row has invalid selection fields") from error
         if definition not in definitions or threshold not in thresholds:
             continue
+        raw_odds_ratio = row.get("odds_ratio")
+        try:
+            odds_ratio = float(raw_odds_ratio)
+        except (TypeError, ValueError) as error:
+            if _is_zero_observation_row(row):
+                skipped_unestimable += 1
+                continue
+            raise ValueError("Enrichment result row has invalid selection fields") from error
+        if not math.isfinite(odds_ratio) and _is_zero_observation_row(row):
+            skipped_unestimable += 1
+            continue
         if pc_count < 0 or not math.isfinite(odds_ratio) or odds_ratio <= 0:
             continue
         grouped[(pc_count, definition)][threshold] = odds_ratio
+
+    if skipped_unestimable:
+        LOGGER.warning(
+            "Skipped %d enrichment rows with no observations and no estimable odds ratio",
+            skipped_unestimable,
+        )
 
     points: list[MedianLogOrPoint] = []
     for (pc_count, definition), values in grouped.items():
@@ -96,6 +115,16 @@ def median_log_or_by_pc(
         )
     points.sort(key=lambda point: (point.pc_count, definitions.index(point.carrier_definition)))
     return [point.as_dict() for point in points]
+
+
+def _is_zero_observation_row(row: Mapping[str, object]) -> bool:
+    raw_total = row.get("total_observations")
+    if raw_total in (None, ""):
+        return False
+    try:
+        return int(raw_total) == 0
+    except (TypeError, ValueError):
+        return False
 
 
 def select_minimum_sufficient_pc_count(

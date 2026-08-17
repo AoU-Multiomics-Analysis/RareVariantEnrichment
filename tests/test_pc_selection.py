@@ -58,6 +58,43 @@ def test_median_log_or_excludes_z_minus_two_and_uses_log_scale():
     }]
 
 
+def test_median_log_or_skips_unestimable_zero_observation_rows():
+    rows = [
+        {"pc_count": "0", "z_threshold": str(z), "carrier_definition": definition, "odds_ratio": "2.0"}
+        for definition in ("HC", "any_lof")
+        for z in (-3, -4, -5, -6)
+    ]
+    rows.append(
+        {
+            "pc_count": "8890",
+            "z_threshold": "-3",
+            "carrier_definition": "HC",
+            "odds_ratio": "NA",
+            "total_observations": "0",
+        }
+    )
+
+    summary = median_log_or_by_pc(rows, [-3.0, -4.0, -5.0, -6.0])
+
+    assert [point["pc_count"] for point in summary] == [0, 0]
+
+
+def test_median_log_or_rejects_missing_odds_ratio_with_observations():
+    rows = [
+        {
+            "pc_count": "0",
+            "z_threshold": str(z),
+            "carrier_definition": "HC",
+            "odds_ratio": "NA" if z == -3 else "2.0",
+            "total_observations": "100",
+        }
+        for z in (-3, -4, -5, -6)
+    ]
+
+    with pytest.raises(ValueError, match="invalid selection fields"):
+        median_log_or_by_pc(rows, [-3.0, -4.0, -5.0, -6.0])
+
+
 def test_selection_uses_earliest_common_pc_within_plateau_fraction():
     rows = [
         {"pc_count": 0, "carrier_definition": "HC", "median_log_odds_ratio": math.log(2.0)},
