@@ -8,11 +8,11 @@
 [![WDL validation](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/wdl-validation.yml/badge.svg)](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/wdl-validation.yml)
 <!-- workflow-badges:end -->
 
-This workflow screens for enrichment of molecular low-expression outliers among pooled loss-of-function (LoF) carrier observations. It directly residualizes every protein-coding gene's expression against an intercept plus principal components (PCs), then pools eligible sample–gene observations into Fisher exact 2×2 tables. It does not accept variant call files, annotation tables, genomic index files, or chromosome selections.
+This workflow screens for enrichment of molecular low-expression outliers among pooled loss-of-function (LoF) carrier observations. It directly residualizes every protein-coding gene's expression against an intercept, optional additional covariates, and principal components (PCs), then pools eligible sample–gene observations into Fisher exact 2×2 tables. It does not accept variant call files, annotation tables, genomic index files, or chromosome selections.
 
 ## Inputs
 
-The public WDL has four required file inputs.
+The public WDL has four required file inputs and one optional file input (`additional_covariates_tsv`).
 
 ### Molecular phenotype BED
 
@@ -58,6 +58,10 @@ SAMPLE_1  -0.14  1.02  0.37  ...
 
 `ID` values are unique, non-empty strings. All PC values must be finite, including columns beyond the largest selected PC count. Header-only files and nonconsecutive labels such as `PC1,PC3` are rejected. The analysis uses the string-ID intersection of BED and PC samples.
 
+### Additional covariates
+
+`additional_covariates_tsv` is an optional tab-separated matrix for covariates such as genotype PCs. It must contain a sample-ID column named `sample_id` or `ID` (in any column position); every other column is included as a finite numeric covariate. Sample IDs are treated as strings, so identifiers such as `001` are preserved. The analysis uses the intersection of BED, molecular-PC, and covariate samples, preserving the BED sample order. The sparse LoF carrier table is not included in this intersection because an absent carrier row represents a noncarrier.
+
 ### Gene annotation GTF
 
 `gene_annotation_gtf` is a plain or gzip-compressed GTF. Only nine-field `gene` records with `gene_type "protein_coding"` enter analysis. The first task writes a sorted normalized `gene_id` list and QC JSON; it fails if no coding genes are found.
@@ -70,11 +74,11 @@ SAMPLE_1  -0.14  1.02  0.37  ...
 
 `pc_counts_per_job` defaults to `10`. It controls how many selected PC-count settings are evaluated by each analysis job; it does not change the number of PCA columns available to a model. The workflow validates the PC header, partitions the selected grid into jobs of at most this size, and merges their intermediate outputs before publishing the final analysis files.
 
-For each PC count and coding gene, the workflow fits finite expression observations to an intercept plus the first `k` PCs. It requires observations greater than fitted rank plus one, rejects rank-deficient designs and zero/non-finite residual SD, centers residuals, and divides by population SD (`ddof=0`). Missing BED values remain missing rather than becoming residuals.
+For each PC count and coding gene, the workflow fits finite expression observations to an intercept, all supplied additional covariates, and the first `k` molecular PCs. It requires observations greater than fitted rank plus one, rejects rank-deficient designs and zero/non-finite residual SD, centers residuals, and divides by population SD (`ddof=0`). Missing BED values remain missing rather than becoming residuals. When no additional covariate matrix is supplied, the model reduces to the legacy intercept-plus-molecular-PC model.
 
 ## Run
 
-Build or choose a container image that includes this package and NumPy 2 or later. The default image also includes R, `data.table`, `ggplot2`, and `ggrepel` for the PC-sweep QC plot. The WDL defaults are intentionally high for cohort-scale input localization: preparation uses 2 CPUs, 32 GB RAM, and 500 GB disk; analysis shards and shard merging use 8 CPUs, 128 GB RAM, and the 1000 GB analysis-disk baseline; header-only PC-grid chunk preparation uses 1 CPU and 4 GB RAM. Disk is dynamically raised to `ceil(2 × localized input GiB + 20)` when required: from the GTF for preparation, the PC file for chunk preparation, analysis inputs for each shard, and all localized shard outputs for merging. `max_retries` defaults to 1 for every task.
+Build or choose a container image that includes this package and NumPy 2 or later. The default image also includes R, `data.table`, `ggplot2`, and `ggrepel` for the PC-sweep QC plot. The WDL defaults are intentionally high for cohort-scale input localization: preparation uses 2 CPUs, 32 GB RAM, and 500 GB disk; analysis shards and shard merging use 8 CPUs, 128 GB RAM, and the 1000 GB analysis-disk baseline; header-only PC-grid chunk preparation uses 1 CPU and 4 GB RAM. Disk is dynamically raised to `ceil(2 × localized input GiB + 20)` when required: from the GTF for preparation, the PC file for chunk preparation, analysis inputs (including optional covariates) for each shard, and all localized shard outputs for merging. `pc_preemptible` defaults to 2 and controls the preemptible retry count for the PC-enrichment scatter jobs; `max_retries` defaults to 1 for every task.
 
 ```bash
 miniwdl run workflows/rare_variant_enrichment.wdl \
@@ -92,6 +96,7 @@ rare-variant-enrichment prepare-protein-coding-genes \
 rare-variant-enrichment lof-pc-enrichment \
   --phenotype-bed phenotypes.bed.gz --lof-carriers lof_carriers.tsv \
   --principal-components pcs.tsv --protein-coding-genes protein_coding_genes.tsv \
+  --additional-covariates genetic_pcs.tsv \
   --negative-z-thresholds=-2,-3,-4,-5,-6 --pc-counts '' \
   --results-output lof_pc_enrichment.tsv --summary-output lof_pc_enrichment.summary.json \
   --gene-pc-qc-output lof_pc_enrichment.gene_pc_qc.tsv.gz \
@@ -107,7 +112,7 @@ The workflow emits exactly ten files:
 - `results_tsv`: one row per PC count × negative threshold × carrier definition, merged across analysis shards.
 - `summary_json`: selected grid/settings, global FDR scope, residualization description, provenance, and the screening limitation.
 - `gene_pc_qc_tsv_gz`: compressed per-normalized-gene/per-PC QC with usable samples, rank, residual mean/SD, status, and exclusion reason.
-- `analysis_qc_json`: BED/PC overlap counts, pre-join carrier-pair counts, LoF input QC, and per-PC eligibility, actual carrier-observation, and structured exclusion counters.
+- `analysis_qc_json`: BED/PC/covariate overlap counts, covariate names and input sample count when supplied, pre-join carrier-pair counts, LoF input QC, and per-PC eligibility, actual carrier-observation, and structured exclusion counters.
 - `pc_selection_json`: median-logOR plateau summaries, excluded/included z thresholds, and the minimum common PC count selected by the 95% plateau rule.
 - `enrichment_plot_svg`: threshold-specific enrichment curves for `HC` and `any_lof`, median logOR curves, and reference lines for the selected PC positions.
 - `pc_sweep_qc_summary_tsv`: analysis-ready PC-sweep values containing the median log odds ratio across the selected z thresholds, the maximum-enrichment PC and odds ratio, and each PC's percentage of the maximum.
