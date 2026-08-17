@@ -71,6 +71,9 @@ GENE_PC_QC_HEADER = (
     "status",
     "exclusion_reason",
 )
+MOLECULAR_ENSEMBL_ID_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(ENSG[0-9]+)(?:\.[0-9]+)?"
+)
 PROGRESS_INTERVAL_GENES = 500
 LOGGER = logging.getLogger(__name__)
 
@@ -196,6 +199,39 @@ def prepare_complete_data_projection(
 
 def normalize_ensembl_id(value: str) -> str:
     return re.sub(r"\.[0-9]+$", "", value, count=1)
+
+
+def normalize_molecular_phenotype_id(value: str, line_number: int) -> str:
+    normalized = value.strip()
+    matches = MOLECULAR_ENSEMBL_ID_PATTERN.findall(normalized)
+    if len(matches) != 1:
+        if not normalized:
+            reason = "an empty ID"
+        elif not matches:
+            reason = "an unsupported ID"
+        else:
+            reason = "an ambiguous ID"
+        raise ValueError(
+            f"Line {line_number} has {reason} for molecular phenotype: {value!r}"
+        )
+    return matches[0]
+
+
+def _collapse_gene_expression_rows(
+    rows: Sequence[tuple[str, np.ndarray]],
+) -> list[tuple[str, np.ndarray]]:
+    collapsed: dict[str, np.ndarray] = {}
+    for gene_id, values in rows:
+        vector = np.asarray(values, dtype=float)
+        if vector.ndim != 1:
+            raise ValueError("Gene phenotype vectors must be one-dimensional")
+        if gene_id not in collapsed:
+            collapsed[gene_id] = np.array(vector, dtype=float, copy=True)
+            continue
+        if collapsed[gene_id].shape != vector.shape:
+            raise ValueError("Duplicate gene phenotype vectors must have equal lengths")
+        collapsed[gene_id] = np.fmin(collapsed[gene_id], vector)
+    return list(collapsed.items())
 
 
 def prepare_protein_coding_genes(
@@ -595,11 +631,11 @@ def calculate_lof_pc_enrichment(
         }
         for pc_count in pc_counts
     }
-    bed_gene_count = 0
-    coding_bed_gene_count = 0
+    bed_feature_count = 0
+    coding_bed_feature_count = 0
     seen_genes: set[str] = set()
 
-    coding_expression: list[tuple[str, np.ndarray]] = []
+    coding_expression_rows: list[tuple[str, np.ndarray]] = []
     with open_text(phenotype_bed) as bed_handle:
         header = _read_header(bed_handle)
         bed_samples = [sample.strip() for sample in header[4:]]
@@ -631,25 +667,21 @@ def calculate_lof_pc_enrichment(
             _parse_tss_interval(start_text, end_text, line_number)
             if not chrom:
                 raise ValueError(f"Line {line_number} has an empty chromosome")
-            gene_id = normalize_ensembl_id(feature_id.strip())
-            if not gene_id:
-                raise ValueError(f"Line {line_number} has an empty feature ID")
-            if gene_id in seen_genes:
-                raise ValueError(f"Duplicate normalized phenotype gene ID: {gene_id}")
+            gene_id = normalize_molecular_phenotype_id(feature_id, line_number)
             seen_genes.add(gene_id)
-            bed_gene_count += 1
+            bed_feature_count += 1
             values = [
                 _parse_phenotype_value(value, line_number) for value in fields[4:]
             ]
             if gene_id not in coding_genes:
                 continue
-            coding_bed_gene_count += 1
-            if coding_bed_gene_count % PROGRESS_INTERVAL_GENES == 0:
+            coding_bed_feature_count += 1
+            if coding_bed_feature_count % PROGRESS_INTERVAL_GENES == 0:
                 LOGGER.info(
-                    "Processed %d protein-coding BED genes",
-                    coding_bed_gene_count,
+                    "Processed %d protein-coding BED features",
+                    coding_bed_feature_count,
                 )
-            coding_expression.append(
+            coding_expression_rows.append(
                 (
                     gene_id,
                     np.asarray(
@@ -662,6 +694,9 @@ def calculate_lof_pc_enrichment(
                 )
             )
 
+    coding_expression = _collapse_gene_expression_rows(coding_expression_rows)
+    bed_gene_count = len(seen_genes)
+    coding_bed_gene_count = len(coding_expression)
     if coding_bed_gene_count == 0:
         raise ValueError(
             "No protein-coding genes from the supplied list occur in the phenotype BED"
@@ -881,10 +916,16 @@ def calculate_lof_pc_enrichment(
     write_json(
         analysis_qc_output,
         {
+            "bed_feature_count": bed_feature_count,
             "bed_gene_count": bed_gene_count,
             "bed_sample_count": len(bed_samples),
+            "duplicate_feature_count": bed_feature_count - bed_gene_count,
             "pc_sample_count": len(principal_components.sample_ids),
+            "protein_coding_bed_feature_count": coding_bed_feature_count,
             "protein_coding_bed_gene_count": coding_bed_gene_count,
+            "protein_coding_duplicate_feature_count": (
+                coding_bed_feature_count - coding_bed_gene_count
+            ),
             "protein_coding_gene_count": len(coding_genes),
             "shared_bed_pc_sample_count": len(shared_samples),
             "pre_join_carrier_pair_counts": {

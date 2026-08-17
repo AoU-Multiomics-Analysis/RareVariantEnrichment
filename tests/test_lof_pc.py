@@ -1156,20 +1156,20 @@ def test_analysis_qc_reports_pc_specific_exclusion_reasons_and_carriers(tmp_path
     phenotype = tmp_path / "phenotypes.bed"
     phenotype.write_text(
         "#chr\tstart\tend\tfeature_id\tS1\tS2\tS3\tS4\tS5\n"
-        "chr1\t0\t1\tGOOD\t1\t2\t4\t8\t16\n"
-        "chr1\t1\t2\tSPARSE\t1\t2\tNA\tNA\tNA\n"
-        "chr1\t2\t3\tRANK\t1\t2\t4\tNA\tNA\n"
-        "chr1\t3\t4\tZERO\t5\t5\t5\t5\t5\n"
+        "chr1\t0\t1\tENSG10\t1\t2\t4\t8\t16\n"
+        "chr1\t1\t2\tENSG11\t1\t2\tNA\tNA\tNA\n"
+        "chr1\t2\t3\tENSG12\t1\t2\t4\tNA\tNA\n"
+        "chr1\t3\t4\tENSG13\t5\t5\t5\t5\t5\n"
     )
     pcs = tmp_path / "pcs.tsv"
     pcs.write_text("ID\tPC1\tPC2\nS1\t0\t0\nS2\t0\t1\nS3\t0\t2\nS4\t1\t3\nS5\t2\t4\n")
     genes = tmp_path / "genes.tsv"
-    genes.write_text("gene_id\nGOOD\nSPARSE\nRANK\nZERO\n")
+    genes.write_text("gene_id\nENSG10\nENSG11\nENSG12\nENSG13\n")
     carriers = tmp_path / "lof.tsv"
     carriers.write_text(
         "sample_id\tgene_id\tgene_symbol\thas_lof_variant\tn_lof_variants\tvariant_ids\tlof_classes\n"
-        "S1\tGOOD\tGOOD\ttrue\t1\tv1\tHC\n"
-        "S1\tRANK\tRANK\ttrue\t1\tv2\tLC\n"
+        "S1\tENSG10\tGOOD\ttrue\t1\tv1\tHC\n"
+        "S1\tENSG12\tRANK\ttrue\t1\tv2\tLC\n"
     )
     inputs = {"phenotype": phenotype, "pcs": pcs, "genes": genes, "carriers": carriers}
 
@@ -1202,11 +1202,11 @@ def test_analysis_qc_reports_pc_specific_exclusion_reasons_and_carriers(tmp_path
     with gzip.open(outputs["gene_qc"], "rt", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle, delimiter="\t"))
     reasons = {(row["gene_id"], row["pc_count"]): row["exclusion_reason"] for row in rows}
-    assert reasons[("SPARSE", "0")] == "insufficient_dof"
-    assert reasons[("SPARSE", "1")] == "insufficient_dof"
-    assert reasons[("RANK", "1")] == "rank_deficiency"
-    assert reasons[("ZERO", "0")] == "invalid_or_zero_residual_sd"
-    assert reasons[("ZERO", "1")] == "invalid_or_zero_residual_sd"
+    assert reasons[("ENSG11", "0")] == "insufficient_dof"
+    assert reasons[("ENSG11", "1")] == "insufficient_dof"
+    assert reasons[("ENSG12", "1")] == "rank_deficiency"
+    assert reasons[("ENSG13", "0")] == "invalid_or_zero_residual_sd"
+    assert reasons[("ENSG13", "1")] == "invalid_or_zero_residual_sd"
 
 
 def test_analysis_rejects_trailing_infinite_pc_even_when_zero_pcs_selected(tmp_path: Path):
