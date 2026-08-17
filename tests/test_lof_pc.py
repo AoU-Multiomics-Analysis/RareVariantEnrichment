@@ -30,6 +30,44 @@ def test_normalize_ensembl_id_strips_exactly_one_terminal_numeric_version(
     assert lof_pc_module().normalize_ensembl_id(raw) == expected
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("ENSG00000000419.14", "ENSG00000000419"),
+        ("A0JNW5_ENSG00000111647.13", "ENSG00000111647"),
+        (
+            "chr20:50941209:50942031:clu_63027_-:ENSG00000000419.14",
+            "ENSG00000000419",
+        ),
+        (" ENSG1 ", "ENSG1"),
+    ],
+)
+def test_normalize_molecular_phenotype_id(raw: str, expected: str):
+    assert lof_pc_module().normalize_molecular_phenotype_id(raw, 7) == expected
+
+
+@pytest.mark.parametrize("raw", ["", "A0JNW5", "ENSG1_ENSG2"])
+def test_normalize_molecular_phenotype_id_rejects_invalid_ids(raw: str):
+    with pytest.raises(ValueError, match="Line 7"):
+        lof_pc_module().normalize_molecular_phenotype_id(raw, 7)
+
+
+def test_collapse_gene_expression_rows_uses_minimum_finite_z_score():
+    rows = [
+        ("ENSG1", np.array([1.0, np.nan, -2.0])),
+        ("ENSG1", np.array([0.5, -3.0, np.nan])),
+        ("ENSG2", np.array([4.0, 5.0, 6.0])),
+    ]
+
+    collapsed = lof_pc_module()._collapse_gene_expression_rows(rows)
+
+    assert [gene_id for gene_id, _ in collapsed] == ["ENSG1", "ENSG2"]
+    np.testing.assert_allclose(
+        collapsed[0][1], np.array([0.5, -3.0, -2.0]), equal_nan=True
+    )
+    np.testing.assert_allclose(collapsed[1][1], np.array([4.0, 5.0, 6.0]))
+
+
 @pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gzip"])
 def test_prepare_protein_coding_genes_streams_gtf_and_writes_sorted_unique_ids(
     tmp_path: Path, compressed: bool
@@ -433,6 +471,36 @@ def _run_analysis(
         outputs["analysis_qc"],
     )
     return outputs
+
+
+def test_lof_pc_enrichment_accepts_susie_ids_and_collapses_duplicate_features(
+    tmp_path: Path,
+):
+    inputs = _write_analysis_fixture(tmp_path)
+    inputs["phenotype"].write_text(
+        "#chr\tstart\tend\tfeature_id\tS1\tS2\tS3\tS4\tS5\tS6\n"
+        "chr1\t0\t1\tA0JNW5_ENSG1.7\t0\t1\t2\t3\t4\t5\n"
+        "chr1\t0\t1\tchr1:100:101:clu_1_+:ENSG1.9\t0\t-1\t-2\t-3\t-4\t-5\n"
+        "chr1\t1\t2\tchr1:200:201:clu_2_-:ENSG2.3\t5\t4\t3\t2\t1\tNA\n"
+    )
+
+    outputs = _run_analysis(tmp_path, inputs, thresholds=[-0.8], pc_counts=[0])
+
+    analysis_qc = json.loads(outputs["analysis_qc"].read_text())
+    assert analysis_qc["bed_feature_count"] == 3
+    assert analysis_qc["bed_gene_count"] == 2
+    assert analysis_qc["duplicate_feature_count"] == 1
+    assert analysis_qc["protein_coding_bed_feature_count"] == 3
+    assert analysis_qc["protein_coding_bed_gene_count"] == 2
+    assert analysis_qc["protein_coding_duplicate_feature_count"] == 1
+    assert analysis_qc["per_pc"]["0"]["total_observations"] == 11
+
+    with gzip.open(outputs["gene_qc"], "rt", encoding="utf-8") as handle:
+        gene_qc_rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert {(row["gene_id"], row["pc_count"]) for row in gene_qc_rows} == {
+        ("ENSG1", "0"),
+        ("ENSG2", "0"),
+    }
 
 
 def test_calculate_lof_pc_enrichment_preserves_supplied_adaptive_grid_mode(
