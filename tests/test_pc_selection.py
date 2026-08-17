@@ -135,3 +135,5 @@ def test_analysis_writes_selection_json_and_svg_with_reference_lines(tmp_path: P
     assert 'data-selection-pc="10"' in svg
     assert 'data-median-log-or="HC"' in svg
     assert 'data-median-log-or="any_lof"' in svg
+    assert 'height="418"' in svg
+    assert 'height="-418"' not in svg

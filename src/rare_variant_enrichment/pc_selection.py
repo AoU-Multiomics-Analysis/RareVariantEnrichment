@@ -239,7 +239,7 @@ def write_lof_pc_svg(
     margin_left, margin_right, gap = 90, 35, 70
     panel_width = (width - margin_left - margin_right - gap) / 2
     plot_top, plot_bottom = 92, 510
-    plot_width, plot_height = panel_width - 10, plot_top - plot_bottom
+    plot_width, plot_height = panel_width - 10, plot_bottom - plot_top
     svg: list[str] = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}" role="img" aria-label="LoF enrichment across principal components">',
