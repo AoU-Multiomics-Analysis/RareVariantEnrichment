@@ -731,9 +731,15 @@ def calculate_lof_pc_enrichment(
     analysis_qc_output: Path,
     *,
     pc_grid_mode: str | None = None,
+    additional_covariates_path: Path | None = None,
 ) -> None:
     thresholds = validate_negative_z_thresholds(negative_z_thresholds)
     principal_components = read_principal_components(principal_components_path)
+    additional_covariates = (
+        read_additional_covariates(additional_covariates_path)
+        if additional_covariates_path is not None
+        else None
+    )
     pc_counts = build_pc_grid(
         requested_pc_counts, principal_components.available_pc_count
     )
@@ -745,15 +751,25 @@ def calculate_lof_pc_enrichment(
     coding_genes = _read_protein_coding_genes(protein_coding_genes_path)
     carriers = read_lof_carriers(lof_carriers_path)
     LOGGER.info(
-        "Starting LoF/PC enrichment: thresholds=%s pc_counts=%s coding_genes=%d",
+        "Starting LoF/PC enrichment: thresholds=%s pc_counts=%s coding_genes=%d "
+        "additional_covariates=%d",
         thresholds,
         pc_counts,
         len(coding_genes),
+        0 if additional_covariates is None else additional_covariates.covariate_count,
     )
     pc_sample_indexes = {
         sample_id: index
         for index, sample_id in enumerate(principal_components.sample_ids)
     }
+    additional_covariate_sample_indexes = (
+        {}
+        if additional_covariates is None
+        else {
+            sample_id: index
+            for index, sample_id in enumerate(additional_covariates.sample_ids)
+        }
+    )
 
     per_pc = {
         str(pc_count): {
@@ -784,22 +800,44 @@ def calculate_lof_pc_enrichment(
     coding_expression_rows: list[tuple[str, np.ndarray]] = []
     with open_text(phenotype_bed) as bed_handle:
         header = _read_header(bed_handle)
-        bed_samples = [sample.strip() for sample in header[4:]]
-        if any(not sample for sample in bed_samples):
-            raise ValueError("Phenotype BED sample IDs must be non-empty strings")
+        bed_samples = [
+            normalize_sample_id(sample, f"Phenotype BED header column {index + 5}")
+            for index, sample in enumerate(header[4:])
+        ]
         _reject_duplicates(bed_samples, "sample")
-        shared_samples = [sample for sample in bed_samples if sample in pc_sample_indexes]
+        bed_pc_samples = [sample for sample in bed_samples if sample in pc_sample_indexes]
+        shared_samples = [
+            sample
+            for sample in bed_pc_samples
+            if sample in additional_covariate_sample_indexes
+        ] if additional_covariates is not None else bed_pc_samples
         if not shared_samples:
-            raise ValueError("No shared phenotype BED and PC samples")
+            if additional_covariates is None:
+                raise ValueError("No shared phenotype BED and PC samples")
+            raise ValueError(
+                "No shared phenotype BED, PC, and additional-covariate samples"
+            )
         LOGGER.info(
-            "Found %d shared BED/PC samples (%d BED, %d PC)",
+            "Found %d shared BED/PC%s samples (%d BED, %d PC, %d covariate)",
             len(shared_samples),
+            "/additional-covariate" if additional_covariates is not None else "",
             len(bed_samples),
             len(principal_components.sample_ids),
+            0
+            if additional_covariates is None
+            else len(additional_covariates.sample_ids),
         )
         shared_bed_columns = [bed_samples.index(sample) for sample in shared_samples]
         shared_pc_rows = [pc_sample_indexes[sample] for sample in shared_samples]
         shared_pc_values = principal_components.values[shared_pc_rows, :]
+        shared_covariate_values = (
+            None
+            if additional_covariates is None
+            else additional_covariates.values[
+                [additional_covariate_sample_indexes[sample] for sample in shared_samples],
+                :,
+            ]
+        )
 
         for line_number, raw_line in enumerate(bed_handle, start=2):
             if not raw_line.strip():
@@ -927,20 +965,23 @@ def calculate_lof_pc_enrichment(
         if complete_expression:
             for pc_count in pc_counts:
                 try:
+                    design_parts = [np.ones(len(shared_samples))]
+                    if shared_covariate_values is not None:
+                        design_parts.append(shared_covariate_values)
+                    if pc_count:
+                        design_parts.append(shared_pc_values[:, :pc_count])
                     rank = int(
-                        np.linalg.matrix_rank(
-                            np.column_stack(
-                                (
-                                    np.ones(len(shared_samples)),
-                                    shared_pc_values[:, :pc_count],
-                                )
-                            )
-                        )
+                        np.linalg.matrix_rank(np.column_stack(design_parts))
                     )
                 except (np.linalg.LinAlgError, ValueError, FloatingPointError):
                     rank_deficient_requested_prefix = True
                     break
-                if rank < pc_count + 1:
+                required_rank = (
+                    1
+                    + (0 if shared_covariate_values is None else shared_covariate_values.shape[1])
+                    + pc_count
+                )
+                if rank < required_rank:
                     rank_deficient_requested_prefix = True
                     break
 
@@ -949,9 +990,12 @@ def calculate_lof_pc_enrichment(
                 [expression for _, expression in coding_expression]
             )
             projection = prepare_complete_data_projection(
-                expression_matrix, shared_pc_values, pc_counts
+                expression_matrix,
+                shared_pc_values,
+                pc_counts,
+                additional_covariates=shared_covariate_values,
             )
-            prediction = np.zeros_like(expression_matrix)
+            prediction = projection.initial_prediction()
             previous_pc_count = 0
 
             for pc_count in pc_counts:
@@ -962,18 +1006,21 @@ def calculate_lof_pc_enrichment(
                 residuals = projection.centered_expression - prediction
                 usable_sample_count = len(shared_samples)
                 try:
+                    design_parts = [np.ones(usable_sample_count)]
+                    if shared_covariate_values is not None:
+                        design_parts.append(shared_covariate_values)
+                    if pc_count:
+                        design_parts.append(shared_pc_values[:, :pc_count])
                     rank = int(
-                        np.linalg.matrix_rank(
-                            np.column_stack(
-                                (
-                                    np.ones(usable_sample_count),
-                                    shared_pc_values[:, :pc_count],
-                                )
-                            )
-                        )
+                        np.linalg.matrix_rank(np.column_stack(design_parts))
                     )
                 except (np.linalg.LinAlgError, ValueError, FloatingPointError):
                     rank = None
+                required_rank = (
+                    1
+                    + (0 if shared_covariate_values is None else shared_covariate_values.shape[1])
+                    + pc_count
+                )
 
                 for gene_index, (gene_id, expression) in enumerate(coding_expression):
                     if rank is None:
@@ -994,7 +1041,7 @@ def calculate_lof_pc_enrichment(
                             None,
                             "insufficient_dof",
                         )
-                    elif rank < pc_count + 1:
+                    elif rank < required_rank:
                         fit = ResidualFit(
                             np.full(usable_sample_count, np.nan),
                             usable_sample_count,
@@ -1043,7 +1090,10 @@ def calculate_lof_pc_enrichment(
                         gene_id,
                         pc_count,
                         residualize_expression(
-                            expression, shared_pc_values, pc_count
+                            expression,
+                            shared_pc_values,
+                            pc_count,
+                            additional_covariates=shared_covariate_values,
                         ),
                     )
 
@@ -1066,6 +1116,18 @@ def calculate_lof_pc_enrichment(
             "bed_gene_count": bed_gene_count,
             "bed_sample_count": len(bed_samples),
             "duplicate_feature_count": bed_feature_count - bed_gene_count,
+            "additional_covariates_supplied": additional_covariates is not None,
+            "additional_covariate_count": (
+                0
+                if additional_covariates is None
+                else additional_covariates.covariate_count
+            ),
+            "additional_covariate_names": (
+                [] if additional_covariates is None else list(additional_covariates.names)
+            ),
+            "additional_covariate_sample_count": (
+                0 if additional_covariates is None else additional_covariates.sample_count
+            ),
             "pc_sample_count": len(principal_components.sample_ids),
             "protein_coding_bed_feature_count": coding_bed_feature_count,
             "protein_coding_bed_gene_count": coding_bed_gene_count,
@@ -1074,6 +1136,7 @@ def calculate_lof_pc_enrichment(
             ),
             "protein_coding_gene_count": len(coding_genes),
             "shared_bed_pc_sample_count": len(shared_samples),
+            "shared_bed_pc_covariate_sample_count": len(shared_samples),
             "pre_join_carrier_pair_counts": {
                 definition: len(carriers.pairs_by_definition[definition])
                 for definition in CARRIER_DEFINITIONS
@@ -1098,6 +1161,11 @@ def calculate_lof_pc_enrichment(
                     "phenotype_bed": str(phenotype_bed),
                     "principal_components": str(principal_components_path),
                     "protein_coding_genes": str(protein_coding_genes_path),
+                    **(
+                        {}
+                        if additional_covariates_path is None
+                        else {"additional_covariates": str(additional_covariates_path)}
+                    ),
                 },
                 "software_versions": {
                     "numpy": np.__version__,
@@ -1106,7 +1174,11 @@ def calculate_lof_pc_enrichment(
                 },
             },
             "residualization": {
-                "design": "intercept plus first k principal components",
+                "design": (
+                    "intercept plus all additional covariates plus first k principal components"
+                    if additional_covariates is not None
+                    else "intercept plus first k principal components"
+                ),
                 "outlier_rule": "residual_z <= z_threshold",
                 "residual_standard_deviation_ddof": 0,
             },

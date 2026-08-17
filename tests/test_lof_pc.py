@@ -686,6 +686,7 @@ def _run_analysis(
     *,
     thresholds: list[float],
     pc_counts: list[int],
+    additional_covariates_path: Path | None = None,
 ) -> dict[str, Path]:
     outputs = {
         "results": tmp_path / "results.tsv",
@@ -704,6 +705,7 @@ def _run_analysis(
         outputs["summary"],
         outputs["gene_qc"],
         outputs["analysis_qc"],
+        additional_covariates_path=additional_covariates_path,
     )
     return outputs
 
@@ -736,6 +738,65 @@ def test_lof_pc_enrichment_accepts_susie_ids_and_collapses_duplicate_features(
         ("ENSG1", "0"),
         ("ENSG2", "0"),
     }
+
+
+def test_lof_pc_enrichment_intersects_and_reports_additional_covariates(
+    tmp_path: Path,
+):
+    inputs = _write_analysis_fixture(tmp_path)
+    covariates = tmp_path / "genetic-pcs.tsv"
+    covariates.write_text(
+        "GENETICPC1\tGENETICPC2\tsample_id\n"
+        "0.4\t0.0\tS4\n"
+        "-0.1\t1.0\tS1\n"
+        "0.2\t2.0\tS2\n"
+        "-0.3\t-1.0\tS3\n"
+        "0.9\t3.0\tS5\n"
+    )
+
+    outputs = _run_analysis(
+        tmp_path,
+        inputs,
+        thresholds=[-0.8],
+        pc_counts=[0],
+        additional_covariates_path=covariates,
+    )
+
+    analysis_qc = json.loads(outputs["analysis_qc"].read_text())
+    assert analysis_qc["additional_covariates_supplied"] is True
+    assert analysis_qc["additional_covariate_count"] == 2
+    assert analysis_qc["additional_covariate_names"] == [
+        "GENETICPC1",
+        "GENETICPC2",
+    ]
+    assert analysis_qc["additional_covariate_sample_count"] == 5
+    assert analysis_qc["shared_bed_pc_sample_count"] == 5
+    assert analysis_qc["shared_bed_pc_covariate_sample_count"] == 5
+
+    summary = json.loads(outputs["summary"].read_text())
+    assert summary["residualization"]["design"] == (
+        "intercept plus all additional covariates plus first k principal components"
+    )
+    assert summary["provenance"]["input_files"]["additional_covariates"] == str(
+        covariates
+    )
+
+
+def test_lof_pc_enrichment_rejects_empty_three_input_sample_intersection(
+    tmp_path: Path,
+):
+    inputs = _write_analysis_fixture(tmp_path)
+    covariates = tmp_path / "genetic-pcs.tsv"
+    covariates.write_text("GENETICPC1\tsample_id\n0.1\tCOVARIATE_ONLY\n")
+
+    with pytest.raises(ValueError, match="shared"):
+        _run_analysis(
+            tmp_path,
+            inputs,
+            thresholds=[-0.8],
+            pc_counts=[0],
+            additional_covariates_path=covariates,
+        )
 
 
 def test_calculate_lof_pc_enrichment_preserves_supplied_adaptive_grid_mode(
@@ -1069,6 +1130,40 @@ def test_merge_lof_pc_enrichment_requires_identical_analysis_qc_metadata(
         _merge_shards(tmp_path, [shard_one, shard_two])
 
 
+def test_merge_lof_pc_enrichment_preserves_and_validates_covariate_metadata(
+    tmp_path: Path,
+):
+    shard_one = _write_merge_shard(
+        tmp_path, "one-covariates", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    shard_two = _write_merge_shard(
+        tmp_path, "two-covariates", pc_counts=[1], p_values=[0.02, 0.50, 0.60]
+    )
+    covariate_metadata = {
+        "additional_covariates_supplied": True,
+        "additional_covariate_count": 2,
+        "additional_covariate_names": ["GENETICPC1", "GENETICPC2"],
+        "additional_covariate_sample_count": 4,
+        "shared_bed_pc_covariate_sample_count": 4,
+    }
+    _rewrite_analysis_qc(shard_one["analysis_qc"], **covariate_metadata)
+    _rewrite_analysis_qc(shard_two["analysis_qc"], **covariate_metadata)
+
+    outputs = _merge_shards(tmp_path, [shard_one, shard_two])
+    merged_qc = json.loads(outputs["analysis_qc"].read_text())
+    assert merged_qc["additional_covariate_names"] == [
+        "GENETICPC1",
+        "GENETICPC2",
+    ]
+
+    _rewrite_analysis_qc(
+        shard_two["analysis_qc"],
+        additional_covariate_names=["GENETICPC1", "GENETICPC3"],
+    )
+    with pytest.raises(ValueError, match="top-level metadata"):
+        _merge_shards(tmp_path, [shard_one, shard_two])
+
+
 def test_merge_lof_pc_enrichment_rejects_invalid_available_pc_count(tmp_path: Path):
     shard = _write_merge_shard(
         tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
@@ -1128,19 +1223,36 @@ def test_pc_major_complete_data_analysis_uses_incremental_projection_and_logs_in
     advance_calls: list[tuple[int, int]] = []
     residualize_calls: list[int] = []
 
-    def prepare(expression, principal_components, requested_pc_counts):
+    def prepare(
+        expression,
+        principal_components,
+        requested_pc_counts,
+        additional_covariates=None,
+    ):
         prepared_shapes.append(
             (expression.shape, principal_components.shape, tuple(requested_pc_counts))
         )
-        return original_prepare(expression, principal_components, requested_pc_counts)
+        return original_prepare(
+            expression,
+            principal_components,
+            requested_pc_counts,
+            additional_covariates=additional_covariates,
+        )
 
     def advance(self, previous_pc_count, pc_count, prediction):
         advance_calls.append((previous_pc_count, pc_count))
         return original_advance(self, previous_pc_count, pc_count, prediction)
 
-    def residualize(expression, principal_components, pc_count):
+    def residualize(
+        expression, principal_components, pc_count, additional_covariates=None
+    ):
         residualize_calls.append(pc_count)
-        return original_residualize(expression, principal_components, pc_count)
+        return original_residualize(
+            expression,
+            principal_components,
+            pc_count,
+            additional_covariates=additional_covariates,
+        )
 
     monkeypatch.setattr(module, "prepare_complete_data_projection", prepare)
     monkeypatch.setattr(module.CompleteDataProjection, "advance_prediction", advance)
