@@ -30,6 +30,44 @@ def test_normalize_ensembl_id_strips_exactly_one_terminal_numeric_version(
     assert lof_pc_module().normalize_ensembl_id(raw) == expected
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("ENSG00000000419.14", "ENSG00000000419"),
+        ("A0JNW5_ENSG00000111647.13", "ENSG00000111647"),
+        (
+            "chr20:50941209:50942031:clu_63027_-:ENSG00000000419.14",
+            "ENSG00000000419",
+        ),
+        (" ENSG1 ", "ENSG1"),
+    ],
+)
+def test_normalize_molecular_phenotype_id(raw: str, expected: str):
+    assert lof_pc_module().normalize_molecular_phenotype_id(raw, 7) == expected
+
+
+@pytest.mark.parametrize("raw", ["", "A0JNW5", "ENSG1_ENSG2"])
+def test_normalize_molecular_phenotype_id_rejects_invalid_ids(raw: str):
+    with pytest.raises(ValueError, match="Line 7"):
+        lof_pc_module().normalize_molecular_phenotype_id(raw, 7)
+
+
+def test_collapse_gene_expression_rows_uses_minimum_finite_z_score():
+    rows = [
+        ("ENSG1", np.array([1.0, np.nan, -2.0])),
+        ("ENSG1", np.array([0.5, -3.0, np.nan])),
+        ("ENSG2", np.array([4.0, 5.0, 6.0])),
+    ]
+
+    collapsed = lof_pc_module()._collapse_gene_expression_rows(rows)
+
+    assert [gene_id for gene_id, _ in collapsed] == ["ENSG1", "ENSG2"]
+    np.testing.assert_allclose(
+        collapsed[0][1], np.array([0.5, -3.0, -2.0]), equal_nan=True
+    )
+    np.testing.assert_allclose(collapsed[1][1], np.array([4.0, 5.0, 6.0]))
+
+
 @pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gzip"])
 def test_prepare_protein_coding_genes_streams_gtf_and_writes_sorted_unique_ids(
     tmp_path: Path, compressed: bool
@@ -184,6 +222,71 @@ def test_read_principal_components_rejects_header_only_file(tmp_path: Path):
         lof_pc_module().read_principal_components(pcs)
 
 
+def test_read_additional_covariates_accepts_sample_id_as_final_column(
+    tmp_path: Path,
+):
+    path = tmp_path / "genetic-pcs.tsv"
+    path.write_text(
+        "GENETICPC1\tGENETICPC2\tsample_id\n"
+        "0.1\t-0.2\t001\n"
+        "0.3\t0.4\t1000291\n"
+    )
+
+    matrix = lof_pc_module().read_additional_covariates(path)
+
+    assert matrix.sample_ids == ("001", "1000291")
+    assert matrix.names == ("GENETICPC1", "GENETICPC2")
+    assert matrix.sample_count == 2
+    assert matrix.covariate_count == 2
+    np.testing.assert_allclose(matrix.values, [[0.1, -0.2], [0.3, 0.4]])
+
+
+def test_read_additional_covariates_accepts_id_column_in_any_position(
+    tmp_path: Path,
+):
+    path = tmp_path / "covariates.tsv"
+    path.write_text("ID\tGENETICPC1\n001\t0.1\n")
+
+    matrix = lof_pc_module().read_additional_covariates(path)
+
+    assert matrix.sample_ids == ("001",)
+    assert matrix.names == ("GENETICPC1",)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "GENETICPC1\tsample_id\n0.1\tS1\n0.2\tS1\n",
+        "GENETICPC1\tother\n0.1\tS1\n",
+        "sample_id\tGENETICPC1\nS1\tNA\n",
+        "sample_id\tGENETICPC1\nS1\tinf\n",
+        "sample_id\tGENETICPC1\n\t0.1\n",
+        "sample_id\tsample_id\nS1\t0.1\n",
+        "sample_id\nS1\n",
+    ],
+)
+def test_read_additional_covariates_rejects_invalid_schema_or_values(
+    tmp_path: Path, text: str
+):
+    path = tmp_path / "invalid.tsv"
+    path.write_text(text)
+
+    with pytest.raises(ValueError):
+        lof_pc_module().read_additional_covariates(path)
+
+
+def test_lof_pc_sample_id_readers_preserve_numeric_looking_ids_as_strings(
+    tmp_path: Path,
+):
+    pcs = tmp_path / "pcs.tsv"
+    pcs.write_text("ID\tPC1\n001\t0.1\n1000291\t0.2\n")
+
+    assert lof_pc_module().read_principal_components(pcs).sample_ids == (
+        "001",
+        "1000291",
+    )
+
+
 @pytest.mark.parametrize(
     ("text", "message"),
     [
@@ -271,6 +374,176 @@ def test_residualize_expression_keeps_missing_observations_nan():
     assert fit.usable_sample_count == 4
     assert np.isnan(fit.z_scores[1])
     np.testing.assert_allclose(fit.z_scores[[0, 2, 3, 4]], [-1, -1, 1, 1])
+
+
+def _reference_residual_z_scores(
+    expression: np.ndarray,
+    principal_components: np.ndarray,
+    pc_count: int,
+    additional_covariates: np.ndarray,
+) -> np.ndarray:
+    design = np.column_stack(
+        (
+            np.ones(expression.shape[0]),
+            additional_covariates,
+            principal_components[:, :pc_count],
+        )
+    )
+    coefficients = np.linalg.lstsq(design, expression, rcond=None)[0]
+    residuals = expression - design @ coefficients
+    residuals = residuals - np.mean(residuals)
+    return residuals / np.std(residuals, ddof=0)
+
+
+@pytest.mark.parametrize("pc_count", [0, 1])
+def test_residualize_expression_matches_reference_with_additional_covariates(
+    pc_count: int,
+):
+    expression = np.array([1.0, 3.0, 2.0, 7.0, 5.0, 8.0, 4.0, 10.0])
+    additional_covariates = np.array(
+        [
+            [-1.0, 0.0],
+            [-0.5, 1.0],
+            [0.0, 0.0],
+            [0.5, 1.0],
+            [1.0, 4.0],
+            [1.5, 1.0],
+            [2.0, 0.0],
+            [2.5, 1.0],
+        ]
+    )
+    principal_components = np.array(
+        [
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [0.5, 2.0],
+            [2.0, 1.0],
+            [1.5, 3.0],
+            [3.0, 2.0],
+            [2.5, 4.0],
+            [4.0, 3.0],
+        ]
+    )
+
+    fit = lof_pc_module().residualize_expression(
+        expression,
+        principal_components,
+        pc_count,
+        additional_covariates=additional_covariates,
+    )
+
+    np.testing.assert_allclose(
+        fit.z_scores,
+        _reference_residual_z_scores(
+            expression, principal_components, pc_count, additional_covariates
+        ),
+        atol=1e-12,
+    )
+
+
+def test_residualize_expression_pc_zero_removes_additional_covariate_effect():
+    additional_covariates = np.arange(8, dtype=float).reshape(-1, 1)
+    expression = 2.0 * additional_covariates[:, 0] + np.array(
+        [-2.0, 1.0, 0.0, 2.0, -1.0, 1.0, -2.0, 1.0]
+    )
+
+    fit = lof_pc_module().residualize_expression(
+        expression,
+        np.zeros((8, 0)),
+        0,
+        additional_covariates=additional_covariates,
+    )
+
+    np.testing.assert_allclose(
+        fit.z_scores,
+        _reference_residual_z_scores(
+            expression,
+            np.zeros((8, 0)),
+            0,
+            additional_covariates,
+        ),
+        atol=1e-12,
+    )
+
+
+def test_complete_data_projection_matches_reference_with_additional_covariates():
+    expression = np.array(
+        [
+            [1.0, 6.0],
+            [2.0, 4.0],
+            [4.0, 7.0],
+            [3.0, 3.0],
+            [7.0, 5.0],
+            [8.0, 9.0],
+            [5.0, 2.0],
+            [9.0, 8.0],
+        ]
+    )
+    principal_components = np.array(
+        [
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [0.5, 2.0],
+            [2.0, 1.0],
+            [1.5, 3.0],
+            [3.0, 2.0],
+            [2.5, 4.0],
+            [4.0, 3.0],
+        ]
+    )
+    additional_covariates = np.array(
+        [
+            [-1.0, 0.0],
+            [-0.5, 1.0],
+            [0.0, 0.0],
+            [0.5, 1.0],
+            [1.0, 4.0],
+            [1.5, 1.0],
+            [2.0, 0.0],
+            [2.5, 1.0],
+        ]
+    )
+    module = lof_pc_module()
+    state = module.prepare_complete_data_projection(
+        expression,
+        principal_components,
+        [0, 1, 2],
+        additional_covariates=additional_covariates,
+    )
+    prediction = state.initial_prediction()
+    previous_pc_count = 0
+
+    for pc_count in [0, 1, 2]:
+        prediction = state.advance_prediction(
+            previous_pc_count, pc_count, prediction
+        )
+        expected = np.column_stack(
+            [
+                _reference_residual_z_scores(
+                    expression[:, column],
+                    principal_components,
+                    pc_count,
+                    additional_covariates,
+                )
+                for column in range(expression.shape[1])
+            ]
+        )
+        np.testing.assert_allclose(
+            state.z_scores(prediction), expected, atol=1e-10, rtol=1e-10
+        )
+        previous_pc_count = pc_count
+
+
+def test_residualize_expression_rejects_collinear_additional_covariate_and_pc():
+    principal_components = np.arange(8, dtype=float).reshape(-1, 1)
+    fit = lof_pc_module().residualize_expression(
+        np.arange(8, dtype=float),
+        principal_components,
+        1,
+        additional_covariates=principal_components,
+    )
+
+    assert fit.exclusion_reason == "rank_deficiency"
 
 
 def test_complete_data_projection_matches_legacy_residuals():
@@ -413,6 +686,7 @@ def _run_analysis(
     *,
     thresholds: list[float],
     pc_counts: list[int],
+    additional_covariates_path: Path | None = None,
 ) -> dict[str, Path]:
     outputs = {
         "results": tmp_path / "results.tsv",
@@ -431,8 +705,98 @@ def _run_analysis(
         outputs["summary"],
         outputs["gene_qc"],
         outputs["analysis_qc"],
+        additional_covariates_path=additional_covariates_path,
     )
     return outputs
+
+
+def test_lof_pc_enrichment_accepts_susie_ids_and_collapses_duplicate_features(
+    tmp_path: Path,
+):
+    inputs = _write_analysis_fixture(tmp_path)
+    inputs["phenotype"].write_text(
+        "#chr\tstart\tend\tfeature_id\tS1\tS2\tS3\tS4\tS5\tS6\n"
+        "chr1\t0\t1\tA0JNW5_ENSG1.7\t0\t1\t2\t3\t4\t5\n"
+        "chr1\t0\t1\tchr1:100:101:clu_1_+:ENSG1.9\t0\t-1\t-2\t-3\t-4\t-5\n"
+        "chr1\t1\t2\tchr1:200:201:clu_2_-:ENSG2.3\t5\t4\t3\t2\t1\tNA\n"
+    )
+
+    outputs = _run_analysis(tmp_path, inputs, thresholds=[-0.8], pc_counts=[0])
+
+    analysis_qc = json.loads(outputs["analysis_qc"].read_text())
+    assert analysis_qc["bed_feature_count"] == 3
+    assert analysis_qc["bed_gene_count"] == 2
+    assert analysis_qc["duplicate_feature_count"] == 1
+    assert analysis_qc["protein_coding_bed_feature_count"] == 3
+    assert analysis_qc["protein_coding_bed_gene_count"] == 2
+    assert analysis_qc["protein_coding_duplicate_feature_count"] == 1
+    assert analysis_qc["per_pc"]["0"]["total_observations"] == 11
+
+    with gzip.open(outputs["gene_qc"], "rt", encoding="utf-8") as handle:
+        gene_qc_rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert {(row["gene_id"], row["pc_count"]) for row in gene_qc_rows} == {
+        ("ENSG1", "0"),
+        ("ENSG2", "0"),
+    }
+
+
+def test_lof_pc_enrichment_intersects_and_reports_additional_covariates(
+    tmp_path: Path,
+):
+    inputs = _write_analysis_fixture(tmp_path)
+    covariates = tmp_path / "genetic-pcs.tsv"
+    covariates.write_text(
+        "GENETICPC1\tGENETICPC2\tsample_id\n"
+        "0.4\t0.0\tS4\n"
+        "-0.1\t1.0\tS1\n"
+        "0.2\t2.0\tS2\n"
+        "-0.3\t-1.0\tS3\n"
+        "0.9\t3.0\tS5\n"
+    )
+
+    outputs = _run_analysis(
+        tmp_path,
+        inputs,
+        thresholds=[-0.8],
+        pc_counts=[0],
+        additional_covariates_path=covariates,
+    )
+
+    analysis_qc = json.loads(outputs["analysis_qc"].read_text())
+    assert analysis_qc["additional_covariates_supplied"] is True
+    assert analysis_qc["additional_covariate_count"] == 2
+    assert analysis_qc["additional_covariate_names"] == [
+        "GENETICPC1",
+        "GENETICPC2",
+    ]
+    assert analysis_qc["additional_covariate_sample_count"] == 5
+    assert analysis_qc["shared_bed_pc_sample_count"] == 5
+    assert analysis_qc["shared_bed_pc_covariate_sample_count"] == 5
+
+    summary = json.loads(outputs["summary"].read_text())
+    assert summary["residualization"]["design"] == (
+        "intercept plus all additional covariates plus first k principal components"
+    )
+    assert summary["provenance"]["input_files"]["additional_covariates"] == str(
+        covariates
+    )
+
+
+def test_lof_pc_enrichment_rejects_empty_three_input_sample_intersection(
+    tmp_path: Path,
+):
+    inputs = _write_analysis_fixture(tmp_path)
+    covariates = tmp_path / "genetic-pcs.tsv"
+    covariates.write_text("GENETICPC1\tsample_id\n0.1\tCOVARIATE_ONLY\n")
+
+    with pytest.raises(ValueError, match="shared"):
+        _run_analysis(
+            tmp_path,
+            inputs,
+            thresholds=[-0.8],
+            pc_counts=[0],
+            additional_covariates_path=covariates,
+        )
 
 
 def test_calculate_lof_pc_enrichment_preserves_supplied_adaptive_grid_mode(
@@ -766,6 +1130,40 @@ def test_merge_lof_pc_enrichment_requires_identical_analysis_qc_metadata(
         _merge_shards(tmp_path, [shard_one, shard_two])
 
 
+def test_merge_lof_pc_enrichment_preserves_and_validates_covariate_metadata(
+    tmp_path: Path,
+):
+    shard_one = _write_merge_shard(
+        tmp_path, "one-covariates", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
+    )
+    shard_two = _write_merge_shard(
+        tmp_path, "two-covariates", pc_counts=[1], p_values=[0.02, 0.50, 0.60]
+    )
+    covariate_metadata = {
+        "additional_covariates_supplied": True,
+        "additional_covariate_count": 2,
+        "additional_covariate_names": ["GENETICPC1", "GENETICPC2"],
+        "additional_covariate_sample_count": 4,
+        "shared_bed_pc_covariate_sample_count": 4,
+    }
+    _rewrite_analysis_qc(shard_one["analysis_qc"], **covariate_metadata)
+    _rewrite_analysis_qc(shard_two["analysis_qc"], **covariate_metadata)
+
+    outputs = _merge_shards(tmp_path, [shard_one, shard_two])
+    merged_qc = json.loads(outputs["analysis_qc"].read_text())
+    assert merged_qc["additional_covariate_names"] == [
+        "GENETICPC1",
+        "GENETICPC2",
+    ]
+
+    _rewrite_analysis_qc(
+        shard_two["analysis_qc"],
+        additional_covariate_names=["GENETICPC1", "GENETICPC3"],
+    )
+    with pytest.raises(ValueError, match="top-level metadata"):
+        _merge_shards(tmp_path, [shard_one, shard_two])
+
+
 def test_merge_lof_pc_enrichment_rejects_invalid_available_pc_count(tmp_path: Path):
     shard = _write_merge_shard(
         tmp_path, "one", pc_counts=[0], p_values=[0.01, 0.20, 0.30]
@@ -825,19 +1223,36 @@ def test_pc_major_complete_data_analysis_uses_incremental_projection_and_logs_in
     advance_calls: list[tuple[int, int]] = []
     residualize_calls: list[int] = []
 
-    def prepare(expression, principal_components, requested_pc_counts):
+    def prepare(
+        expression,
+        principal_components,
+        requested_pc_counts,
+        additional_covariates=None,
+    ):
         prepared_shapes.append(
             (expression.shape, principal_components.shape, tuple(requested_pc_counts))
         )
-        return original_prepare(expression, principal_components, requested_pc_counts)
+        return original_prepare(
+            expression,
+            principal_components,
+            requested_pc_counts,
+            additional_covariates=additional_covariates,
+        )
 
     def advance(self, previous_pc_count, pc_count, prediction):
         advance_calls.append((previous_pc_count, pc_count))
         return original_advance(self, previous_pc_count, pc_count, prediction)
 
-    def residualize(expression, principal_components, pc_count):
+    def residualize(
+        expression, principal_components, pc_count, additional_covariates=None
+    ):
         residualize_calls.append(pc_count)
-        return original_residualize(expression, principal_components, pc_count)
+        return original_residualize(
+            expression,
+            principal_components,
+            pc_count,
+            additional_covariates=additional_covariates,
+        )
 
     monkeypatch.setattr(module, "prepare_complete_data_projection", prepare)
     monkeypatch.setattr(module.CompleteDataProjection, "advance_prediction", advance)
@@ -1088,20 +1503,20 @@ def test_analysis_qc_reports_pc_specific_exclusion_reasons_and_carriers(tmp_path
     phenotype = tmp_path / "phenotypes.bed"
     phenotype.write_text(
         "#chr\tstart\tend\tfeature_id\tS1\tS2\tS3\tS4\tS5\n"
-        "chr1\t0\t1\tGOOD\t1\t2\t4\t8\t16\n"
-        "chr1\t1\t2\tSPARSE\t1\t2\tNA\tNA\tNA\n"
-        "chr1\t2\t3\tRANK\t1\t2\t4\tNA\tNA\n"
-        "chr1\t3\t4\tZERO\t5\t5\t5\t5\t5\n"
+        "chr1\t0\t1\tENSG10\t1\t2\t4\t8\t16\n"
+        "chr1\t1\t2\tENSG11\t1\t2\tNA\tNA\tNA\n"
+        "chr1\t2\t3\tENSG12\t1\t2\t4\tNA\tNA\n"
+        "chr1\t3\t4\tENSG13\t5\t5\t5\t5\t5\n"
     )
     pcs = tmp_path / "pcs.tsv"
     pcs.write_text("ID\tPC1\tPC2\nS1\t0\t0\nS2\t0\t1\nS3\t0\t2\nS4\t1\t3\nS5\t2\t4\n")
     genes = tmp_path / "genes.tsv"
-    genes.write_text("gene_id\nGOOD\nSPARSE\nRANK\nZERO\n")
+    genes.write_text("gene_id\nENSG10\nENSG11\nENSG12\nENSG13\n")
     carriers = tmp_path / "lof.tsv"
     carriers.write_text(
         "sample_id\tgene_id\tgene_symbol\thas_lof_variant\tn_lof_variants\tvariant_ids\tlof_classes\n"
-        "S1\tGOOD\tGOOD\ttrue\t1\tv1\tHC\n"
-        "S1\tRANK\tRANK\ttrue\t1\tv2\tLC\n"
+        "S1\tENSG10\tGOOD\ttrue\t1\tv1\tHC\n"
+        "S1\tENSG12\tRANK\ttrue\t1\tv2\tLC\n"
     )
     inputs = {"phenotype": phenotype, "pcs": pcs, "genes": genes, "carriers": carriers}
 
@@ -1134,11 +1549,11 @@ def test_analysis_qc_reports_pc_specific_exclusion_reasons_and_carriers(tmp_path
     with gzip.open(outputs["gene_qc"], "rt", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle, delimiter="\t"))
     reasons = {(row["gene_id"], row["pc_count"]): row["exclusion_reason"] for row in rows}
-    assert reasons[("SPARSE", "0")] == "insufficient_dof"
-    assert reasons[("SPARSE", "1")] == "insufficient_dof"
-    assert reasons[("RANK", "1")] == "rank_deficiency"
-    assert reasons[("ZERO", "0")] == "invalid_or_zero_residual_sd"
-    assert reasons[("ZERO", "1")] == "invalid_or_zero_residual_sd"
+    assert reasons[("ENSG11", "0")] == "insufficient_dof"
+    assert reasons[("ENSG11", "1")] == "insufficient_dof"
+    assert reasons[("ENSG12", "1")] == "rank_deficiency"
+    assert reasons[("ENSG13", "0")] == "invalid_or_zero_residual_sd"
+    assert reasons[("ENSG13", "1")] == "invalid_or_zero_residual_sd"
 
 
 def test_analysis_rejects_trailing_infinite_pc_even_when_zero_pcs_selected(tmp_path: Path):

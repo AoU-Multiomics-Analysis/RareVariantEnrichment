@@ -71,6 +71,9 @@ GENE_PC_QC_HEADER = (
     "status",
     "exclusion_reason",
 )
+MOLECULAR_ENSEMBL_ID_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(ENSG[0-9]+)(?:\.[0-9]+)?"
+)
 PROGRESS_INTERVAL_GENES = 500
 LOGGER = logging.getLogger(__name__)
 
@@ -83,6 +86,21 @@ class PrincipalComponents:
     @property
     def available_pc_count(self) -> int:
         return int(self.values.shape[1])
+
+
+@dataclass(frozen=True)
+class AdditionalCovariates:
+    sample_ids: tuple[str, ...]
+    names: tuple[str, ...]
+    values: np.ndarray
+
+    @property
+    def sample_count(self) -> int:
+        return len(self.sample_ids)
+
+    @property
+    def covariate_count(self) -> int:
+        return len(self.names)
 
 
 @dataclass(frozen=True)
@@ -106,8 +124,12 @@ class CompleteDataProjection:
     """Cached projection terms for complete-data expression residualization."""
 
     centered_expression: np.ndarray
+    fixed_prediction: np.ndarray
     orthonormal_pcs: np.ndarray
     component_scores: np.ndarray
+
+    def initial_prediction(self) -> np.ndarray:
+        return np.array(self.fixed_prediction, dtype=float, copy=True)
 
     def advance_prediction(
         self, previous_pc_count: int, pc_count: int, prediction: np.ndarray
@@ -149,6 +171,7 @@ def prepare_complete_data_projection(
     expression: np.ndarray,
     principal_components: np.ndarray,
     requested_pc_counts: Sequence[int],
+    additional_covariates: np.ndarray | None = None,
 ) -> CompleteDataProjection:
     """Prepare complete-data residualization through centered PC projections."""
 
@@ -162,6 +185,20 @@ def prepare_complete_data_projection(
         raise ValueError("Complete-data projection requires complete finite expression")
     if not np.all(np.isfinite(pc_values)):
         raise ValueError("Complete-data projection requires finite principal components")
+
+    if additional_covariates is None:
+        covariate_values = np.empty((expression_values.shape[0], 0), dtype=float)
+    else:
+        covariate_values = np.asarray(additional_covariates, dtype=float)
+        if (
+            covariate_values.ndim != 2
+            or covariate_values.shape[0] != expression_values.shape[0]
+        ):
+            raise ValueError(
+                "Expression and additional covariates have incompatible shapes"
+            )
+        if not np.all(np.isfinite(covariate_values)):
+            raise ValueError("Complete-data projection requires finite additional covariates")
 
     available_pc_count = pc_values.shape[1]
     validated_counts: list[int] = []
@@ -179,23 +216,87 @@ def prepare_complete_data_projection(
 
     maximum_pc_count = max(validated_counts)
     centered_expression = expression_values - np.mean(expression_values, axis=0)
+    centered_covariates = covariate_values - np.mean(covariate_values, axis=0)
     centered_pcs = pc_values[:, :maximum_pc_count] - np.mean(
         pc_values[:, :maximum_pc_count], axis=0
     )
-    pc_norms = np.linalg.norm(centered_pcs, axis=0)
-    if np.any(~np.isfinite(pc_norms)) or np.any(pc_norms == 0):
-        raise ValueError("Principal components must have nonzero finite variance")
-    orthonormal_pcs, _ = np.linalg.qr(centered_pcs, mode="reduced")
-    component_scores = orthonormal_pcs.T @ centered_expression
+    design_parts = []
+    if centered_covariates.shape[1]:
+        design_parts.append(centered_covariates)
+    if centered_pcs.shape[1]:
+        design_parts.append(centered_pcs)
+    centered_design = (
+        np.column_stack(design_parts)
+        if design_parts
+        else np.empty((expression_values.shape[0], 0), dtype=float)
+    )
+    design_column_count = centered_design.shape[1]
+    if design_column_count:
+        if np.linalg.matrix_rank(centered_design) < design_column_count:
+            raise ValueError("Additional covariates and principal components are rank deficient")
+        orthonormal_design, _ = np.linalg.qr(centered_design, mode="reduced")
+    else:
+        orthonormal_design = np.empty(
+            (expression_values.shape[0], 0), dtype=float
+        )
+    component_scores = orthonormal_design.T @ centered_expression
+    covariate_count = covariate_values.shape[1]
+    fixed_prediction = (
+        orthonormal_design[:, :covariate_count]
+        @ component_scores[:covariate_count]
+        if covariate_count
+        else np.zeros_like(centered_expression)
+    )
     return CompleteDataProjection(
         centered_expression=centered_expression,
-        orthonormal_pcs=orthonormal_pcs,
-        component_scores=component_scores,
+        fixed_prediction=fixed_prediction,
+        orthonormal_pcs=orthonormal_design[:, covariate_count:],
+        component_scores=component_scores[covariate_count:],
     )
 
 
 def normalize_ensembl_id(value: str) -> str:
     return re.sub(r"\.[0-9]+$", "", value, count=1)
+
+
+def normalize_sample_id(value: object, context: str) -> str:
+    normalized = str(value).strip()
+    if not normalized:
+        raise ValueError(f"{context} has an empty sample ID")
+    return normalized
+
+
+def normalize_molecular_phenotype_id(value: str, line_number: int) -> str:
+    normalized = value.strip()
+    matches = MOLECULAR_ENSEMBL_ID_PATTERN.findall(normalized)
+    if len(matches) != 1:
+        if not normalized:
+            reason = "an empty ID"
+        elif not matches:
+            reason = "an unsupported ID"
+        else:
+            reason = "an ambiguous ID"
+        raise ValueError(
+            f"Line {line_number} has {reason} for molecular phenotype: {value!r}"
+        )
+    return matches[0]
+
+
+def _collapse_gene_expression_rows(
+    rows: Sequence[tuple[str, np.ndarray]],
+) -> list[tuple[str, np.ndarray]]:
+    collapsed: dict[str, np.ndarray] = {}
+    for gene_id, values in rows:
+        vector = np.asarray(values, dtype=float)
+        if vector.ndim != 1:
+            raise ValueError("Gene phenotype vectors must be one-dimensional")
+        if gene_id not in collapsed:
+            collapsed[gene_id] = np.array(vector, dtype=float, copy=True)
+            continue
+        if collapsed[gene_id].shape != vector.shape:
+            raise ValueError("Duplicate gene phenotype vectors must have equal lengths")
+        collapsed[gene_id] = np.fmin(collapsed[gene_id], vector)
+    return list(collapsed.items())
 
 
 def prepare_protein_coding_genes(
@@ -280,11 +381,9 @@ def read_principal_components(path: Path) -> PrincipalComponents:
                     f"Principal-components TSV line {line_number} has {len(fields)} "
                     f"columns; expected {len(header)}"
                 )
-            sample_id = fields[0].strip()
-            if not sample_id:
-                raise ValueError(
-                    f"Principal-components TSV line {line_number} has an empty sample ID"
-                )
+            sample_id = normalize_sample_id(
+                fields[0], f"Principal-components TSV line {line_number}"
+            )
             if sample_id in seen:
                 raise ValueError(f"Duplicate PC sample ID: {sample_id}")
             seen.add(sample_id)
@@ -304,6 +403,72 @@ def read_principal_components(path: Path) -> PrincipalComponents:
     if not sample_ids:
         raise ValueError("Principal-components TSV must contain at least one sample")
     return PrincipalComponents(tuple(sample_ids), np.asarray(rows, dtype=float))
+
+
+def read_additional_covariates(path: Path) -> AdditionalCovariates:
+    sample_ids: list[str] = []
+    names: list[str] = []
+    rows: list[list[float]] = []
+    seen: set[str] = set()
+    with open_text(path) as handle:
+        reader = csv.reader(handle, delimiter="\t")
+        try:
+            raw_header = next(reader)
+        except StopIteration as error:
+            raise ValueError("Additional-covariates TSV is empty") from error
+        header = [field.strip() for field in raw_header]
+        if not header or any(not field for field in header):
+            raise ValueError("Additional-covariates TSV header contains an empty column")
+        if len(header) != len(set(header)):
+            raise ValueError("Additional-covariates TSV header contains duplicate columns")
+        sample_columns = [
+            index for index, field in enumerate(header) if field in {"sample_id", "ID"}
+        ]
+        if len(sample_columns) != 1:
+            raise ValueError(
+                "Additional-covariates TSV header must contain exactly one sample_id or ID column"
+            )
+        sample_index = sample_columns[0]
+        covariate_indexes = [index for index in range(len(header)) if index != sample_index]
+        if not covariate_indexes:
+            raise ValueError("Additional-covariates TSV must contain at least one covariate")
+        names = [header[index] for index in covariate_indexes]
+
+        for line_number, fields in enumerate(reader, start=2):
+            if not fields or all(not field.strip() for field in fields):
+                continue
+            if len(fields) != len(header):
+                raise ValueError(
+                    f"Additional-covariates TSV line {line_number} has {len(fields)} columns; "
+                    f"expected {len(header)}"
+                )
+            sample_id = normalize_sample_id(
+                fields[sample_index], f"Additional-covariates TSV line {line_number}"
+            )
+            if sample_id in seen:
+                raise ValueError(f"Duplicate additional-covariate sample ID: {sample_id}")
+            seen.add(sample_id)
+            values: list[float] = []
+            for index in covariate_indexes:
+                try:
+                    value = float(fields[index])
+                except ValueError as error:
+                    raise ValueError(
+                        f"Additional-covariates TSV line {line_number} has a non-numeric value"
+                    ) from error
+                if not math.isfinite(value):
+                    raise ValueError(
+                        f"Additional-covariates TSV line {line_number} has a non-finite value"
+                    )
+                values.append(value)
+            sample_ids.append(sample_id)
+            rows.append(values)
+
+    if not sample_ids:
+        raise ValueError("Additional-covariates TSV must contain at least one sample")
+    return AdditionalCovariates(
+        tuple(sample_ids), tuple(names), np.asarray(rows, dtype=float)
+    )
 
 
 def read_principal_component_header(path: Path) -> int:
@@ -397,10 +562,11 @@ def read_lof_carriers(path: Path) -> LofCarriers:
                     f"LoF carrier table line {line_number} has {len(fields)} columns; "
                     f"expected {len(header)}"
                 )
-            sample_id = fields[indexes["sample_id"]].strip()
+            sample_id = normalize_sample_id(
+                fields[indexes["sample_id"]],
+                f"LoF carrier table line {line_number}",
+            )
             gene_id = normalize_ensembl_id(fields[indexes["gene_id"]].strip())
-            if not sample_id:
-                raise ValueError(f"LoF carrier table line {line_number} has an empty sample ID")
             if not gene_id:
                 raise ValueError(f"LoF carrier table line {line_number} has an empty gene ID")
             if not _parse_truth_value(
@@ -465,12 +631,23 @@ def validate_negative_z_thresholds(thresholds: Sequence[float]) -> list[float]:
 
 
 def residualize_expression(
-    expression: np.ndarray, principal_components: np.ndarray, pc_count: int
+    expression: np.ndarray,
+    principal_components: np.ndarray,
+    pc_count: int,
+    additional_covariates: np.ndarray | None = None,
 ) -> ResidualFit:
     values = np.asarray(expression, dtype=float)
     pcs = np.asarray(principal_components, dtype=float)
     if values.ndim != 1 or pcs.ndim != 2 or pcs.shape[0] != values.shape[0]:
         raise ValueError("Expression and principal components have incompatible shapes")
+    if additional_covariates is None:
+        covariates = np.empty((values.shape[0], 0), dtype=float)
+    else:
+        covariates = np.asarray(additional_covariates, dtype=float)
+        if covariates.ndim != 2 or covariates.shape[0] != values.shape[0]:
+            raise ValueError(
+                "Expression and additional covariates have incompatible shapes"
+            )
     if (
         isinstance(pc_count, bool)
         or not isinstance(pc_count, int)
@@ -481,22 +658,27 @@ def residualize_expression(
 
     z_scores = np.full(values.shape, np.nan, dtype=float)
     usable = np.isfinite(values)
+    usable &= np.all(np.isfinite(covariates), axis=1)
     if pc_count:
         usable &= np.all(np.isfinite(pcs[:, :pc_count]), axis=1)
     usable_count = int(np.count_nonzero(usable))
     selected_y = values[usable]
+    selected_covariates = covariates[usable, :]
     selected_pcs = pcs[usable, :pc_count]
-    design = np.column_stack((np.ones(usable_count), selected_pcs))
+    design = np.column_stack(
+        (np.ones(usable_count), selected_covariates, selected_pcs)
+    )
 
     try:
         rank = int(np.linalg.matrix_rank(design))
     except (np.linalg.LinAlgError, ValueError, FloatingPointError):
         return ResidualFit(z_scores, usable_count, None, None, None, "other")
+    required_rank = covariates.shape[1] + pc_count + 1
     if usable_count <= rank + 1:
         return ResidualFit(
             z_scores, usable_count, rank, None, None, "insufficient_dof"
         )
-    if rank < pc_count + 1:
+    if rank < required_rank:
         return ResidualFit(
             z_scores, usable_count, rank, None, None, "rank_deficiency"
         )
@@ -549,9 +731,15 @@ def calculate_lof_pc_enrichment(
     analysis_qc_output: Path,
     *,
     pc_grid_mode: str | None = None,
+    additional_covariates_path: Path | None = None,
 ) -> None:
     thresholds = validate_negative_z_thresholds(negative_z_thresholds)
     principal_components = read_principal_components(principal_components_path)
+    additional_covariates = (
+        read_additional_covariates(additional_covariates_path)
+        if additional_covariates_path is not None
+        else None
+    )
     pc_counts = build_pc_grid(
         requested_pc_counts, principal_components.available_pc_count
     )
@@ -563,15 +751,25 @@ def calculate_lof_pc_enrichment(
     coding_genes = _read_protein_coding_genes(protein_coding_genes_path)
     carriers = read_lof_carriers(lof_carriers_path)
     LOGGER.info(
-        "Starting LoF/PC enrichment: thresholds=%s pc_counts=%s coding_genes=%d",
+        "Starting LoF/PC enrichment: thresholds=%s pc_counts=%s coding_genes=%d "
+        "additional_covariates=%d",
         thresholds,
         pc_counts,
         len(coding_genes),
+        0 if additional_covariates is None else additional_covariates.covariate_count,
     )
     pc_sample_indexes = {
         sample_id: index
         for index, sample_id in enumerate(principal_components.sample_ids)
     }
+    additional_covariate_sample_indexes = (
+        {}
+        if additional_covariates is None
+        else {
+            sample_id: index
+            for index, sample_id in enumerate(additional_covariates.sample_ids)
+        }
+    )
 
     per_pc = {
         str(pc_count): {
@@ -595,29 +793,51 @@ def calculate_lof_pc_enrichment(
         }
         for pc_count in pc_counts
     }
-    bed_gene_count = 0
-    coding_bed_gene_count = 0
+    bed_feature_count = 0
+    coding_bed_feature_count = 0
     seen_genes: set[str] = set()
 
-    coding_expression: list[tuple[str, np.ndarray]] = []
+    coding_expression_rows: list[tuple[str, np.ndarray]] = []
     with open_text(phenotype_bed) as bed_handle:
         header = _read_header(bed_handle)
-        bed_samples = [sample.strip() for sample in header[4:]]
-        if any(not sample for sample in bed_samples):
-            raise ValueError("Phenotype BED sample IDs must be non-empty strings")
+        bed_samples = [
+            normalize_sample_id(sample, f"Phenotype BED header column {index + 5}")
+            for index, sample in enumerate(header[4:])
+        ]
         _reject_duplicates(bed_samples, "sample")
-        shared_samples = [sample for sample in bed_samples if sample in pc_sample_indexes]
+        bed_pc_samples = [sample for sample in bed_samples if sample in pc_sample_indexes]
+        shared_samples = [
+            sample
+            for sample in bed_pc_samples
+            if sample in additional_covariate_sample_indexes
+        ] if additional_covariates is not None else bed_pc_samples
         if not shared_samples:
-            raise ValueError("No shared phenotype BED and PC samples")
+            if additional_covariates is None:
+                raise ValueError("No shared phenotype BED and PC samples")
+            raise ValueError(
+                "No shared phenotype BED, PC, and additional-covariate samples"
+            )
         LOGGER.info(
-            "Found %d shared BED/PC samples (%d BED, %d PC)",
+            "Found %d shared BED/PC%s samples (%d BED, %d PC, %d covariate)",
             len(shared_samples),
+            "/additional-covariate" if additional_covariates is not None else "",
             len(bed_samples),
             len(principal_components.sample_ids),
+            0
+            if additional_covariates is None
+            else len(additional_covariates.sample_ids),
         )
         shared_bed_columns = [bed_samples.index(sample) for sample in shared_samples]
         shared_pc_rows = [pc_sample_indexes[sample] for sample in shared_samples]
         shared_pc_values = principal_components.values[shared_pc_rows, :]
+        shared_covariate_values = (
+            None
+            if additional_covariates is None
+            else additional_covariates.values[
+                [additional_covariate_sample_indexes[sample] for sample in shared_samples],
+                :,
+            ]
+        )
 
         for line_number, raw_line in enumerate(bed_handle, start=2):
             if not raw_line.strip():
@@ -631,25 +851,21 @@ def calculate_lof_pc_enrichment(
             _parse_tss_interval(start_text, end_text, line_number)
             if not chrom:
                 raise ValueError(f"Line {line_number} has an empty chromosome")
-            gene_id = normalize_ensembl_id(feature_id.strip())
-            if not gene_id:
-                raise ValueError(f"Line {line_number} has an empty feature ID")
-            if gene_id in seen_genes:
-                raise ValueError(f"Duplicate normalized phenotype gene ID: {gene_id}")
+            gene_id = normalize_molecular_phenotype_id(feature_id, line_number)
             seen_genes.add(gene_id)
-            bed_gene_count += 1
+            bed_feature_count += 1
             values = [
                 _parse_phenotype_value(value, line_number) for value in fields[4:]
             ]
             if gene_id not in coding_genes:
                 continue
-            coding_bed_gene_count += 1
-            if coding_bed_gene_count % PROGRESS_INTERVAL_GENES == 0:
+            coding_bed_feature_count += 1
+            if coding_bed_feature_count % PROGRESS_INTERVAL_GENES == 0:
                 LOGGER.info(
-                    "Processed %d protein-coding BED genes",
-                    coding_bed_gene_count,
+                    "Processed %d protein-coding BED features",
+                    coding_bed_feature_count,
                 )
-            coding_expression.append(
+            coding_expression_rows.append(
                 (
                     gene_id,
                     np.asarray(
@@ -662,6 +878,9 @@ def calculate_lof_pc_enrichment(
                 )
             )
 
+    coding_expression = _collapse_gene_expression_rows(coding_expression_rows)
+    bed_gene_count = len(seen_genes)
+    coding_bed_gene_count = len(coding_expression)
     if coding_bed_gene_count == 0:
         raise ValueError(
             "No protein-coding genes from the supplied list occur in the phenotype BED"
@@ -746,20 +965,23 @@ def calculate_lof_pc_enrichment(
         if complete_expression:
             for pc_count in pc_counts:
                 try:
+                    design_parts = [np.ones(len(shared_samples))]
+                    if shared_covariate_values is not None:
+                        design_parts.append(shared_covariate_values)
+                    if pc_count:
+                        design_parts.append(shared_pc_values[:, :pc_count])
                     rank = int(
-                        np.linalg.matrix_rank(
-                            np.column_stack(
-                                (
-                                    np.ones(len(shared_samples)),
-                                    shared_pc_values[:, :pc_count],
-                                )
-                            )
-                        )
+                        np.linalg.matrix_rank(np.column_stack(design_parts))
                     )
                 except (np.linalg.LinAlgError, ValueError, FloatingPointError):
                     rank_deficient_requested_prefix = True
                     break
-                if rank < pc_count + 1:
+                required_rank = (
+                    1
+                    + (0 if shared_covariate_values is None else shared_covariate_values.shape[1])
+                    + pc_count
+                )
+                if rank < required_rank:
                     rank_deficient_requested_prefix = True
                     break
 
@@ -768,9 +990,12 @@ def calculate_lof_pc_enrichment(
                 [expression for _, expression in coding_expression]
             )
             projection = prepare_complete_data_projection(
-                expression_matrix, shared_pc_values, pc_counts
+                expression_matrix,
+                shared_pc_values,
+                pc_counts,
+                additional_covariates=shared_covariate_values,
             )
-            prediction = np.zeros_like(expression_matrix)
+            prediction = projection.initial_prediction()
             previous_pc_count = 0
 
             for pc_count in pc_counts:
@@ -781,18 +1006,21 @@ def calculate_lof_pc_enrichment(
                 residuals = projection.centered_expression - prediction
                 usable_sample_count = len(shared_samples)
                 try:
+                    design_parts = [np.ones(usable_sample_count)]
+                    if shared_covariate_values is not None:
+                        design_parts.append(shared_covariate_values)
+                    if pc_count:
+                        design_parts.append(shared_pc_values[:, :pc_count])
                     rank = int(
-                        np.linalg.matrix_rank(
-                            np.column_stack(
-                                (
-                                    np.ones(usable_sample_count),
-                                    shared_pc_values[:, :pc_count],
-                                )
-                            )
-                        )
+                        np.linalg.matrix_rank(np.column_stack(design_parts))
                     )
                 except (np.linalg.LinAlgError, ValueError, FloatingPointError):
                     rank = None
+                required_rank = (
+                    1
+                    + (0 if shared_covariate_values is None else shared_covariate_values.shape[1])
+                    + pc_count
+                )
 
                 for gene_index, (gene_id, expression) in enumerate(coding_expression):
                     if rank is None:
@@ -813,7 +1041,7 @@ def calculate_lof_pc_enrichment(
                             None,
                             "insufficient_dof",
                         )
-                    elif rank < pc_count + 1:
+                    elif rank < required_rank:
                         fit = ResidualFit(
                             np.full(usable_sample_count, np.nan),
                             usable_sample_count,
@@ -862,7 +1090,10 @@ def calculate_lof_pc_enrichment(
                         gene_id,
                         pc_count,
                         residualize_expression(
-                            expression, shared_pc_values, pc_count
+                            expression,
+                            shared_pc_values,
+                            pc_count,
+                            additional_covariates=shared_covariate_values,
                         ),
                     )
 
@@ -881,12 +1112,31 @@ def calculate_lof_pc_enrichment(
     write_json(
         analysis_qc_output,
         {
+            "bed_feature_count": bed_feature_count,
             "bed_gene_count": bed_gene_count,
             "bed_sample_count": len(bed_samples),
+            "duplicate_feature_count": bed_feature_count - bed_gene_count,
+            "additional_covariates_supplied": additional_covariates is not None,
+            "additional_covariate_count": (
+                0
+                if additional_covariates is None
+                else additional_covariates.covariate_count
+            ),
+            "additional_covariate_names": (
+                [] if additional_covariates is None else list(additional_covariates.names)
+            ),
+            "additional_covariate_sample_count": (
+                0 if additional_covariates is None else additional_covariates.sample_count
+            ),
             "pc_sample_count": len(principal_components.sample_ids),
+            "protein_coding_bed_feature_count": coding_bed_feature_count,
             "protein_coding_bed_gene_count": coding_bed_gene_count,
+            "protein_coding_duplicate_feature_count": (
+                coding_bed_feature_count - coding_bed_gene_count
+            ),
             "protein_coding_gene_count": len(coding_genes),
             "shared_bed_pc_sample_count": len(shared_samples),
+            "shared_bed_pc_covariate_sample_count": len(shared_samples),
             "pre_join_carrier_pair_counts": {
                 definition: len(carriers.pairs_by_definition[definition])
                 for definition in CARRIER_DEFINITIONS
@@ -911,6 +1161,11 @@ def calculate_lof_pc_enrichment(
                     "phenotype_bed": str(phenotype_bed),
                     "principal_components": str(principal_components_path),
                     "protein_coding_genes": str(protein_coding_genes_path),
+                    **(
+                        {}
+                        if additional_covariates_path is None
+                        else {"additional_covariates": str(additional_covariates_path)}
+                    ),
                 },
                 "software_versions": {
                     "numpy": np.__version__,
@@ -919,7 +1174,11 @@ def calculate_lof_pc_enrichment(
                 },
             },
             "residualization": {
-                "design": "intercept plus first k principal components",
+                "design": (
+                    "intercept plus all additional covariates plus first k principal components"
+                    if additional_covariates is not None
+                    else "intercept plus first k principal components"
+                ),
                 "outlier_rule": "residual_z <= z_threshold",
                 "residual_standard_deviation_ddof": 0,
             },
