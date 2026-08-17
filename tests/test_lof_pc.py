@@ -376,6 +376,176 @@ def test_residualize_expression_keeps_missing_observations_nan():
     np.testing.assert_allclose(fit.z_scores[[0, 2, 3, 4]], [-1, -1, 1, 1])
 
 
+def _reference_residual_z_scores(
+    expression: np.ndarray,
+    principal_components: np.ndarray,
+    pc_count: int,
+    additional_covariates: np.ndarray,
+) -> np.ndarray:
+    design = np.column_stack(
+        (
+            np.ones(expression.shape[0]),
+            additional_covariates,
+            principal_components[:, :pc_count],
+        )
+    )
+    coefficients = np.linalg.lstsq(design, expression, rcond=None)[0]
+    residuals = expression - design @ coefficients
+    residuals = residuals - np.mean(residuals)
+    return residuals / np.std(residuals, ddof=0)
+
+
+@pytest.mark.parametrize("pc_count", [0, 1])
+def test_residualize_expression_matches_reference_with_additional_covariates(
+    pc_count: int,
+):
+    expression = np.array([1.0, 3.0, 2.0, 7.0, 5.0, 8.0, 4.0, 10.0])
+    additional_covariates = np.array(
+        [
+            [-1.0, 0.0],
+            [-0.5, 1.0],
+            [0.0, 0.0],
+            [0.5, 1.0],
+            [1.0, 4.0],
+            [1.5, 1.0],
+            [2.0, 0.0],
+            [2.5, 1.0],
+        ]
+    )
+    principal_components = np.array(
+        [
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [0.5, 2.0],
+            [2.0, 1.0],
+            [1.5, 3.0],
+            [3.0, 2.0],
+            [2.5, 4.0],
+            [4.0, 3.0],
+        ]
+    )
+
+    fit = lof_pc_module().residualize_expression(
+        expression,
+        principal_components,
+        pc_count,
+        additional_covariates=additional_covariates,
+    )
+
+    np.testing.assert_allclose(
+        fit.z_scores,
+        _reference_residual_z_scores(
+            expression, principal_components, pc_count, additional_covariates
+        ),
+        atol=1e-12,
+    )
+
+
+def test_residualize_expression_pc_zero_removes_additional_covariate_effect():
+    additional_covariates = np.arange(8, dtype=float).reshape(-1, 1)
+    expression = 2.0 * additional_covariates[:, 0] + np.array(
+        [-2.0, 1.0, 0.0, 2.0, -1.0, 1.0, -2.0, 1.0]
+    )
+
+    fit = lof_pc_module().residualize_expression(
+        expression,
+        np.zeros((8, 0)),
+        0,
+        additional_covariates=additional_covariates,
+    )
+
+    np.testing.assert_allclose(
+        fit.z_scores,
+        _reference_residual_z_scores(
+            expression,
+            np.zeros((8, 0)),
+            0,
+            additional_covariates,
+        ),
+        atol=1e-12,
+    )
+
+
+def test_complete_data_projection_matches_reference_with_additional_covariates():
+    expression = np.array(
+        [
+            [1.0, 6.0],
+            [2.0, 4.0],
+            [4.0, 7.0],
+            [3.0, 3.0],
+            [7.0, 5.0],
+            [8.0, 9.0],
+            [5.0, 2.0],
+            [9.0, 8.0],
+        ]
+    )
+    principal_components = np.array(
+        [
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [0.5, 2.0],
+            [2.0, 1.0],
+            [1.5, 3.0],
+            [3.0, 2.0],
+            [2.5, 4.0],
+            [4.0, 3.0],
+        ]
+    )
+    additional_covariates = np.array(
+        [
+            [-1.0, 0.0],
+            [-0.5, 1.0],
+            [0.0, 0.0],
+            [0.5, 1.0],
+            [1.0, 4.0],
+            [1.5, 1.0],
+            [2.0, 0.0],
+            [2.5, 1.0],
+        ]
+    )
+    module = lof_pc_module()
+    state = module.prepare_complete_data_projection(
+        expression,
+        principal_components,
+        [0, 1, 2],
+        additional_covariates=additional_covariates,
+    )
+    prediction = state.initial_prediction()
+    previous_pc_count = 0
+
+    for pc_count in [0, 1, 2]:
+        prediction = state.advance_prediction(
+            previous_pc_count, pc_count, prediction
+        )
+        expected = np.column_stack(
+            [
+                _reference_residual_z_scores(
+                    expression[:, column],
+                    principal_components,
+                    pc_count,
+                    additional_covariates,
+                )
+                for column in range(expression.shape[1])
+            ]
+        )
+        np.testing.assert_allclose(
+            state.z_scores(prediction), expected, atol=1e-10, rtol=1e-10
+        )
+        previous_pc_count = pc_count
+
+
+def test_residualize_expression_rejects_collinear_additional_covariate_and_pc():
+    principal_components = np.arange(8, dtype=float).reshape(-1, 1)
+    fit = lof_pc_module().residualize_expression(
+        np.arange(8, dtype=float),
+        principal_components,
+        1,
+        additional_covariates=principal_components,
+    )
+
+    assert fit.exclusion_reason == "rank_deficiency"
+
+
 def test_complete_data_projection_matches_legacy_residuals():
     expression = np.array(
         [

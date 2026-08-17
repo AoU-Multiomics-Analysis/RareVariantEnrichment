@@ -124,8 +124,12 @@ class CompleteDataProjection:
     """Cached projection terms for complete-data expression residualization."""
 
     centered_expression: np.ndarray
+    fixed_prediction: np.ndarray
     orthonormal_pcs: np.ndarray
     component_scores: np.ndarray
+
+    def initial_prediction(self) -> np.ndarray:
+        return np.array(self.fixed_prediction, dtype=float, copy=True)
 
     def advance_prediction(
         self, previous_pc_count: int, pc_count: int, prediction: np.ndarray
@@ -167,6 +171,7 @@ def prepare_complete_data_projection(
     expression: np.ndarray,
     principal_components: np.ndarray,
     requested_pc_counts: Sequence[int],
+    additional_covariates: np.ndarray | None = None,
 ) -> CompleteDataProjection:
     """Prepare complete-data residualization through centered PC projections."""
 
@@ -180,6 +185,20 @@ def prepare_complete_data_projection(
         raise ValueError("Complete-data projection requires complete finite expression")
     if not np.all(np.isfinite(pc_values)):
         raise ValueError("Complete-data projection requires finite principal components")
+
+    if additional_covariates is None:
+        covariate_values = np.empty((expression_values.shape[0], 0), dtype=float)
+    else:
+        covariate_values = np.asarray(additional_covariates, dtype=float)
+        if (
+            covariate_values.ndim != 2
+            or covariate_values.shape[0] != expression_values.shape[0]
+        ):
+            raise ValueError(
+                "Expression and additional covariates have incompatible shapes"
+            )
+        if not np.all(np.isfinite(covariate_values)):
+            raise ValueError("Complete-data projection requires finite additional covariates")
 
     available_pc_count = pc_values.shape[1]
     validated_counts: list[int] = []
@@ -197,18 +216,42 @@ def prepare_complete_data_projection(
 
     maximum_pc_count = max(validated_counts)
     centered_expression = expression_values - np.mean(expression_values, axis=0)
+    centered_covariates = covariate_values - np.mean(covariate_values, axis=0)
     centered_pcs = pc_values[:, :maximum_pc_count] - np.mean(
         pc_values[:, :maximum_pc_count], axis=0
     )
-    pc_norms = np.linalg.norm(centered_pcs, axis=0)
-    if np.any(~np.isfinite(pc_norms)) or np.any(pc_norms == 0):
-        raise ValueError("Principal components must have nonzero finite variance")
-    orthonormal_pcs, _ = np.linalg.qr(centered_pcs, mode="reduced")
-    component_scores = orthonormal_pcs.T @ centered_expression
+    design_parts = []
+    if centered_covariates.shape[1]:
+        design_parts.append(centered_covariates)
+    if centered_pcs.shape[1]:
+        design_parts.append(centered_pcs)
+    centered_design = (
+        np.column_stack(design_parts)
+        if design_parts
+        else np.empty((expression_values.shape[0], 0), dtype=float)
+    )
+    design_column_count = centered_design.shape[1]
+    if design_column_count:
+        if np.linalg.matrix_rank(centered_design) < design_column_count:
+            raise ValueError("Additional covariates and principal components are rank deficient")
+        orthonormal_design, _ = np.linalg.qr(centered_design, mode="reduced")
+    else:
+        orthonormal_design = np.empty(
+            (expression_values.shape[0], 0), dtype=float
+        )
+    component_scores = orthonormal_design.T @ centered_expression
+    covariate_count = covariate_values.shape[1]
+    fixed_prediction = (
+        orthonormal_design[:, :covariate_count]
+        @ component_scores[:covariate_count]
+        if covariate_count
+        else np.zeros_like(centered_expression)
+    )
     return CompleteDataProjection(
         centered_expression=centered_expression,
-        orthonormal_pcs=orthonormal_pcs,
-        component_scores=component_scores,
+        fixed_prediction=fixed_prediction,
+        orthonormal_pcs=orthonormal_design[:, covariate_count:],
+        component_scores=component_scores[covariate_count:],
     )
 
 
@@ -588,12 +631,23 @@ def validate_negative_z_thresholds(thresholds: Sequence[float]) -> list[float]:
 
 
 def residualize_expression(
-    expression: np.ndarray, principal_components: np.ndarray, pc_count: int
+    expression: np.ndarray,
+    principal_components: np.ndarray,
+    pc_count: int,
+    additional_covariates: np.ndarray | None = None,
 ) -> ResidualFit:
     values = np.asarray(expression, dtype=float)
     pcs = np.asarray(principal_components, dtype=float)
     if values.ndim != 1 or pcs.ndim != 2 or pcs.shape[0] != values.shape[0]:
         raise ValueError("Expression and principal components have incompatible shapes")
+    if additional_covariates is None:
+        covariates = np.empty((values.shape[0], 0), dtype=float)
+    else:
+        covariates = np.asarray(additional_covariates, dtype=float)
+        if covariates.ndim != 2 or covariates.shape[0] != values.shape[0]:
+            raise ValueError(
+                "Expression and additional covariates have incompatible shapes"
+            )
     if (
         isinstance(pc_count, bool)
         or not isinstance(pc_count, int)
@@ -604,22 +658,27 @@ def residualize_expression(
 
     z_scores = np.full(values.shape, np.nan, dtype=float)
     usable = np.isfinite(values)
+    usable &= np.all(np.isfinite(covariates), axis=1)
     if pc_count:
         usable &= np.all(np.isfinite(pcs[:, :pc_count]), axis=1)
     usable_count = int(np.count_nonzero(usable))
     selected_y = values[usable]
+    selected_covariates = covariates[usable, :]
     selected_pcs = pcs[usable, :pc_count]
-    design = np.column_stack((np.ones(usable_count), selected_pcs))
+    design = np.column_stack(
+        (np.ones(usable_count), selected_covariates, selected_pcs)
+    )
 
     try:
         rank = int(np.linalg.matrix_rank(design))
     except (np.linalg.LinAlgError, ValueError, FloatingPointError):
         return ResidualFit(z_scores, usable_count, None, None, None, "other")
+    required_rank = covariates.shape[1] + pc_count + 1
     if usable_count <= rank + 1:
         return ResidualFit(
             z_scores, usable_count, rank, None, None, "insufficient_dof"
         )
-    if rank < pc_count + 1:
+    if rank < required_rank:
         return ResidualFit(
             z_scores, usable_count, rank, None, None, "rank_deficiency"
         )
