@@ -38,6 +38,7 @@ task CalculateLofPcEnrichment {
         File phenotype_bed
         File lof_carrier_table
         File principal_components_tsv
+        File? additional_covariates_tsv
         File protein_coding_genes
         Array[Float] negative_z_thresholds
         Array[Int] pc_counts
@@ -47,10 +48,12 @@ task CalculateLofPcEnrichment {
         Int memory_gb
         Int disk_gb
         Int max_retries
+        Int preemptible
     }
 
     File negative_z_thresholds_file = write_lines(negative_z_thresholds)
     File pc_counts_file = write_lines(pc_counts)
+    String additional_covariates_argument = if defined(additional_covariates_tsv) then "--additional-covariates \"~{select_first([additional_covariates_tsv])}\"" else ""
 
     command <<<
         set -euo pipefail
@@ -80,6 +83,7 @@ task CalculateLofPcEnrichment {
             --phenotype-bed "~{phenotype_bed}" \
             --lof-carriers "~{lof_carrier_table}" \
             --principal-components "~{principal_components_tsv}" \
+            ~{additional_covariates_argument} \
             --protein-coding-genes "~{protein_coding_genes}" \
             --negative-z-thresholds="$negative_z_thresholds_csv" \
             --pc-counts "$pc_counts_csv" \
@@ -103,6 +107,7 @@ task CalculateLofPcEnrichment {
         memory: "~{memory_gb} GB"
         disks: "local-disk ~{disk_gb} HDD"
         maxRetries: max_retries
+        preemptible: preemptible
     }
 }
 
@@ -260,12 +265,14 @@ workflow RareVariantEnrichment {
         File phenotype_bed
         File lof_carrier_table
         File principal_components_tsv
+        File? additional_covariates_tsv
         File gene_annotation_gtf
         Array[Float] negative_z_thresholds = [-2.0, -3.0, -4.0, -5.0, -6.0]
         Array[Float] selection_z_thresholds = [-3.0, -4.0, -5.0, -6.0]
         Float plateau_fraction = 0.95
         Array[Int] pc_counts = []
         Int pc_counts_per_job = 10
+        Int pc_preemptible = 2
         String docker_image = "ghcr.io/aou-multiomics-analysis/rarevariantenrichment:main"
         Int prepare_cpu = 2
         Int prepare_memory_gb = 32
@@ -278,7 +285,8 @@ workflow RareVariantEnrichment {
 
     Int calculated_prepare_disk_gb = ceil((size(gene_annotation_gtf, "GiB") * 2.0 + 20.0))
     Int dynamic_prepare_disk_gb = if calculated_prepare_disk_gb > prepare_disk_gb then calculated_prepare_disk_gb else prepare_disk_gb
-    Int calculated_analysis_disk_gb = ceil(((size(phenotype_bed, "GiB") + size(lof_carrier_table, "GiB") + size(principal_components_tsv, "GiB") + size(gene_annotation_gtf, "GiB")) * 2.0 + 20.0))
+    Float additional_covariates_size_gb = if defined(additional_covariates_tsv) then size(select_first([additional_covariates_tsv]), "GiB") else 0.0
+    Int calculated_analysis_disk_gb = ceil(((size(phenotype_bed, "GiB") + size(lof_carrier_table, "GiB") + size(principal_components_tsv, "GiB") + size(gene_annotation_gtf, "GiB") + additional_covariates_size_gb) * 2.0 + 20.0))
     Int dynamic_analysis_disk_gb = if calculated_analysis_disk_gb > analysis_disk_gb then calculated_analysis_disk_gb else analysis_disk_gb
     Int calculated_pc_chunk_disk_gb = ceil((size(principal_components_tsv, "GiB") * 2.0 + 20.0))
     String pc_grid_mode = if length(pc_counts) == 0 then "adaptive" else "explicit"
@@ -313,6 +321,7 @@ workflow RareVariantEnrichment {
                 phenotype_bed = phenotype_bed,
                 lof_carrier_table = lof_carrier_table,
                 principal_components_tsv = principal_components_tsv,
+                additional_covariates_tsv = additional_covariates_tsv,
                 protein_coding_genes = PrepareProteinCodingGenes.protein_coding_genes_tsv,
                 negative_z_thresholds = negative_z_thresholds,
                 pc_counts = pc_count_chunk,
@@ -321,7 +330,8 @@ workflow RareVariantEnrichment {
                 cpu = analysis_cpu,
                 memory_gb = analysis_memory_gb,
                 disk_gb = dynamic_analysis_disk_gb,
-                max_retries = max_retries
+                max_retries = max_retries,
+                preemptible = pc_preemptible
         }
     }
 

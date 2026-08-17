@@ -111,6 +111,59 @@ def test_lof_pc_enrichment_cli_dispatches_exact_contract(monkeypatch):
     ]
 
 
+def test_lof_pc_enrichment_cli_dispatches_optional_additional_covariates(
+    monkeypatch,
+):
+    received: list[object] = []
+    keywords: dict[str, object] = {}
+
+    def fake_calculate(*arguments: object, **keyword_arguments: object) -> None:
+        received.extend(arguments)
+        keywords.update(keyword_arguments)
+
+    monkeypatch.setattr(cli, "calculate_lof_pc_enrichment", fake_calculate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "lof-pc-enrichment",
+            "--phenotype-bed",
+            "phenotypes.bed.gz",
+            "--lof-carriers",
+            "lof.tsv",
+            "--principal-components",
+            "pcs.tsv",
+            "--additional-covariates",
+            "genetic-pcs.tsv",
+            "--protein-coding-genes",
+            "genes.tsv",
+            "--negative-z-thresholds=-2",
+            "--pc-counts",
+            "0",
+            "--results-output",
+            "results.tsv",
+            "--summary-output",
+            "summary.json",
+            "--gene-pc-qc-output",
+            "gene-pc-qc.tsv.gz",
+            "--analysis-qc-output",
+            "analysis-qc.json",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received[:4] == [
+        Path("phenotypes.bed.gz"),
+        Path("lof.tsv"),
+        Path("pcs.tsv"),
+        Path("genes.tsv"),
+    ]
+    assert keywords == {
+        "additional_covariates_path": Path("genetic-pcs.tsv"),
+    }
+
+
 def test_pc_chunks_cli_dispatches_header_count_chunking_and_json_output(monkeypatch):
     received: list[object] = []
 

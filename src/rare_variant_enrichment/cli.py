@@ -48,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     lof_pc_parser.add_argument("--phenotype-bed", required=True, type=Path)
     lof_pc_parser.add_argument("--lof-carriers", required=True, type=Path)
     lof_pc_parser.add_argument("--principal-components", required=True, type=Path)
+    lof_pc_parser.add_argument("--additional-covariates", type=Path)
     lof_pc_parser.add_argument("--protein-coding-genes", required=True, type=Path)
     lof_pc_parser.add_argument(
         "--negative-z-thresholds", required=True, type=parse_csv_floats
@@ -182,12 +183,12 @@ def main() -> int:
             args.gene_pc_qc_output,
             args.analysis_qc_output,
         )
-        if args.pc_grid_mode is None:
-            calculate_lof_pc_enrichment(*calculate_arguments)
-        else:
-            calculate_lof_pc_enrichment(
-                *calculate_arguments, pc_grid_mode=args.pc_grid_mode
-            )
+        calculate_options = {}
+        if args.pc_grid_mode is not None:
+            calculate_options["pc_grid_mode"] = args.pc_grid_mode
+        if args.additional_covariates is not None:
+            calculate_options["additional_covariates_path"] = args.additional_covariates
+        calculate_lof_pc_enrichment(*calculate_arguments, **calculate_options)
     elif args.command == "pc-chunks":
         available_pc_count = read_principal_component_header(args.principal_components)
         write_json(

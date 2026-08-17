@@ -100,6 +100,7 @@ def test_wdl_has_only_the_four_file_public_inputs_and_required_defaults():
         "phenotype_bed": {"type": "File", "default": None},
         "lof_carrier_table": {"type": "File", "default": None},
         "principal_components_tsv": {"type": "File", "default": None},
+        "additional_covariates_tsv": {"type": "File?", "default": None},
         "gene_annotation_gtf": {"type": "File", "default": None},
         "negative_z_thresholds": {
             "type": "Array[Float]",
@@ -112,6 +113,7 @@ def test_wdl_has_only_the_four_file_public_inputs_and_required_defaults():
         "plateau_fraction": {"type": "Float", "default": 0.95},
         "pc_counts": {"type": "Array[Int]", "default": []},
         "pc_counts_per_job": {"type": "Int", "default": 10},
+        "pc_preemptible": {"type": "Int", "default": 2},
         "docker_image": {
             "type": "String",
             "default": "ghcr.io/aou-multiomics-analysis/rarevariantenrichment:main",
@@ -150,6 +152,7 @@ def test_wdl_scatter_and_merge_preserve_the_ten_public_outputs():
                 "phenotype_bed": "phenotype_bed",
                 "lof_carrier_table": "lof_carrier_table",
                 "principal_components_tsv": "principal_components_tsv",
+                "additional_covariates_tsv": "additional_covariates_tsv",
                 "protein_coding_genes": "PrepareProteinCodingGenes.protein_coding_genes_tsv",
                 "negative_z_thresholds": "negative_z_thresholds",
                 "pc_counts": "pc_count_chunk",
@@ -159,6 +162,7 @@ def test_wdl_scatter_and_merge_preserve_the_ten_public_outputs():
                 "memory_gb": "analysis_memory_gb",
                 "disk_gb": "dynamic_analysis_disk_gb",
                 "max_retries": "max_retries",
+                "preemptible": "pc_preemptible",
             },
         }],
     }]
@@ -238,7 +242,12 @@ def test_wdl_wires_chunk_preparation_merge_and_dynamic_disk_floors():
     )
     assert declarations["calculated_analysis_disk_gb"] == (
         'ceil(((size(phenotype_bed,"GiB") + size(lof_carrier_table,"GiB") + '
-        'size(principal_components_tsv,"GiB") + size(gene_annotation_gtf,"GiB")) * 2.0 + 20.0))'
+        'size(principal_components_tsv,"GiB") + size(gene_annotation_gtf,"GiB") + '
+        'additional_covariates_size_gb) * 2.0 + 20.0))'
+    )
+    assert declarations["additional_covariates_size_gb"] == (
+        'if defined(additional_covariates_tsv) then '
+        'size(select_first([additional_covariates_tsv]),"GiB") else 0.0'
     )
     assert declarations["dynamic_analysis_disk_gb"] == (
         "if calculated_analysis_disk_gb > analysis_disk_gb then "
@@ -271,6 +280,7 @@ def test_wdl_task_interfaces_and_retries_are_complete():
             "phenotype_bed": "File",
             "lof_carrier_table": "File",
             "principal_components_tsv": "File",
+            "additional_covariates_tsv": "File?",
             "protein_coding_genes": "File",
             "negative_z_thresholds": "Array[Float]",
             "pc_counts": "Array[Int]",
@@ -280,6 +290,7 @@ def test_wdl_task_interfaces_and_retries_are_complete():
             "memory_gb": "Int",
             "disk_gb": "Int",
             "max_retries": "Int",
+            "preemptible": "Int",
         },
         "PreparePcChunks": {
             "principal_components_tsv": "File",
@@ -314,6 +325,7 @@ def test_wdl_task_interfaces_and_retries_are_complete():
         },
     }
     assert all("maxRetries" in keys for keys in contract["runtime_keys"].values())
+    assert "preemptible" in contract["runtime_keys"]["CalculateLofPcEnrichment"]
 
 
 def test_wdl_materializes_array_values_and_quotes_files_before_shell_use():
@@ -338,10 +350,11 @@ def array(item_type, values):
     return WDL.Value.Array(item_type, values)
 
 values = {
-    'gene_annotation_gtf': WDL.Value.File('/tmp/gene annotation.gtf.gz'),
+        'gene_annotation_gtf': WDL.Value.File('/tmp/gene annotation.gtf.gz'),
     'phenotype_bed': WDL.Value.File('/tmp/phenotype matrix.bed.gz'),
     'lof_carrier_table': WDL.Value.File('/tmp/lof carriers.tsv'),
     'principal_components_tsv': WDL.Value.File('/tmp/principal components.tsv'),
+    'additional_covariates_tsv': WDL.Value.File('/tmp/genetic pcs.tsv'),
     'protein_coding_genes': WDL.Value.File('/tmp/protein coding.tsv'),
     'negative_z_thresholds': array(WDL.Type.Float(), [WDL.Value.Float(-2.0)]),
     'selection_z_thresholds': array(WDL.Type.Float(), [WDL.Value.Float(-3.0), WDL.Value.Float(-4.0)]),
@@ -356,7 +369,8 @@ values = {
     'results_tsv': WDL.Value.File('/tmp/results one.tsv'),
     'docker_image': WDL.Value.String(dangerous_image),
     'cpu': WDL.Value.Int(1), 'memory_gb': WDL.Value.Int(1), 'disk_gb': WDL.Value.Int(1),
-    'max_retries': WDL.Value.Int(1),
+        'max_retries': WDL.Value.Int(1),
+        'preemptible': WDL.Value.Int(2),
 }
 rendered = {}
 with tempfile.TemporaryDirectory() as temporary_directory:
@@ -388,6 +402,7 @@ print(json.dumps(rendered, sort_keys=True))
     assert '"/tmp/phenotype matrix.bed.gz"' in analysis["command"]
     assert '"/tmp/lof carriers.tsv"' in analysis["command"]
     assert '"/tmp/principal components.tsv"' in analysis["command"]
+    assert '"/tmp/genetic pcs.tsv"' in analysis["command"]
     assert '"/tmp/protein coding.tsv"' in analysis["command"]
     assert '--negative-z-thresholds="$negative_z_thresholds_csv"' in analysis["command"]
     assert '--pc-grid-mode "adaptive"' in analysis["command"]

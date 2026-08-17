@@ -110,3 +110,72 @@ def test_wdl_runs_the_four_input_lof_pc_fixture_with_known_cells(tmp_path: Path)
     assert summary["selected_pc_counts"] == [0, 1]
     assert summary["fdr_scope"] == "global_across_all_emitted_rows"
     assert Path(outputs["RareVariantEnrichment.gene_pc_qc_tsv_gz"]).read_bytes()[:2] == b"\x1f\x8b"
+
+
+def test_wdl_runs_optional_covariate_fixture_and_reports_intersection(
+    tmp_path: Path,
+):
+    miniwdl = _require_wdl_runtime()
+    inputs = {
+        "RareVariantEnrichment.phenotype_bed": str(
+            (FIXTURES / "lof_pc_phenotypes.bed").resolve()
+        ),
+        "RareVariantEnrichment.lof_carrier_table": str(
+            (FIXTURES / "lof_carriers.tsv").resolve()
+        ),
+        "RareVariantEnrichment.principal_components_tsv": str(
+            (FIXTURES / "principal_components.tsv").resolve()
+        ),
+        "RareVariantEnrichment.additional_covariates_tsv": str(
+            (FIXTURES / "genetic_pcs.tsv").resolve()
+        ),
+        "RareVariantEnrichment.gene_annotation_gtf": str(
+            (FIXTURES / "gene_annotation.gtf").resolve()
+        ),
+        "RareVariantEnrichment.negative_z_thresholds": [-0.8],
+        "RareVariantEnrichment.selection_z_thresholds": [-0.8],
+        "RareVariantEnrichment.pc_counts": [0],
+        "RareVariantEnrichment.pc_counts_per_job": 1,
+        "RareVariantEnrichment.pc_preemptible": 1,
+        "RareVariantEnrichment.docker_image": TEST_IMAGE,
+        "RareVariantEnrichment.prepare_cpu": 1,
+        "RareVariantEnrichment.prepare_memory_gb": 1,
+        "RareVariantEnrichment.prepare_disk_gb": 1,
+        "RareVariantEnrichment.analysis_cpu": 1,
+        "RareVariantEnrichment.analysis_memory_gb": 1,
+        "RareVariantEnrichment.analysis_disk_gb": 1,
+        "RareVariantEnrichment.max_retries": 1,
+    }
+    inputs_path = tmp_path / "covariate-inputs.json"
+    outputs_path = tmp_path / "covariate-outputs.json"
+    inputs_path.write_text(json.dumps(inputs))
+    try:
+        result = subprocess.run(
+            [
+                miniwdl,
+                "run",
+                str(WORKFLOW),
+                "-i",
+                str(inputs_path),
+                "-d",
+                str(tmp_path / "miniwdl-covariates"),
+                "-o",
+                str(outputs_path),
+                "--no-cache",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        _unavailable("miniwdl Docker backend did not start the covariate fixture within 60 seconds")
+    assert result.returncode == 0, result.stderr
+    outputs = json.loads(outputs_path.read_text())["outputs"]
+    analysis_qc = json.loads(
+        Path(outputs["RareVariantEnrichment.analysis_qc_json"]).read_text()
+    )
+    assert analysis_qc["additional_covariates_supplied"] is True
+    assert analysis_qc["additional_covariate_count"] == 2
+    assert analysis_qc["additional_covariate_sample_count"] == 5
+    assert analysis_qc["shared_bed_pc_covariate_sample_count"] == 5
