@@ -4,6 +4,11 @@ import math
 from pathlib import Path
 
 from rare_variant_enrichment.aggregation import gather_outputs
+from rare_variant_enrichment.carrier_aggregation import gather_variant_carriers
+from rare_variant_enrichment.carrier_extraction import (
+    extract_chromosome_carriers,
+    prepare_carrier_inputs,
+)
 from rare_variant_enrichment.io import read_nonempty_lines, write_json
 from rare_variant_enrichment.lof_pc import (
     build_pc_chunks,
@@ -34,6 +39,9 @@ COMMANDS = (
     "merge-lof-pc-enrichment",
     "analyze-lof-pc-enrichment",
     "pc-chunks",
+    "prepare-carrier-inputs",
+    "extract-gene-carriers",
+    "gather-gene-carriers",
 )
 
 
@@ -159,6 +167,46 @@ def build_parser() -> argparse.ArgumentParser:
     )
     calculate_parser.add_argument("--maximum-gvs-maf", type=float, default=0.01)
     calculate_parser.add_argument("--annotation-chunk-size-bp", type=int, default=10_000_000)
+
+    prepare_carrier_parser = subparsers.add_parser("prepare-carrier-inputs")
+    prepare_carrier_parser.add_argument("--vcf", required=True, type=Path)
+    prepare_carrier_parser.add_argument("--annotations", required=True, type=Path)
+    prepare_carrier_parser.add_argument(
+        "--chromosomes", required=True, type=parse_csv_strings
+    )
+    prepare_carrier_parser.add_argument(
+        "--vcf-index-provenance", required=True, choices=("supplied", "generated")
+    )
+    prepare_carrier_parser.add_argument(
+        "--transcript-index-provenance",
+        required=True,
+        choices=("supplied", "generated"),
+    )
+    prepare_carrier_parser.add_argument("--schema-output", required=True, type=Path)
+    prepare_carrier_parser.add_argument("--qc-output", required=True, type=Path)
+
+    extract_carrier_parser = subparsers.add_parser("extract-gene-carriers")
+    extract_carrier_parser.add_argument("--vcf", required=True, type=Path)
+    extract_carrier_parser.add_argument("--annotations", required=True, type=Path)
+    extract_carrier_parser.add_argument("--schema", required=True, type=Path)
+    extract_carrier_parser.add_argument("--chromosome", required=True)
+    extract_carrier_parser.add_argument(
+        "--chunk-size-bp", required=True, type=parse_positive_int
+    )
+    extract_carrier_parser.add_argument("--audit-output", required=True, type=Path)
+    extract_carrier_parser.add_argument("--qc-output", required=True, type=Path)
+
+    gather_carrier_parser = subparsers.add_parser("gather-gene-carriers")
+    gather_carrier_parser.add_argument(
+        "--audit-input", action="append", required=True, type=Path
+    )
+    gather_carrier_parser.add_argument(
+        "--qc-input", action="append", required=True, type=Path
+    )
+    gather_carrier_parser.add_argument("--preparation-qc", required=True, type=Path)
+    gather_carrier_parser.add_argument("--audit-output", required=True, type=Path)
+    gather_carrier_parser.add_argument("--carrier-output", required=True, type=Path)
+    gather_carrier_parser.add_argument("--qc-output", required=True, type=Path)
     return parser
 
 
@@ -279,6 +327,35 @@ def main() -> int:
             annotation_chunk_size_bp=args.annotation_chunk_size_bp,
             vat_schema_path=args.vat_schema,
         )
+    elif args.command == "prepare-carrier-inputs":
+        prepare_carrier_inputs(
+            args.vcf,
+            args.annotations,
+            args.chromosomes,
+            args.vcf_index_provenance,
+            args.transcript_index_provenance,
+            args.schema_output,
+            args.qc_output,
+        )
+    elif args.command == "extract-gene-carriers":
+        extract_chromosome_carriers(
+            args.vcf,
+            args.annotations,
+            args.schema,
+            args.chromosome,
+            args.chunk_size_bp,
+            args.audit_output,
+            args.qc_output,
+        )
+    elif args.command == "gather-gene-carriers":
+        gather_variant_carriers(
+            args.audit_input,
+            args.qc_input,
+            args.preparation_qc,
+            args.audit_output,
+            args.carrier_output,
+            args.qc_output,
+        )
     return 0
 
 
@@ -302,6 +379,16 @@ def parse_csv_ints(value: str) -> list[int]:
         return [int(item) for item in parse_csv_strings(value)]
     except ValueError as error:
         raise argparse.ArgumentTypeError("Expected comma-separated integers") from error
+
+
+def parse_positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("Expected a positive integer") from error
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("Expected a positive integer")
+    return parsed
 
 
 def parse_boolean(value: str) -> bool:
