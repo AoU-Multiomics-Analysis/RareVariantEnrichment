@@ -58,7 +58,9 @@ class VariantAllele:
     ref: str
     alt: str
     ac: int
+    af: float | None
     carriers: tuple[str, ...]
+    carrier_alt_allele_counts: tuple[int, ...]
 
 
 @dataclass(frozen=True, order=True)
@@ -133,7 +135,7 @@ def parse_variant_alleles(
     parse_qc = qc if qc is not None else {}
     _initialize_variant_qc(parse_qc)
     parse_qc["alt_alleles"] += len(alts)
-    genotype_ac, carriers, called_allele_count, genotypes_complete = _count_genotypes(
+    genotype_ac, carriers, carrier_dosages, called_allele_count, genotypes_complete = _count_genotypes(
         sample_fields,
         sample_ids,
         shared_samples,
@@ -142,9 +144,10 @@ def parse_variant_alleles(
         parse_qc,
     )
     info_ac = _info_ac_values(info, len(alts))
+    info_af = _info_af_values(info, len(alts))
     alleles: list[VariantAllele] = []
-    for alt, parsed_info_ac, genotype_count, alt_carriers in zip(
-        alts, info_ac, genotype_ac, carriers, strict=True
+    for alt, parsed_info_ac, parsed_info_af, genotype_count, alt_carriers, alt_dosages in zip(
+        alts, info_ac, info_af, genotype_ac, carriers, carrier_dosages, strict=True
     ):
         if parsed_info_ac is None:
             if called_allele_count == 0:
@@ -161,7 +164,18 @@ def parse_variant_alleles(
                     parse_qc["info_genotype_ac_mismatch_alt_alleles"] += 1
             else:
                 parse_qc["info_genotype_ac_unchecked_alt_alleles"] += 1
-        alleles.append(VariantAllele(chrom, pos, ref, alt, ac, tuple(alt_carriers)))
+        alleles.append(
+            VariantAllele(
+                chrom,
+                pos,
+                ref,
+                alt,
+                ac,
+                parsed_info_af,
+                tuple(alt_carriers),
+                tuple(alt_dosages),
+            )
+        )
     return alleles
 
 
@@ -516,9 +530,10 @@ def _count_genotypes(
     genotype_index: int,
     alt_count: int,
     qc: MutableMapping[str, int],
-) -> tuple[list[int], list[list[str]], int, bool]:
+) -> tuple[list[int], list[list[str]], list[list[int]], int, bool]:
     ac_values = [0] * alt_count
     carriers: list[list[str]] = [[] for _ in range(alt_count)]
+    carrier_dosages: list[list[int]] = [[] for _ in range(alt_count)]
     called_allele_count = 0
     genotypes_complete = bool(sample_fields)
     for sample_id, sample_field in zip(sample_ids, sample_fields, strict=True):
@@ -541,7 +556,8 @@ def _count_genotypes(
         if sample_id in shared_samples:
             for allele_index in set(alt_indices):
                 carriers[allele_index - 1].append(sample_id)
-    return ac_values, carriers, called_allele_count, genotypes_complete
+                carrier_dosages[allele_index - 1].append(alt_indices.count(allele_index))
+    return ac_values, carriers, carrier_dosages, called_allele_count, genotypes_complete
 
 
 def _parse_genotype(
@@ -597,6 +613,31 @@ def _info_ac_values(info: str, alt_count: int) -> list[int | None]:
             if numeric_value < 0:
                 raise ValueError("INFO/AC values must be non-negative")
             parsed.append(numeric_value)
+        return parsed
+    return [None] * alt_count
+
+
+def _info_af_values(info: str, alt_count: int) -> list[float | None]:
+    for item in info.split(";"):
+        if not item.startswith("AF="):
+            continue
+        values = item.removeprefix("AF=").split(",")
+        if len(values) != alt_count:
+            raise ValueError(
+                f"INFO/AF cardinality ({len(values)}) does not match ALT count ({alt_count})"
+            )
+        parsed: list[float | None] = []
+        for value in values:
+            if value == ".":
+                parsed.append(None)
+                continue
+            try:
+                numeric = float(value)
+            except ValueError as error:
+                raise ValueError("INFO/AF values must be numeric or missing") from error
+            if not math.isfinite(numeric) or not 0.0 <= numeric <= 1.0:
+                raise ValueError("INFO/AF values must be finite numbers from 0 through 1")
+            parsed.append(numeric)
         return parsed
     return [None] * alt_count
 

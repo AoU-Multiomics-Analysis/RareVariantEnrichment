@@ -34,7 +34,7 @@ def test_build_ac_classes_rejects_no_configured_family():
 
 
 def test_multiallelic_record_assigns_ac_and_carriers_per_alt():
-    fields = "chr1\t100\t.\tA\tC,G\t.\tPASS\tAC=1,2\tGT\t0/1\t0/2\t0/2".split("\t")
+    fields = "chr1\t100\t.\tA\tC,G\t.\tPASS\tAC=1,2;AF=0.1,0.2\tGT\t0/1\t0/2\t0/2".split("\t")
 
     alleles = parse_variant_alleles(fields, ["S1", "S2", "S3"], {"S1", "S2", "S3"})
 
@@ -42,6 +42,28 @@ def test_multiallelic_record_assigns_ac_and_carriers_per_alt():
         ("C", 1, ("S1",)),
         ("G", 2, ("S2", "S3")),
     ]
+    assert [(allele.af, allele.carrier_alt_allele_counts) for allele in alleles] == [
+        (0.1, (1,)),
+        (0.2, (1, 1)),
+    ]
+
+
+def test_carrier_alt_allele_count_preserves_homozygous_and_partial_dosage():
+    fields = "chr1\t150\t.\tG\tT\t.\tPASS\tAC=3;AF=0.25\tGT\t1/1\t1/.\t0/0".split("\t")
+
+    allele = parse_variant_alleles(fields, ["S1", "S2", "S3"], {"S1", "S2"})[0]
+
+    assert allele.carriers == ("S1", "S2")
+    assert allele.carrier_alt_allele_counts == (2, 1)
+    assert allele.af == 0.25
+
+
+@pytest.mark.parametrize("info", ["AF=nan", "AF=-0.1", "AF=1.1", "AF=bad"])
+def test_info_af_rejects_invalid_values(info: str):
+    fields = f"chr1\t100\t.\tA\tC\t.\tPASS\t{info}\tGT\t0/1".split("\t")
+
+    with pytest.raises(ValueError, match="INFO/AF"):
+        parse_variant_alleles(fields, ["S1"], {"S1"})
 
 
 def test_info_ac_dot_falls_back_to_genotypes_and_records_source_qc():

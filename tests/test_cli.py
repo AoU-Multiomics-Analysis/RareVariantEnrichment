@@ -27,8 +27,72 @@ def test_cli_lists_workflow_subcommands():
         "lof-pc-enrichment",
         "merge-lof-pc-enrichment",
         "analyze-lof-pc-enrichment",
+        "prepare-carrier-inputs",
+        "extract-gene-carriers",
+        "gather-gene-carriers",
     ):
         assert command in result.stdout
+
+
+def test_prepare_carrier_inputs_cli_dispatches_exact_contract(monkeypatch):
+    received: list[object] = []
+    monkeypatch.setattr(cli, "prepare_carrier_inputs", lambda *args: received.extend(args))
+    monkeypatch.setattr(sys, "argv", [
+        "rare-variant-enrichment", "prepare-carrier-inputs",
+        "--vcf", "variants.vcf.gz",
+        "--annotations", "transcript.tsv.bgz",
+        "--chromosomes", "chr1,chr2",
+        "--vcf-index-provenance", "supplied",
+        "--transcript-index-provenance", "generated",
+        "--schema-output", "transcript.schema.json",
+        "--qc-output", "transcript.prepare.qc.json",
+    ])
+
+    assert cli.main() == 0
+    assert received == [
+        Path("variants.vcf.gz"), Path("transcript.tsv.bgz"), ["chr1", "chr2"],
+        "supplied", "generated", Path("transcript.schema.json"),
+        Path("transcript.prepare.qc.json"),
+    ]
+
+
+def test_extract_gene_carriers_cli_dispatches_exact_contract(monkeypatch):
+    received: list[object] = []
+    monkeypatch.setattr(cli, "extract_chromosome_carriers", lambda *args: received.extend(args))
+    monkeypatch.setattr(sys, "argv", [
+        "rare-variant-enrichment", "extract-gene-carriers",
+        "--vcf", "variants.vcf.gz", "--annotations", "transcript.tsv.bgz",
+        "--schema", "transcript.schema.json", "--chromosome", "chr1",
+        "--chunk-size-bp", "10000000", "--audit-output", "chr1.audit.tsv.gz",
+        "--qc-output", "chr1.qc.json",
+    ])
+
+    assert cli.main() == 0
+    assert received == [
+        Path("variants.vcf.gz"), Path("transcript.tsv.bgz"),
+        Path("transcript.schema.json"), "chr1", 10_000_000,
+        Path("chr1.audit.tsv.gz"), Path("chr1.qc.json"),
+    ]
+
+
+def test_gather_gene_carriers_cli_dispatches_exact_contract(monkeypatch):
+    received: list[object] = []
+    monkeypatch.setattr(cli, "gather_variant_carriers", lambda *args: received.extend(args))
+    monkeypatch.setattr(sys, "argv", [
+        "rare-variant-enrichment", "gather-gene-carriers",
+        "--audit-input", "chr1.audit.tsv.gz", "--qc-input", "chr1.qc.json",
+        "--preparation-qc", "transcript.prepare.qc.json",
+        "--audit-output", "variant_carrier_audit.tsv.gz",
+        "--carrier-output", "variant_carriers.tsv.gz",
+        "--qc-output", "variant_carriers.qc.json",
+    ])
+
+    assert cli.main() == 0
+    assert received == [
+        [Path("chr1.audit.tsv.gz")], [Path("chr1.qc.json")],
+        Path("transcript.prepare.qc.json"), Path("variant_carrier_audit.tsv.gz"),
+        Path("variant_carriers.tsv.gz"), Path("variant_carriers.qc.json"),
+    ]
 
 
 def test_prepare_protein_coding_genes_cli_dispatches_exact_paths(monkeypatch):

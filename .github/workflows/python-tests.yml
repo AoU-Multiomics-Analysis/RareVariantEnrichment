@@ -42,7 +42,11 @@ jobs:
         run: pip install -e . pytest miniwdl
 
       - name: Validate WDL
-        run: miniwdl check workflows/rare_variant_enrichment.wdl
+        run: |
+          for wdl in workflows/*.wdl; do
+            echo "Checking ${wdl}"
+            miniwdl check "${wdl}"
+          done
 
       - name: Build and load test image
         run: docker build -f envs/Dockerfile -t rare-variant-enrichment:test .

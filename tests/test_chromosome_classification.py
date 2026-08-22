@@ -13,7 +13,7 @@ from rare_variant_enrichment.variants import classify_chromosome, parse_variant_
 
 VAT_HEADER = (
     "chrom\tpos\tref\talt\trsid\tgene_id\tgene_symbol\ttranscript\t"
-    "is_canonical_transcript\tconsequence\taa_change\tLoF\tLoF_filter\t"
+    "is_canonical_transcript\tconsequence\taa_change\trevel\tLoF\tLoF_filter\t"
     "LoF_flags\tLoF_info\tgvs_max_af\tgvs_max_subpop"
 )
 
@@ -129,7 +129,7 @@ def test_classification_streams_each_chunk_once_and_reduces_each_annotation_inde
     vat_rows.append(vat_rows[0])
     vat_rows.append(
         "chr1\t120\tA\tG\trs120\tENSG000001.9\tGENE1\tENST000120\ttrue\t"
-        "missense_variant\tp.Ala2Val\tLC\t.\t.\t.\t0.002\tafr"
+        "missense_variant\tp.Ala2Val\t0.50\tLC\t.\t.\t.\t0.002\tafr"
     )
     vcf_rows = [
         "chr1\t100\t.\tA\tC\t.\tPASS\tAC=1\tGT\t0/1\t0/0\t0/0",
@@ -270,8 +270,8 @@ def test_chromosome_qc_preserves_ac_sources_call_states_and_boundary_pairs(
         "chr1\t110\t.\tA\tC,G\t.\tPASS\tAC=.,2\tGT\t1/.\t0/2\t0/2"
     ]
     vat_rows = [
-        "chr1\t110\tA\tC\t.\tENSG000001.1\tGENE1\tENST1\ttrue\tmissense_variant\t.\t.\t.\t.\t.\t0.001\tglobal",
-        "chr1\t110\tA\tG\t.\tENSG000001.1\tGENE1\tENST2\ttrue\tmissense_variant\t.\t.\t.\t.\t.\t0.001\tglobal",
+        "chr1\t110\tA\tC\t.\tENSG000001.1\tGENE1\tENST1\ttrue\tmissense_variant\t.\t.\t.\t.\t.\t.\t0.001\tglobal",
+        "chr1\t110\tA\tG\t.\tENSG000001.1\tGENE1\tENST2\ttrue\tmissense_variant\t.\t.\t.\t.\t.\t.\t0.001\tglobal",
     ]
     router = _TabixRouter({vcf: vcf_rows, vat: vat_rows})
     monkeypatch.setattr("rare_variant_enrichment.variants.subprocess.Popen", router)

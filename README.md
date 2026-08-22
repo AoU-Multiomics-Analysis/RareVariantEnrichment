@@ -10,6 +10,59 @@
 
 This workflow screens for enrichment of molecular low-expression outliers among pooled loss-of-function (LoF) carrier observations. It directly residualizes every protein-coding gene's expression against an intercept, optional additional covariates, and principal components (PCs), then pools eligible sample–gene observations into Fisher exact 2×2 tables. It does not accept variant call files, annotation tables, genomic index files, or chromosome selections.
 
+## Standalone variant carrier extraction
+
+`workflows/extract_variant_carriers.wdl` creates gene-matched carrier tables from
+a filtered VCF and the MTtoVCF `TranscriptAnnotations` table. It does not run an
+enrichment test. Run the active enrichment workflow separately after you select
+the carrier class that you need.
+
+The input VCF must already have the required quality and frequency filters. The
+extractor does not apply a quality, AC, AF, or MAF filter. It joins VCF alleles
+to transcript rows by exact chromosome, position, REF, and ALT. It then groups
+the matched rows by the normalized Ensembl gene ID. It does not use a GTF, a
+phenotype position, a gene-distance window, or a feature list.
+
+For each allele and gene, the extractor retains:
+
+- the most severe Ensembl consequence;
+- all distinct consequence terms;
+- LoFTEE `HC` in preference to `LC`;
+- the maximum finite transcript-level `revel` score;
+- the maximum valid `gvs_max_af` value.
+
+The initial classes are `lof_hc`, `lof_hc_or_lc`, `missense`, `splice_core`,
+and `splice_region`. The detailed audit also keeps variants that do not have an
+initial class. You can define a missense subset with a REVEL threshold after
+extraction. This does not require a new VCF or transcript extraction run.
+
+Required inputs are `filtered_vcf`, its `.tbi` index, and block-gzipped
+`transcript_annotations`. The transcript index is optional. The preparation
+task validates a supplied index or creates one. The default scatter includes
+`chr1` through `chr22` and uses 10 Mb non-overlapping annotation chunks.
+
+```bash
+miniwdl run workflows/extract_variant_carriers.wdl \
+  -i examples/extract_variant_carriers.inputs.json
+```
+
+The workflow returns these principal tables:
+
+| Output | Row definition |
+|---|---|
+| `variant_carrier_audit_tsv_gz` | One sample, exact allele, and normalized VAT gene. |
+| `variant_carriers_tsv_gz` | One sample, gene, and initial variant class. |
+
+The audit includes ALT dosage, VCF AC and AF, the collapsed consequence fields,
+LoFTEE, REVEL, `gvs_max_af`, and the assigned initial classes. The carrier table
+includes `sample_id`, `gene_id`, `gene_symbol`, `variant_class`, `n_variants`,
+and sorted `variant_ids`.
+
+`variant_carriers_qc_json` embeds preparation and chromosome QC. It records
+input and index provenance, row totals, duplicate counts, unique sample, gene,
+allele, and allele-gene counts, and class counts. QC files contain aggregate
+counts only. They do not contain sample-level audit records.
+
 ## Inputs
 
 The public WDL has four required file inputs and one optional file input (`additional_covariates_tsv`).

@@ -1,0 +1,8 @@
+{
+  "ExtractVariantCarriers.filtered_vcf": "filtered_variants.vcf.gz",
+  "ExtractVariantCarriers.filtered_vcf_tbi": "filtered_variants.vcf.gz.tbi",
+  "ExtractVariantCarriers.transcript_annotations": "transcript_annotations.tsv.bgz",
+  "ExtractVariantCarriers.chromosomes": ["chr1"],
+  "ExtractVariantCarriers.annotation_chunk_size_bp": 10000000,
+  "ExtractVariantCarriers.docker_image": "ghcr.io/aou-multiomics-analysis/rarevariantenrichment:main"
+}
