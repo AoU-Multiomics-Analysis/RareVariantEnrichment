@@ -7,6 +7,7 @@ import subprocess
 import pytest
 
 from rare_variant_enrichment.annotations import VatSchema
+from rare_variant_enrichment.carrier_annotations import TranscriptCarrierSchema
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class PreparedFixture:
     vat_bgz: Path
     vat_tbi: Path
     vat_schema: Path
+    carrier_schema: Path
 
 
 @pytest.fixture
@@ -47,6 +49,8 @@ def prepared_fixture(tmp_path: Path) -> PreparedFixture:
     vat_schema = tmp_path / "vat_schema.json"
     header = plain_vat.read_text().splitlines()[0].split("\t")
     VatSchema.from_header(header).write_json(vat_schema)
+    carrier_schema = tmp_path / "transcript_carrier_schema.json"
+    TranscriptCarrierSchema.from_header(header).write_json(carrier_schema)
 
     bed = tmp_path / "phenotypes.bed"
     bed.write_text(
@@ -75,6 +79,7 @@ def prepared_fixture(tmp_path: Path) -> PreparedFixture:
         vat_bgz,
         Path(f"{vat_bgz}.tbi"),
         vat_schema,
+        carrier_schema,
     )
 
 

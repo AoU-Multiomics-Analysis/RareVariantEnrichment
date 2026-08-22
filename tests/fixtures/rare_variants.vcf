@@ -1,9 +1,10 @@
 ##fileformat=VCFv4.2
-##contig=<ID=chr1>
+##contig=<ID=chr1,length=1000>
 ##INFO=<ID=AC,Number=A,Type=Integer,Description="Alternate allele count">
+##INFO=<ID=AF,Number=A,Type=Float,Description="Alternate allele frequency">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2	S3
-chr1	100	.	A	C	.	PASS	AC=1	GT	0/1	0/0	./.
-chr1	150	.	G	T	.	PASS	AC=2	GT	0/0	1/1	0/0
-chr1	180	.	C	G	.	PASS	AC=2	GT	0/0	1/1	0/0
-chr1	300	.	T	A	.	PASS	AC=1	GT	0/1	0/0	0/0
+chr1	100	.	A	C	.	PASS	AC=1;AF=0.001	GT	0/1	0/0	./.
+chr1	150	.	G	T	.	PASS	AC=2;AF=0.002	GT	0/0	1/1	0/0
+chr1	180	.	C	G	.	PASS	AC=2;AF=0.002	GT	0/0	1/1	0/0
+chr1	300	.	T	A	.	PASS	AC=1;AF=0.001	GT	0/1	0/0	0/0
