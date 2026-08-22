@@ -43,9 +43,24 @@ def test_chunk_store_collapses_each_exact_allele_gene_pair(tmp_path: Path):
     assert qc == {
         "transcript_rows": 3,
         "duplicate_transcript_rows": 1,
+        "missing_gene_transcript_rows": 0,
         "unique_annotation_alleles": 1,
         "unique_annotation_allele_gene_pairs": 1,
     }
+
+
+def test_chunk_store_skips_intergenic_rows_without_a_gene(tmp_path: Path):
+    schema = TranscriptCarrierSchema.from_header(HEADER)
+    fields = _fields(".", "intergenic_variant", "")
+    fields[HEADER.index("gene_symbol")] = "."
+    with CarrierAnnotationChunkStore(tmp_path, schema) as store:
+        store.ingest(fields)
+        qc = store.finalize()
+        annotations = store.annotations_for_allele(VariantKey("chr1", 100, "A", "C"))
+
+    assert annotations == ()
+    assert qc["transcript_rows"] == 1
+    assert qc["missing_gene_transcript_rows"] == 1
 
 
 def test_chunk_store_requires_finalize_before_query(tmp_path: Path):

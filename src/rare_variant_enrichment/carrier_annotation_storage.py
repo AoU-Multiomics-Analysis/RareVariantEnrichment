@@ -18,6 +18,9 @@ from rare_variant_enrichment.carrier_annotations import (
 )
 
 
+_MISSING_GENE_IDS = {"", ".", "na", "nan", "null"}
+
+
 class CarrierAnnotationChunkStore:
     """Store and collapse transcript rows for one bounded tabix query."""
 
@@ -35,6 +38,7 @@ class CarrierAnnotationChunkStore:
         self._finalized = False
         self._transcript_rows = 0
         self._duplicate_rows = 0
+        self._missing_gene_rows = 0
         try:
             self.connection = sqlite3.connect(self.path)
             self.connection.execute("PRAGMA journal_mode=OFF")
@@ -81,6 +85,12 @@ class CarrierAnnotationChunkStore:
         self._require_open()
         if self._finalized:
             raise RuntimeError("Carrier annotation store is already finalized")
+        if len(fields) != len(self.schema.header):
+            raise ValueError("Transcript row column count does not match its header")
+        self._transcript_rows += 1
+        if fields[self.schema.gene_id].strip().casefold() in _MISSING_GENE_IDS:
+            self._missing_gene_rows += 1
+            return
         parsed = parse_transcript_carrier_row(fields, self.schema)
         row_data = json.dumps(list(fields), ensure_ascii=False, separators=(",", ":"))
         inserted = self.connection.execute(
@@ -98,7 +108,6 @@ class CarrierAnnotationChunkStore:
                 row_data,
             ),
         )
-        self._transcript_rows += 1
         if inserted.rowcount == 0:
             self._duplicate_rows += 1
 
@@ -126,6 +135,7 @@ class CarrierAnnotationChunkStore:
         return {
             "transcript_rows": self._transcript_rows,
             "duplicate_transcript_rows": self._duplicate_rows,
+            "missing_gene_transcript_rows": self._missing_gene_rows,
             "unique_annotation_alleles": int(allele_count[0]),
             "unique_annotation_allele_gene_pairs": int(pair_count[0]),
         }

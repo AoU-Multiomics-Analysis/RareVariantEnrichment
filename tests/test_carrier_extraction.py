@@ -51,6 +51,7 @@ def test_prepare_records_schema_contigs_and_index_provenance(
     assert payload["vcf_index_provenance"] == "supplied"
     assert payload["transcript_index_provenance"] == "generated"
     assert schema.exists()
+    assert "S1" not in qc.read_text()
 
 
 def test_extract_emits_exact_gene_matches_dosage_and_unclassified_rows(

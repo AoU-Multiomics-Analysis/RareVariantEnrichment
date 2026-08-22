@@ -133,6 +133,7 @@ def extract_chromosome_carriers(
         "carrier_audit_rows": 0,
         "transcript_rows": 0,
         "duplicate_transcript_rows": 0,
+        "missing_gene_transcript_rows": 0,
         "unique_annotation_alleles": 0,
         "unique_annotation_allele_gene_pairs": 0,
         "quality_or_frequency_filters_applied": False,
@@ -220,10 +221,10 @@ def _read_vcf_header(path: Path) -> tuple[list[str], dict[str, int], list[str]]:
                 if identifier and length:
                     contig_lengths[identifier.group(1)] = int(length.group(1))
             elif line.startswith("#CHROM"):
-                header_lines.append(line)
                 fields = line.split("\t")
                 if len(fields) < 9:
                     raise ValueError("VCF header must contain fixed columns and FORMAT")
+                header_lines.append("\t".join(fields[:9]))
                 if not contig_lengths:
                     raise ValueError("VCF contigs must declare positive lengths")
                 return fields[9:], contig_lengths, header_lines
