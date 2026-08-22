@@ -59,10 +59,10 @@ task PrepareCarrierInputs {
     >>>
 
     output {
-        File prepared_vcf = "filtered_variants.vcf.gz"
-        File prepared_vcf_tbi = "filtered_variants.vcf.gz.tbi"
-        File prepared_transcript_annotations = "transcript_annotations.tsv.bgz"
-        File prepared_transcript_annotations_tbi = "transcript_annotations.tsv.bgz.tbi"
+        File prepared_vcf = filtered_vcf
+        File prepared_vcf_tbi = filtered_vcf_tbi
+        File prepared_transcript_annotations = transcript_annotations
+        File prepared_transcript_annotations_tbi = if defined(transcript_annotations_tbi) then select_first([transcript_annotations_tbi]) else "transcript_annotations.tsv.bgz.tbi"
         File transcript_schema_json = "transcript.schema.json"
         File preparation_qc_json = "transcript.prepare.qc.json"
         String transcript_index_provenance = read_string("transcript_index_provenance.txt")
