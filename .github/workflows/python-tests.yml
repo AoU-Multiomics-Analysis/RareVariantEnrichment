@@ -6,6 +6,9 @@ on:
     paths:
       - ".github/workflows/python-tests.yml"
       - "envs/Dockerfile"
+      - "scripts/**"
+      - "examples/**"
+      - ".dockstore.yml"
       - "src/**"
       - "tests/**"
       - "workflows/**"
@@ -14,6 +17,9 @@ on:
     paths:
       - ".github/workflows/python-tests.yml"
       - "envs/Dockerfile"
+      - "scripts/**"
+      - "examples/**"
+      - ".dockstore.yml"
       - "src/**"
       - "tests/**"
       - "workflows/**"
@@ -51,7 +57,7 @@ jobs:
       - name: Build and load test image
         run: docker build -f envs/Dockerfile -t rare-variant-enrichment:test .
 
-      - name: Run full tests including both Docker-backed WDL modes
+      - name: Run full tests including all Docker-backed WDL modes
         run: python -m pytest -v
 
       - name: Verify command help

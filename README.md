@@ -8,7 +8,15 @@
 [![WDL validation](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/wdl-validation.yml/badge.svg)](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/wdl-validation.yml)
 <!-- workflow-badges:end -->
 
-This workflow screens for enrichment of molecular low-expression outliers among pooled loss-of-function (LoF) carrier observations. It directly residualizes every protein-coding gene's expression against an intercept, optional additional covariates, and principal components (PCs), then pools eligible sample–gene observations into Fisher exact 2×2 tables. It does not accept variant call files, annotation tables, genomic index files, or chromosome selections.
+This repository has separate workflows for variant extraction and carrier
+enrichment. Extraction creates a reusable variant audit. Generic enrichment
+uses that audit to build named carrier definitions for LoF, missense, splice,
+or combined variant classes. It then tests molecular low-expression outliers
+with pooled Fisher exact 2×2 tables.
+
+The original LoF-only enrichment workflow remains available for compatibility.
+It does not accept variant call files, annotation tables, genomic index files,
+or chromosome selections.
 
 ## Standalone variant carrier extraction
 
@@ -63,9 +71,66 @@ input and index provenance, row totals, duplicate counts, unique sample, gene,
 allele, and allele-gene counts, and class counts. QC files contain aggregate
 counts only. They do not contain sample-level audit records.
 
-## Inputs
+## Generic carrier enrichment
 
-The public WDL has four required file inputs and one optional file input (`additional_covariates_tsv`).
+`workflows/carrier_enrichment.wdl` consumes the extraction audit and extraction
+QC as a linked pair. It also consumes a carrier-definition JSON file, a
+molecular phenotype BED, a PC matrix, and a protein-coding gene GTF. Additional
+covariates are optional.
+
+Run extraction first. Then replace the output paths in the enrichment example:
+
+```bash
+miniwdl run workflows/extract_variant_carriers.wdl \
+  -i examples/extract_variant_carriers.inputs.json
+
+miniwdl run workflows/carrier_enrichment.wdl \
+  -i examples/carrier_enrichment.inputs.json
+```
+
+### Materialization
+
+Materialization converts the row-level extraction audit into a sparse table of
+sample, gene, and named carrier-definition records. It does not extract or
+annotate variants again. The table contains these columns:
+
+```text
+sample_id  gene_id  gene_symbol  carrier_definition  n_variants  variant_ids
+```
+
+The materialization manifest records the ordered definitions, input hashes,
+container image, row counts, and definition counts. The workflow checks that
+the extraction QC belongs to the supplied audit before it builds the table.
+
+Use `examples/carrier_definitions.json` as a starting point. Each definition
+has a unique `name` and one or more `variant_classes`. The supported base
+classes are `lof_hc`, `lof_hc_or_lc`, `missense`, `splice_core`, and
+`splice_region`.
+
+- Multiple `variant_classes` use OR logic.
+- `minimum_revel` is optional. When it is present, the class rule and the REVEL
+  rule must both match.
+- A missing REVEL value does not pass a REVEL threshold.
+- One audit row can enter more than one definition.
+- A definition with no carriers stays in the manifest and downstream results.
+
+The legacy LoF table is not expanded to represent other variant classes. The
+generic workflow uses its own materialized carrier table. The LoF table and
+`workflows/rare_variant_enrichment.wdl` remain compatibility interfaces.
+
+## Enrichment inputs
+
+The generic WDL has six required file inputs and one optional file input
+(`additional_covariates_tsv`). The legacy LoF WDL has four required file inputs
+and the same optional covariate input.
+
+### Generic extraction and definition inputs
+
+`variant_carrier_audit_tsv_gz` and `variant_carriers_qc_json` must come from the
+same extraction run. `carrier_definitions_json` must use schema version 1 and
+must contain an ordered, non-empty `definitions` array. Unknown fields, unknown
+classes, duplicate names, invalid REVEL thresholds, and duplicate JSON keys are
+rejected.
 
 ### Molecular phenotype BED
 
@@ -84,7 +149,7 @@ Each interval must be one base wide. Feature IDs are normalized by extracting ex
 
 Empty, unsupported, or ambiguous IDs are rejected with the input line number. If multiple phenotype rows normalize to the same gene, the analysis collapses them to one gene-level vector by retaining the minimum finite z-score independently for each sample. This represents the most extreme negative splice outlier for that gene; missing values are ignored, and a value remains missing only when all rows for that gene are missing. The downstream residualization and enrichment tests remain gene-level. Empty values, `.`, `NA`, and `NaN` are missing; non-finite numeric values are rejected.
 
-### LoF carrier table
+### Legacy LoF carrier table
 
 `lof_carrier_table` is a tab-separated, plain or gzip-compressed table with these required columns:
 
@@ -131,46 +196,89 @@ For each PC count and coding gene, the workflow fits finite expression observati
 
 ## Run
 
-Build or choose a container image that includes this package and NumPy 2 or later. The default image also includes R, `data.table`, `ggplot2`, and `ggrepel` for the PC-sweep QC plot. The WDL defaults are intentionally high for cohort-scale input localization: preparation uses 2 CPUs, 32 GB RAM, and 500 GB disk; analysis shards and shard merging use 8 CPUs, 128 GB RAM, and the 1000 GB analysis-disk baseline; header-only PC-grid chunk preparation uses 1 CPU and 4 GB RAM. Disk is dynamically raised to `ceil(2 × localized input GiB + 20)` when required: from the GTF for preparation, the PC file for chunk preparation, analysis inputs (including optional covariates) for each shard, and all localized shard outputs for merging. `pc_preemptible` defaults to 2 and controls the preemptible retry count for the PC-enrichment scatter jobs; `max_retries` defaults to 1 for every task.
+Build or select a container image that contains this package and NumPy 2 or
+later. The supplied image uses micromamba and exact package pins from
+conda-forge and bioconda. It includes R, tidyverse, `ggplot2`, and `ggrepel` for
+the PC-sweep QC plot.
+
+The enrichment defaults support cohort-scale input localization. Preparation
+uses 2 CPUs, 32 GB RAM, and 500 GB disk. Analysis and merge tasks use 8 CPUs,
+128 GB RAM, and a 1000 GB disk baseline. PC chunk preparation uses 1 CPU and
+4 GB RAM. Each task increases its disk request when the localized input size
+requires more space. `pc_preemptible` controls the preemptible retry count for
+the PC scatter. `max_retries` applies to all tasks.
+
+Run the generic workflow with the audit and QC outputs from extraction:
+
+```bash
+miniwdl run workflows/carrier_enrichment.wdl \
+  -i examples/carrier_enrichment.inputs.json
+```
+
+For reproducibility, replace `docker_image` with an immutable image digest in
+production.
+
+The Python CLI exposes the generic materialization and enrichment operations:
+
+```bash
+rare-variant-enrichment build-carrier-definitions \
+  --audit variant_carrier_audit.tsv.gz \
+  --extraction-qc variant_carriers.qc.json \
+  --definitions examples/carrier_definitions.json \
+  --container-image ghcr.io/example/image@sha256:... \
+  --output carrier_definitions.tsv.gz \
+  --qc-output carrier_definitions.qc.json
+
+rare-variant-enrichment prepare-protein-coding-genes \
+  --gtf genes.gtf.gz --genes-output protein_coding_genes.tsv --qc-output protein_coding_genes.qc.json
+
+rare-variant-enrichment carrier-pc-enrichment \
+  --phenotype-bed phenotypes.bed.gz \
+  --carrier-table carrier_definitions.tsv.gz \
+  --carrier-manifest carrier_definitions.qc.json \
+  --principal-components pcs.tsv --protein-coding-genes protein_coding_genes.tsv \
+  --additional-covariates genetic_pcs.tsv \
+  --negative-z-thresholds=-2,-3,-4,-5,-6 --pc-counts '' \
+  --results-output carrier_pc_enrichment.tsv \
+  --summary-output carrier_pc_enrichment.summary.json \
+  --gene-pc-qc-output carrier_pc_enrichment.gene_pc_qc.tsv.gz \
+  --analysis-qc-output carrier_pc_enrichment.analysis_qc.json
+```
+
+Run the legacy LoF interface only when an existing process requires its table
+or output contract:
 
 ```bash
 miniwdl run workflows/rare_variant_enrichment.wdl \
   -i examples/rare_variant_enrichment.inputs.json
 ```
 
-Update the four file paths in the example. For reproducibility, override `docker_image` with an immutable image digest in production.
+Legacy Python CLI commands remain available for compatibility.
 
-The Python CLI exposes the same two public operations:
+## Generic enrichment outputs
 
-```bash
-rare-variant-enrichment prepare-protein-coding-genes \
-  --gtf genes.gtf.gz --genes-output protein_coding_genes.tsv --qc-output protein_coding_genes.qc.json
+The generic workflow emits 12 files:
 
-rare-variant-enrichment lof-pc-enrichment \
-  --phenotype-bed phenotypes.bed.gz --lof-carriers lof_carriers.tsv \
-  --principal-components pcs.tsv --protein-coding-genes protein_coding_genes.tsv \
-  --additional-covariates genetic_pcs.tsv \
-  --negative-z-thresholds=-2,-3,-4,-5,-6 --pc-counts '' \
-  --results-output lof_pc_enrichment.tsv --summary-output lof_pc_enrichment.summary.json \
-  --gene-pc-qc-output lof_pc_enrichment.gene_pc_qc.tsv.gz \
-  --analysis-qc-output lof_pc_enrichment.analysis_qc.json
-```
-
-Legacy Python CLI commands remain available for compatibility, but are not part of the WDL or public analysis contract.
-
-## Outputs
-
-The workflow emits exactly ten files:
-
-- `results_tsv`: one row per PC count × negative threshold × carrier definition, merged across analysis shards.
-- `summary_json`: selected grid/settings, global FDR scope, residualization description, provenance, and the screening limitation.
-- `gene_pc_qc_tsv_gz`: compressed per-normalized-gene/per-PC QC with usable samples, rank, residual mean/SD, status, and exclusion reason.
-- `analysis_qc_json`: BED/PC/covariate overlap counts, covariate names and input sample count when supplied, pre-join carrier-pair counts, LoF input QC, and per-PC eligibility, actual carrier-observation, and structured exclusion counters.
-- `pc_selection_json`: median-logOR plateau summaries, excluded/included z thresholds, and the minimum common PC count selected by the 95% plateau rule.
-- `enrichment_plot_svg`: threshold-specific enrichment curves for `HC` and `any_lof`, median logOR curves, and reference lines for the selected PC positions.
-- `pc_sweep_qc_summary_tsv`: analysis-ready PC-sweep values containing the median log odds ratio across the selected z thresholds, the maximum-enrichment PC and odds ratio, and each PC's percentage of the maximum.
-- `pc_sweep_qc_plot_png`: percentage-of-maximum QC plot with exact odds-ratio annotations at selected PC checkpoints and ggrepel-style labels for the maximum enrichment values.
-- `protein_coding_genes_tsv`: the prepared sorted coding-gene list.
+- `carrier_definitions_tsv_gz`: materialized sample–gene carrier records for
+  each configured definition.
+- `carrier_definitions_qc_json`: definition order, counts, hashes, and extraction
+  provenance.
+- `results_tsv`: one row per PC count × negative threshold × carrier
+  definition, merged across PC shards.
+- `summary_json`: grid settings, global FDR scope, residualization details,
+  provenance, and the screening limitation.
+- `gene_pc_qc_tsv_gz`: compressed gene-by-PC QC with usable sample counts,
+  model rank, residual summaries, status, and exclusion reason.
+- `analysis_qc_json`: sample overlap, carrier counts, and structured PC-specific
+  exclusion counters.
+- `pc_selection_json`: definition-specific plateau summaries and the minimum
+  common PC count that meets the configured plateau fraction.
+- `enrichment_plot_svg`: threshold and median log-odds curves for the selected
+  definitions.
+- `pc_sweep_qc_summary_tsv`: PC-sweep values, maxima, and percentages of the
+  maximum median odds ratio.
+- `pc_sweep_qc_plot_png`: a clean percentage-of-maximum QC plot.
+- `protein_coding_genes_tsv`: the sorted coding-gene list.
 - `protein_coding_genes_qc_json`: GTF record and normalization QC.
 
 `results_tsv` contains these analysis-ready raw cells and derived statistics:
@@ -184,13 +292,29 @@ The workflow emits exactly ten files:
 | `odds_ratio`, `odds_ratio_corrected_0_5` | Uncorrected and 0.5-cell-corrected odds ratios. |
 | `fisher_p_value`, `fisher_fdr_bh` | Two-sided Fisher exact p-value and global Benjamini–Hochberg FDR across every emitted row. |
 
-The `analysis_qc_json` reconciles each PC-specific `carrier_observations` count with every result row: `carrier_observations = n11 + n10`. Pre-join carrier counts are intentionally reported separately because carriers absent from the BED/PC-gene observation set do not enter a Fisher table.
+`analysis_qc_json` reconciles each PC-specific `carrier_observations` count with
+every result row: `carrier_observations = n11 + n10`. Pre-join carrier counts
+are separate because a carrier that is absent from the phenotype and PC sample
+set does not enter a Fisher table.
 
-Per-shard analysis files are workflow intermediates, not public outputs. During merge, `fisher_fdr_bh` is recomputed across every final result row, preserving a global FDR scope rather than retaining shard-local adjustments.
+PC-shard files are workflow intermediates. During merge, the workflow recomputes
+the global Benjamini–Hochberg FDR across all final PC, threshold, and definition
+rows. It does not retain shard-local adjustments.
 
-The workflow also emits `pc_selection_json` and `enrichment_plot_svg`. PC selection summarizes the enrichment curves after excluding `z = -2` by default, because that threshold is not intended to represent the true outlier set. For each of `HC` and `any_lof`, it computes the median log odds ratio across `z = -3, -4, -5, -6`, finds the maximum median log odds ratio, and identifies the earliest PC count reaching 95% of that maximum. The reported selected PC count is the larger of those two definition-specific plateau-entry counts, so both carrier definitions meet the criterion while the number of PCs remains minimal. The SVG retains each threshold curve, overlays the median log-odds curve, and marks both definition-specific plateau entries and the common selected PC count.
+By default, PC selection uses all materialized definitions and the thresholds
+`z = -3, -4, -5, -6`. It finds the first PC count that reaches 95% of each
+definition's maximum median log odds ratio. It then reports the smallest common
+PC count that satisfies all estimable definitions. A zero-carrier or otherwise
+unestimable definition stays in the output with a structured exclusion reason.
 
-The `pc_sweep_qc_summary_tsv` and `pc_sweep_qc_plot_png` outputs use the same `z = -3, -4, -5, -6` median-logOR summary. Each carrier definition is normalized to its own maximum median odds ratio; the plot displays percentage of maximum on the y-axis, a 95% plateau reference, and exact median odds-ratio labels at selected PC counts.
+The QC summary and plot use the same definition and threshold selections. Each
+estimable definition is normalized to its own maximum median odds ratio.
+
+### Legacy output contract
+
+`workflows/rare_variant_enrichment.wdl` emits the same ten downstream analysis
+files without the two materialization files. It retains the `HC`, `HC_or_LC`,
+and `any_lof` carrier definitions and the legacy file contract.
 
 ## Interpretation
 

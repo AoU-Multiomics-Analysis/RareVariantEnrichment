@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import WDL
 
@@ -106,3 +107,82 @@ def test_carrier_enrichment_wdl_scatter_and_commands_are_generic_and_logged():
 def test_carrier_enrichment_wdl_is_registered_with_dockstore():
     dockstore = Path(".dockstore.yml").read_text()
     assert "primaryDescriptorPath: /workflows/carrier_enrichment.wdl" in dockstore
+
+
+def test_runtime_image_uses_exact_micromamba_package_contract():
+    dockerfile = Path("envs/Dockerfile").read_text()
+    assert dockerfile.splitlines()[0] == "FROM mambaorg/micromamba:2.8.1"
+    assert "apt-get" not in dockerfile
+    assert "-c conda-forge" in dockerfile
+    assert "-c bioconda" in dockerfile
+    for package in (
+        "python=3.12.14",
+        "numpy=2.5.2",
+        "htslib=1.24",
+        "r-base=4.6.1",
+        "r-tidyverse=2.0.0",
+        "r-ggplot2=4.0.3",
+        "r-ggrepel=0.9.8",
+        "pip=26.2.1",
+        "setuptools=84.0.0",
+        "wheel=0.48.0",
+    ):
+        assert package in dockerfile
+    assert "python -m pip install --no-cache-dir --no-deps --no-build-isolation ." in (
+        dockerfile
+    )
+    assert 'ENV PATH="/opt/conda/bin:${PATH}"' in dockerfile
+
+
+def test_generic_examples_match_the_two_workflow_handoff():
+    definitions = json.loads(Path("examples/carrier_definitions.json").read_text())
+    assert definitions["schema_version"] == 1
+    assert [item["name"] for item in definitions["definitions"]] == [
+        "lof_hc",
+        "lof_hc_or_lc",
+        "missense",
+        "missense_revel_ge_0_75",
+        "splice_core",
+        "splice_region",
+        "splice_any",
+    ]
+
+    inputs = json.loads(Path("examples/carrier_enrichment.inputs.json").read_text())
+    assert set(inputs) == {
+        "CarrierEnrichment.variant_carrier_audit_tsv_gz",
+        "CarrierEnrichment.variant_carriers_qc_json",
+        "CarrierEnrichment.carrier_definitions_json",
+        "CarrierEnrichment.phenotype_bed",
+        "CarrierEnrichment.principal_components_tsv",
+        "CarrierEnrichment.additional_covariates_tsv",
+        "CarrierEnrichment.gene_annotation_gtf",
+        "CarrierEnrichment.negative_z_thresholds",
+        "CarrierEnrichment.selection_z_thresholds",
+        "CarrierEnrichment.plateau_fraction",
+        "CarrierEnrichment.pc_counts",
+        "CarrierEnrichment.pc_counts_per_job",
+        "CarrierEnrichment.pc_selection_carrier_definitions",
+        "CarrierEnrichment.pc_preemptible",
+        "CarrierEnrichment.docker_image",
+        "CarrierEnrichment.prepare_cpu",
+        "CarrierEnrichment.prepare_memory_gb",
+        "CarrierEnrichment.prepare_disk_gb",
+        "CarrierEnrichment.analysis_cpu",
+        "CarrierEnrichment.analysis_memory_gb",
+        "CarrierEnrichment.analysis_disk_gb",
+        "CarrierEnrichment.max_retries",
+    }
+
+
+def test_readme_and_ci_document_and_test_the_generic_handoff():
+    readme = Path("README.md").read_text()
+    assert "miniwdl run workflows/extract_variant_carriers.wdl" in readme
+    assert "miniwdl run workflows/carrier_enrichment.wdl" in readme
+    assert "Materialization" in readme
+    assert "The legacy LoF table is not expanded" in readme
+    assert "global Benjamini–Hochberg FDR" in readme
+
+    workflow = Path(".github/workflows/python-tests.yml").read_text()
+    for path_filter in ('"scripts/**"', '"examples/**"', '".dockstore.yml"'):
+        assert workflow.count(path_filter) == 2
+    assert "all Docker-backed WDL modes" in workflow
