@@ -123,7 +123,7 @@ SAMPLE_1  -0.14  1.02  0.37  ...
 
 `negative_z_thresholds` defaults to `[-2.0, -3.0, -4.0, -5.0, -6.0]`. Values must be finite, unique, and strictly negative. An outlier is a residual z-score `<=` its threshold.
 
-`pc_counts` defaults to `[]`, which selects an adaptive grid: every count 0–10, every 10 through 100, every 50 through 500, every 100 above 500, and always the final permitted count. If the PC matrix contains `n` PCs, the largest permitted model uses `n-1` PCs. Provide an explicit strictly increasing, unique list of non-negative counts no greater than `n-1` to override it.
+`pc_counts` defaults to `[]`, which selects an adaptive grid: every count 0–10, every 10 through 100, every 50 through 500, and every 100 above 500. Above 500, the adaptive grid rounds the permitted maximum down to the nearest 100 and stops 100 PCs earlier, with a lower limit of 500. For example, a permitted maximum of 5219 stops at 5100. If the permitted maximum is 500 or less, the adaptive grid includes it. If the PC matrix contains `n` PCs, an explicit strictly increasing, unique list can include non-negative counts no greater than `n-1`.
 
 `pc_counts_per_job` defaults to `10`. It controls how many selected PC-count settings are evaluated by each analysis job; it does not change the number of PCA columns available to a model. The workflow validates the PC header, partitions the selected grid into jobs of at most this size, and merges their intermediate outputs before publishing the final analysis files.
 

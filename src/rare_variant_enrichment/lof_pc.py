@@ -510,12 +510,18 @@ def build_pc_grid(requested: Sequence[int], available: int) -> list[int]:
             raise ValueError("PC counts must be strictly increasing and unique")
         return values
 
-    values = list(range(0, min(maximum_pc_count, 10) + 1))
-    values.extend(range(20, min(maximum_pc_count, 100) + 1, 10))
-    values.extend(range(150, min(maximum_pc_count, 500) + 1, 50))
-    values.extend(range(600, maximum_pc_count + 1, 100))
-    if not values or values[-1] != maximum_pc_count:
-        values.append(maximum_pc_count)
+    adaptive_maximum_pc_count = maximum_pc_count
+    if maximum_pc_count > 500:
+        adaptive_maximum_pc_count = max(
+            500, (maximum_pc_count // 100) * 100 - 100
+        )
+
+    values = list(range(0, min(adaptive_maximum_pc_count, 10) + 1))
+    values.extend(range(20, min(adaptive_maximum_pc_count, 100) + 1, 10))
+    values.extend(range(150, min(adaptive_maximum_pc_count, 500) + 1, 50))
+    values.extend(range(600, adaptive_maximum_pc_count + 1, 100))
+    if not values or values[-1] != adaptive_maximum_pc_count:
+        values.append(adaptive_maximum_pc_count)
     return values
 
 

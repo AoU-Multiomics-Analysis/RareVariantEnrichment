@@ -127,8 +127,6 @@ def test_prepare_protein_coding_genes_rejects_gtf_without_coding_genes(tmp_path:
                 *range(0, 11),
                 *range(20, 101, 10),
                 *range(150, 501, 50),
-                600,
-                602,
             ],
         ),
     ],
@@ -137,6 +135,12 @@ def test_adaptive_pc_grid_spans_all_required_intervals(
     available: int, expected: list[int]
 ):
     assert lof_pc_module().build_pc_grid([], available) == expected
+
+
+def test_adaptive_pc_grid_stops_one_hundred_below_rounded_maximum():
+    grid = lof_pc_module().build_pc_grid([], 5220)
+
+    assert grid[-1] == 5100
 
 
 @pytest.mark.parametrize(
