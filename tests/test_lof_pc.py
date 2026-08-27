@@ -9,6 +9,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from rare_variant_enrichment.artifacts import file_artifact
+from rare_variant_enrichment.carrier_definitions import CARRIER_DEFINITION_HEADER
+
 
 def lof_pc_module():
     return importlib.import_module("rare_variant_enrichment.lof_pc")
@@ -346,6 +349,106 @@ def test_read_lof_carriers_rejects_unknown_boolean(tmp_path: Path):
 
     with pytest.raises(ValueError, match="true/false/1/0/yes/no"):
         lof_pc_module().read_lof_carriers(carriers)
+
+
+def _write_generic_carrier_fixture(
+    tmp_path: Path,
+    definitions: list[str],
+    rows: list[tuple[str, str, str, str, int, str]],
+) -> tuple[Path, Path]:
+    table = tmp_path / "carrier_definitions.tsv.gz"
+    with gzip.open(table, "wt", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(CARRIER_DEFINITION_HEADER)
+        writer.writerows(rows)
+    counts = {}
+    for definition in definitions:
+        definition_rows = [row for row in rows if row[3] == definition]
+        variant_ids = {
+            variant_id
+            for row in definition_rows
+            for variant_id in row[5].split(",")
+        }
+        matched_rows = sum(row[4] for row in definition_rows)
+        counts[definition] = {
+            "matched_audit_rows": matched_rows,
+            "distinct_variants": len(variant_ids),
+            "distinct_sample_gene_pairs": len(definition_rows),
+            "output_rows": len(definition_rows),
+        }
+    manifest = tmp_path / "carrier_definitions.qc.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema": "aou.carrier-definitions-manifest.v1",
+                "schema_version": 1,
+                "definition_order": definitions,
+                "definitions": [
+                    {"name": definition, "variant_classes": ["missense"]}
+                    for definition in definitions
+                ],
+                "definition_counts": counts,
+                "output_artifact": file_artifact(
+                    table,
+                    "carrier_definitions.tsv.gz",
+                    CARRIER_DEFINITION_HEADER,
+                    len(rows),
+                ),
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return table, manifest
+
+
+def test_read_generic_carriers_keeps_declared_zero_definition(tmp_path: Path):
+    table, manifest = _write_generic_carrier_fixture(
+        tmp_path,
+        ["lof_hc", "missense", "splice_any"],
+        [
+            ("S1", "ENSG1", "G1", "lof_hc", 1, "chr1:100:A:C"),
+            ("S2", "ENSG2", "G2", "missense", 1, "chr1:200:G:T"),
+        ],
+    )
+
+    carriers = lof_pc_module().read_generic_carriers(table, manifest)
+
+    assert carriers.definitions == ("lof_hc", "missense", "splice_any")
+    assert carriers.pairs_by_definition == {
+        "lof_hc": {("S1", "ENSG1")},
+        "missense": {("S2", "ENSG2")},
+        "splice_any": set(),
+    }
+
+
+def test_read_generic_carriers_rejects_table_digest_mismatch(tmp_path: Path):
+    table, manifest = _write_generic_carrier_fixture(
+        tmp_path,
+        ["missense"],
+        [("S1", "ENSG1", "G1", "missense", 1, "chr1:100:A:C")],
+    )
+    table.write_bytes(table.read_bytes() + b"x")
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        lof_pc_module().read_generic_carriers(table, manifest)
+
+
+def test_read_generic_carriers_uses_definition_order_not_json_map_order(
+    tmp_path: Path,
+):
+    table, manifest = _write_generic_carrier_fixture(
+        tmp_path,
+        ["splice_region", "splice_any"],
+        [
+            ("S1", "ENSG1", "G1", "splice_region", 1, "chr1:100:A:C"),
+            ("S1", "ENSG1", "G1", "splice_any", 1, "chr1:100:A:C"),
+        ],
+    )
+
+    carriers = lof_pc_module().read_generic_carriers(table, manifest)
+
+    assert carriers.definitions == ("splice_region", "splice_any")
 
 
 def test_residualize_expression_uses_intercept_selected_pcs_and_population_sd():
@@ -712,6 +815,106 @@ def _run_analysis(
         additional_covariates_path=additional_covariates_path,
     )
     return outputs
+
+
+def _run_generic_analysis(
+    tmp_path: Path,
+    inputs: dict[str, Path],
+    carrier_table: Path,
+    carrier_manifest: Path,
+    *,
+    thresholds: list[float],
+    pc_counts: list[int],
+) -> dict[str, Path]:
+    outputs = {
+        "results": tmp_path / "generic-results.tsv",
+        "summary": tmp_path / "generic-summary.json",
+        "gene_qc": tmp_path / "generic-gene-pc-qc.tsv.gz",
+        "analysis_qc": tmp_path / "generic-analysis-qc.json",
+    }
+    lof_pc_module().calculate_carrier_pc_enrichment(
+        inputs["phenotype"],
+        carrier_table,
+        carrier_manifest,
+        inputs["pcs"],
+        inputs["genes"],
+        thresholds,
+        pc_counts,
+        outputs["results"],
+        outputs["summary"],
+        outputs["gene_qc"],
+        outputs["analysis_qc"],
+    )
+    return outputs
+
+
+def test_generic_pc_enrichment_emits_dynamic_fisher_cells_with_one_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    inputs = _write_analysis_fixture(tmp_path)
+    table, manifest = _write_generic_carrier_fixture(
+        tmp_path,
+        ["lof_hc", "missense", "splice_any", "zero_definition"],
+        [
+            ("S1", "ENSG1", "G1", "lof_hc", 1, "chr1:100:A:C"),
+            ("S2", "ENSG2", "G2", "lof_hc", 1, "chr1:110:A:G"),
+            ("S3", "ENSG1", "G1", "missense", 1, "chr1:120:C:T"),
+            ("S4", "ENSG1", "G1", "missense", 1, "chr1:130:G:A"),
+            ("S5", "ENSG2", "G2", "missense", 1, "chr1:140:T:C"),
+            ("S1", "ENSG2", "G2", "splice_any", 1, "chr1:150:A:T"),
+        ],
+    )
+    module = lof_pc_module()
+    original_prepare = module.prepare_complete_data_projection
+    calls = 0
+
+    def count_prepare(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(module, "prepare_complete_data_projection", count_prepare)
+
+    outputs = _run_generic_analysis(
+        tmp_path,
+        inputs,
+        table,
+        manifest,
+        thresholds=[-0.8],
+        pc_counts=[0],
+    )
+
+    rows = list(csv.DictReader(outputs["results"].open(), delimiter="\t"))
+    assert [row["carrier_definition"] for row in rows] == [
+        "lof_hc",
+        "missense",
+        "splice_any",
+        "zero_definition",
+    ]
+    assert {
+        row["carrier_definition"]: tuple(
+            int(row[column]) for column in ("n11", "n10", "n01", "n00")
+        )
+        for row in rows
+    } == {
+        "lof_hc": (1, 1, 3, 7),
+        "missense": (1, 2, 3, 6),
+        "splice_any": (0, 1, 4, 7),
+        "zero_definition": (0, 0, 4, 8),
+    }
+    assert calls == 1
+    assert json.loads(outputs["summary"].read_text())["carrier_definitions"] == [
+        "lof_hc",
+        "missense",
+        "splice_any",
+        "zero_definition",
+    ]
+    analysis_qc = json.loads(outputs["analysis_qc"].read_text())
+    assert set(analysis_qc) >= {
+        "carrier_definitions_manifest",
+        "pre_join_carrier_pair_counts",
+        "per_pc",
+    }
 
 
 def test_lof_pc_enrichment_accepts_susie_ids_and_collapses_duplicate_features(

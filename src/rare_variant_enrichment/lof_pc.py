@@ -1,6 +1,7 @@
 import csv
 from dataclasses import dataclass
 import gzip
+import hashlib
 import json
 import logging
 import math
@@ -12,6 +13,7 @@ from typing import Mapping, Sequence
 import numpy as np
 
 from rare_variant_enrichment import __version__
+from rare_variant_enrichment.carrier_definitions import CARRIER_DEFINITION_HEADER
 from rare_variant_enrichment.io import open_text, write_json
 from rare_variant_enrichment.phenotypes import (
     _parse_phenotype_value,
@@ -74,6 +76,8 @@ GENE_PC_QC_HEADER = (
 MOLECULAR_ENSEMBL_ID_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])(ENSG[0-9]+)(?:\.[0-9]+)?"
 )
+GENERIC_ENSEMBL_ID_PATTERN = re.compile(r"(ENSG[0-9]+)(?:\.[0-9]+)?\Z")
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 PROGRESS_INTERVAL_GENES = 500
 LOGGER = logging.getLogger(__name__)
 
@@ -104,9 +108,10 @@ class AdditionalCovariates:
 
 
 @dataclass(frozen=True)
-class LofCarriers:
+class CarrierSets:
+    definitions: tuple[str, ...]
     pairs_by_definition: dict[str, set[tuple[str, str]]]
-    qc: dict[str, int]
+    qc: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -543,7 +548,7 @@ def build_pc_chunks(
     ]
 
 
-def read_lof_carriers(path: Path) -> LofCarriers:
+def read_lof_carriers(path: Path) -> CarrierSets:
     pairs = {definition: set() for definition in CARRIER_DEFINITIONS}
     input_rows = 0
     truthy_rows = 0
@@ -593,7 +598,8 @@ def read_lof_carriers(path: Path) -> LofCarriers:
             elif "LC" in classes:
                 pairs["HC_or_LC"].add(pair)
 
-    return LofCarriers(
+    return CarrierSets(
+        CARRIER_DEFINITIONS,
         pairs,
         {
             "input_row_count": input_rows,
@@ -603,6 +609,140 @@ def read_lof_carriers(path: Path) -> LofCarriers:
             "unique_hc_pair_count": len(pairs["HC"]),
         },
     )
+
+
+def read_generic_carriers(table_path: Path, manifest_path: Path) -> CarrierSets:
+    """Read a materialized generic carrier table bound to its manifest."""
+    manifest = _read_json_object(manifest_path, "carrier-definition manifest")
+    if manifest.get("schema") != "aou.carrier-definitions-manifest.v1":
+        raise ValueError("Carrier-definition manifest has an unsupported schema")
+    definitions = tuple(_read_ordered_strings(manifest, "definition_order"))
+    raw_definitions = manifest.get("definitions")
+    if not isinstance(raw_definitions, list) or [
+        item.get("name") if isinstance(item, dict) else None
+        for item in raw_definitions
+    ] != list(definitions):
+        raise ValueError("Carrier-definition manifest definitions do not match definition_order")
+
+    output_artifact = manifest.get("output_artifact")
+    required_artifact_keys = {
+        "logical_name", "header", "row_count", "size_bytes", "sha256"
+    }
+    if not isinstance(output_artifact, dict) or set(output_artifact) != required_artifact_keys:
+        raise ValueError("Carrier-definition manifest output_artifact is malformed")
+    if output_artifact.get("logical_name") != "carrier_definitions.tsv.gz":
+        raise ValueError("Carrier-definition manifest output logical name is invalid")
+    if output_artifact.get("header") != list(CARRIER_DEFINITION_HEADER):
+        raise ValueError("Carrier-definition manifest output header is invalid")
+    expected_digest = output_artifact.get("sha256")
+    if not isinstance(expected_digest, str) or SHA256_PATTERN.fullmatch(expected_digest) is None:
+        raise ValueError("Carrier-definition manifest output SHA-256 is invalid")
+    actual_digest = _file_sha256(table_path)
+    if actual_digest != expected_digest:
+        raise ValueError("Carrier-definition table SHA-256 does not match its manifest")
+    expected_size = output_artifact.get("size_bytes")
+    expected_rows = output_artifact.get("row_count")
+    for label, value in (("size_bytes", expected_size), ("row_count", expected_rows)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"Carrier-definition manifest output {label} is invalid")
+    if table_path.stat().st_size != expected_size:
+        raise ValueError("Carrier-definition table byte size does not match its manifest")
+
+    pairs = {definition: set() for definition in definitions}
+    definition_variant_ids = {definition: set() for definition in definitions}
+    matched_rows = {definition: 0 for definition in definitions}
+    row_count = 0
+    with open_text(table_path) as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        if tuple(reader.fieldnames or ()) != CARRIER_DEFINITION_HEADER:
+            raise ValueError("Carrier-definition table has an invalid header")
+        for line_number, row in enumerate(reader, start=2):
+            if None in row or any(value is None for value in row.values()):
+                raise ValueError(
+                    f"Carrier-definition table line {line_number} is malformed"
+                )
+            sample_id = normalize_sample_id(
+                row["sample_id"], f"Carrier-definition table line {line_number}"
+            )
+            raw_gene_id = row["gene_id"].strip()
+            gene_match = GENERIC_ENSEMBL_ID_PATTERN.fullmatch(raw_gene_id)
+            if gene_match is None:
+                raise ValueError(
+                    f"Carrier-definition table line {line_number} has an invalid gene ID"
+                )
+            gene_id = gene_match.group(1)
+            definition = row["carrier_definition"]
+            if definition not in pairs:
+                raise ValueError(
+                    f"Carrier-definition table line {line_number} has an undeclared definition"
+                )
+            try:
+                n_variants = int(row["n_variants"])
+            except ValueError as error:
+                raise ValueError(
+                    f"Carrier-definition table line {line_number} has invalid n_variants"
+                ) from error
+            if n_variants < 1 or str(n_variants) != row["n_variants"]:
+                raise ValueError(
+                    f"Carrier-definition table line {line_number} has invalid n_variants"
+                )
+            variant_ids = row["variant_ids"].split(",")
+            if (
+                not variant_ids
+                or any(not value for value in variant_ids)
+                or len(variant_ids) != len(set(variant_ids))
+                or len(variant_ids) != n_variants
+            ):
+                raise ValueError(
+                    f"Carrier-definition table line {line_number} has invalid variant_ids"
+                )
+            pair = (sample_id, gene_id)
+            if pair in pairs[definition]:
+                raise ValueError(
+                    "Carrier-definition table has a duplicate sample-gene-definition row"
+                )
+            pairs[definition].add(pair)
+            definition_variant_ids[definition].update(variant_ids)
+            matched_rows[definition] += n_variants
+            row_count += 1
+
+    if row_count != expected_rows:
+        raise ValueError("Carrier-definition table row count does not match its manifest")
+    raw_counts = manifest.get("definition_counts")
+    if not isinstance(raw_counts, dict) or set(raw_counts) != set(definitions):
+        raise ValueError("Carrier-definition manifest definition_counts are malformed")
+    for definition in definitions:
+        expected_counts = {
+            "matched_audit_rows": matched_rows[definition],
+            "distinct_variants": len(definition_variant_ids[definition]),
+            "distinct_sample_gene_pairs": len(pairs[definition]),
+            "output_rows": len(pairs[definition]),
+        }
+        if raw_counts.get(definition) != expected_counts:
+            raise ValueError(
+                f"Carrier-definition manifest counts do not match table for {definition}"
+            )
+
+    return CarrierSets(
+        definitions=definitions,
+        pairs_by_definition=pairs,
+        qc={
+            "manifest": manifest,
+            "manifest_artifact": {
+                "logical_name": "carrier_definitions.qc.json",
+                "size_bytes": manifest_path.stat().st_size,
+                "sha256": _file_sha256(manifest_path),
+            },
+        },
+    )
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _parse_truth_value(value: str, line_number: int) -> bool:
@@ -739,6 +879,80 @@ def calculate_lof_pc_enrichment(
     pc_grid_mode: str | None = None,
     additional_covariates_path: Path | None = None,
 ) -> None:
+    carriers = read_lof_carriers(lof_carriers_path)
+    _calculate_pc_enrichment(
+        phenotype_bed,
+        carriers,
+        {"lof_carriers": str(lof_carriers_path)},
+        principal_components_path,
+        protein_coding_genes_path,
+        negative_z_thresholds,
+        requested_pc_counts,
+        results_output,
+        summary_output,
+        gene_pc_qc_output,
+        analysis_qc_output,
+        pc_grid_mode=pc_grid_mode,
+        additional_covariates_path=additional_covariates_path,
+        legacy_lof=True,
+    )
+
+
+def calculate_carrier_pc_enrichment(
+    phenotype_bed: Path,
+    carrier_table_path: Path,
+    carrier_manifest_path: Path,
+    principal_components_path: Path,
+    protein_coding_genes_path: Path,
+    negative_z_thresholds: Sequence[float],
+    requested_pc_counts: Sequence[int],
+    results_output: Path,
+    summary_output: Path,
+    gene_pc_qc_output: Path,
+    analysis_qc_output: Path,
+    *,
+    pc_grid_mode: str | None = None,
+    additional_covariates_path: Path | None = None,
+) -> None:
+    carriers = read_generic_carriers(carrier_table_path, carrier_manifest_path)
+    _calculate_pc_enrichment(
+        phenotype_bed,
+        carriers,
+        {
+            "carrier_definitions": str(carrier_table_path),
+            "carrier_definitions_manifest": str(carrier_manifest_path),
+        },
+        principal_components_path,
+        protein_coding_genes_path,
+        negative_z_thresholds,
+        requested_pc_counts,
+        results_output,
+        summary_output,
+        gene_pc_qc_output,
+        analysis_qc_output,
+        pc_grid_mode=pc_grid_mode,
+        additional_covariates_path=additional_covariates_path,
+        legacy_lof=False,
+    )
+
+
+def _calculate_pc_enrichment(
+    phenotype_bed: Path,
+    carriers: CarrierSets,
+    carrier_source: Mapping[str, str],
+    principal_components_path: Path,
+    protein_coding_genes_path: Path,
+    negative_z_thresholds: Sequence[float],
+    requested_pc_counts: Sequence[int],
+    results_output: Path,
+    summary_output: Path,
+    gene_pc_qc_output: Path,
+    analysis_qc_output: Path,
+    *,
+    pc_grid_mode: str | None,
+    additional_covariates_path: Path | None,
+    legacy_lof: bool,
+) -> None:
     thresholds = validate_negative_z_thresholds(negative_z_thresholds)
     principal_components = read_principal_components(principal_components_path)
     additional_covariates = (
@@ -755,10 +969,11 @@ def calculate_lof_pc_enrichment(
             raise ValueError("pc_grid_mode must be adaptive or explicit")
         resolved_pc_grid_mode = pc_grid_mode
     coding_genes = _read_protein_coding_genes(protein_coding_genes_path)
-    carriers = read_lof_carriers(lof_carriers_path)
     LOGGER.info(
-        "Starting LoF/PC enrichment: thresholds=%s pc_counts=%s coding_genes=%d "
-        "additional_covariates=%d",
+        "Starting %s: definitions=%d thresholds=%s "
+        "pc_counts=%s coding_genes=%d additional_covariates=%d",
+        "LoF/PC enrichment" if legacy_lof else "generic carrier/PC enrichment",
+        len(carriers.definitions),
         thresholds,
         pc_counts,
         len(coding_genes),
@@ -780,7 +995,7 @@ def calculate_lof_pc_enrichment(
     per_pc = {
         str(pc_count): {
             "carrier_observations": {
-                definition: 0 for definition in CARRIER_DEFINITIONS
+                definition: 0 for definition in carriers.definitions
             },
             "eligible_gene_count": 0,
             "exclusion_counts": {reason: 0 for reason in EXCLUSION_REASONS},
@@ -794,7 +1009,7 @@ def calculate_lof_pc_enrichment(
     }
     outlier_carriers = {
         pc_count: {
-            threshold: {definition: 0 for definition in CARRIER_DEFINITIONS}
+            threshold: {definition: 0 for definition in carriers.definitions}
             for threshold in thresholds
         }
         for pc_count in pc_counts
@@ -940,7 +1155,7 @@ def calculate_lof_pc_enrichment(
             pc_qc["total_observations"] += fit.usable_sample_count
             finite = np.isfinite(fit.z_scores)
             carrier_masks: dict[str, np.ndarray] = {}
-            for definition in CARRIER_DEFINITIONS:
+            for definition in carriers.definitions:
                 mask = np.asarray(
                     [
                         finite[index]
@@ -959,7 +1174,7 @@ def calculate_lof_pc_enrichment(
                 outlier_observations[pc_count][threshold] += int(
                     np.count_nonzero(outlier_mask)
                 )
-                for definition in CARRIER_DEFINITIONS:
+                for definition in carriers.definitions:
                     outlier_carriers[pc_count][threshold][definition] += int(
                         np.count_nonzero(outlier_mask & carrier_masks[definition])
                     )
@@ -1112,7 +1327,12 @@ def calculate_lof_pc_enrichment(
                 )
 
     rows = _build_result_rows(
-        pc_counts, thresholds, per_pc, outlier_observations, outlier_carriers
+        pc_counts,
+        thresholds,
+        carriers.definitions,
+        per_pc,
+        outlier_observations,
+        outlier_carriers,
     )
     _write_result_rows(results_output, rows)
     write_json(
@@ -1145,9 +1365,13 @@ def calculate_lof_pc_enrichment(
             "shared_bed_pc_covariate_sample_count": len(shared_samples),
             "pre_join_carrier_pair_counts": {
                 definition: len(carriers.pairs_by_definition[definition])
-                for definition in CARRIER_DEFINITIONS
+                for definition in carriers.definitions
             },
-            "lof_carrier_table": carriers.qc,
+            **(
+                {"lof_carrier_table": carriers.qc}
+                if legacy_lof
+                else {"carrier_definitions_manifest": carriers.qc}
+            ),
             "per_pc": per_pc,
         },
     )
@@ -1155,7 +1379,7 @@ def calculate_lof_pc_enrichment(
         summary_output,
         {
             "available_pc_count": principal_components.available_pc_count,
-            "carrier_definitions": list(CARRIER_DEFINITIONS),
+            "carrier_definitions": list(carriers.definitions),
             "emitted_result_rows": len(rows),
             "fdr_scope": "global_across_all_emitted_rows",
             "negative_z_thresholds": thresholds,
@@ -1163,7 +1387,7 @@ def calculate_lof_pc_enrichment(
             "pc_grid_mode": resolved_pc_grid_mode,
             "provenance": {
                 "input_files": {
-                    "lof_carriers": str(lof_carriers_path),
+                    **carrier_source,
                     "phenotype_bed": str(phenotype_bed),
                     "principal_components": str(principal_components_path),
                     "protein_coding_genes": str(protein_coding_genes_path),
@@ -1196,7 +1420,8 @@ def calculate_lof_pc_enrichment(
         },
     )
     LOGGER.info(
-        "Wrote LoF/PC enrichment outputs: results=%s summary=%s gene_pc_qc=%s analysis_qc=%s",
+        "Wrote %s outputs: results=%s summary=%s gene_pc_qc=%s analysis_qc=%s",
+        "LoF/PC enrichment" if legacy_lof else "generic carrier/PC enrichment",
         results_output,
         summary_output,
         gene_pc_qc_output,
@@ -1237,6 +1462,7 @@ def _read_protein_coding_genes(path: Path) -> set[str]:
 def _build_result_rows(
     pc_counts: Sequence[int],
     thresholds: Sequence[float],
+    carrier_definitions: Sequence[str],
     per_pc: Mapping[str, Mapping[str, object]],
     outlier_observations: Mapping[int, Mapping[float, int]],
     outlier_carriers: Mapping[int, Mapping[float, Mapping[str, int]]],
@@ -1249,7 +1475,7 @@ def _build_result_rows(
         carrier_counts = pc_qc["carrier_observations"]
         for threshold in thresholds:
             outliers = outlier_observations[pc_count][threshold]
-            for definition in CARRIER_DEFINITIONS:
+            for definition in carrier_definitions:
                 carriers = int(carrier_counts[definition])
                 n11 = outlier_carriers[pc_count][threshold][definition]
                 n10 = carriers - n11

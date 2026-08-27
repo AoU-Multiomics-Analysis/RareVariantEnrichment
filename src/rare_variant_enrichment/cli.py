@@ -13,6 +13,7 @@ from rare_variant_enrichment.carrier_extraction import (
 from rare_variant_enrichment.io import read_nonempty_lines, write_json
 from rare_variant_enrichment.lof_pc import (
     build_pc_chunks,
+    calculate_carrier_pc_enrichment,
     calculate_lof_pc_enrichment,
     merge_lof_pc_enrichment,
     prepare_protein_coding_genes,
@@ -37,6 +38,7 @@ COMMANDS = (
     "calculate",
     "prepare-protein-coding-genes",
     "lof-pc-enrichment",
+    "carrier-pc-enrichment",
     "merge-lof-pc-enrichment",
     "analyze-lof-pc-enrichment",
     "pc-chunks",
@@ -69,6 +71,22 @@ def build_parser() -> argparse.ArgumentParser:
     lof_pc_parser.add_argument("--gene-pc-qc-output", required=True, type=Path)
     lof_pc_parser.add_argument("--analysis-qc-output", required=True, type=Path)
     lof_pc_parser.add_argument("--pc-grid-mode", choices=("adaptive", "explicit"))
+    carrier_pc_parser = subparsers.add_parser("carrier-pc-enrichment")
+    carrier_pc_parser.add_argument("--phenotype-bed", required=True, type=Path)
+    carrier_pc_parser.add_argument("--carrier-table", required=True, type=Path)
+    carrier_pc_parser.add_argument("--carrier-manifest", required=True, type=Path)
+    carrier_pc_parser.add_argument("--principal-components", required=True, type=Path)
+    carrier_pc_parser.add_argument("--additional-covariates", type=Path)
+    carrier_pc_parser.add_argument("--protein-coding-genes", required=True, type=Path)
+    carrier_pc_parser.add_argument(
+        "--negative-z-thresholds", required=True, type=parse_csv_floats
+    )
+    carrier_pc_parser.add_argument("--pc-counts", required=True, type=parse_csv_ints)
+    carrier_pc_parser.add_argument("--results-output", required=True, type=Path)
+    carrier_pc_parser.add_argument("--summary-output", required=True, type=Path)
+    carrier_pc_parser.add_argument("--gene-pc-qc-output", required=True, type=Path)
+    carrier_pc_parser.add_argument("--analysis-qc-output", required=True, type=Path)
+    carrier_pc_parser.add_argument("--pc-grid-mode", choices=("adaptive", "explicit"))
     merge_lof_pc_parser = subparsers.add_parser("merge-lof-pc-enrichment")
     merge_lof_pc_parser.add_argument("--results-input", action="append", required=True, type=Path)
     merge_lof_pc_parser.add_argument("--summary-input", action="append", required=True, type=Path)
@@ -247,6 +265,28 @@ def main() -> int:
         if args.additional_covariates is not None:
             calculate_options["additional_covariates_path"] = args.additional_covariates
         calculate_lof_pc_enrichment(*calculate_arguments, **calculate_options)
+    elif args.command == "carrier-pc-enrichment":
+        calculate_arguments = (
+            args.phenotype_bed,
+            args.carrier_table,
+            args.carrier_manifest,
+            args.principal_components,
+            args.protein_coding_genes,
+            args.negative_z_thresholds,
+            args.pc_counts,
+            args.results_output,
+            args.summary_output,
+            args.gene_pc_qc_output,
+            args.analysis_qc_output,
+        )
+        calculate_options = {}
+        if args.pc_grid_mode is not None:
+            calculate_options["pc_grid_mode"] = args.pc_grid_mode
+        if args.additional_covariates is not None:
+            calculate_options["additional_covariates_path"] = (
+                args.additional_covariates
+            )
+        calculate_carrier_pc_enrichment(*calculate_arguments, **calculate_options)
     elif args.command == "pc-chunks":
         available_pc_count = read_principal_component_header(args.principal_components)
         write_json(

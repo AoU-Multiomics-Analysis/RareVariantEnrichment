@@ -31,6 +31,7 @@ def test_cli_lists_workflow_subcommands():
         "extract-gene-carriers",
         "gather-gene-carriers",
         "build-carrier-definitions",
+        "carrier-pc-enrichment",
     ):
         assert command in result.stdout
 
@@ -215,6 +216,69 @@ def test_lof_pc_enrichment_cli_dispatches_exact_contract(monkeypatch):
         Path("gene-pc-qc.tsv.gz"),
         Path("analysis-qc.json"),
     ]
+
+
+def test_carrier_pc_enrichment_cli_dispatches_exact_contract(monkeypatch):
+    received: list[object] = []
+    keywords: dict[str, object] = {}
+
+    def fake_calculate(*arguments: object, **keyword_arguments: object) -> None:
+        received.extend(arguments)
+        keywords.update(keyword_arguments)
+
+    monkeypatch.setattr(cli, "calculate_carrier_pc_enrichment", fake_calculate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "carrier-pc-enrichment",
+            "--phenotype-bed",
+            "phenotypes.bed.gz",
+            "--carrier-table",
+            "carrier_definitions.tsv.gz",
+            "--carrier-manifest",
+            "carrier_definitions.qc.json",
+            "--principal-components",
+            "pcs.tsv",
+            "--additional-covariates",
+            "covariates.tsv",
+            "--protein-coding-genes",
+            "genes.tsv",
+            "--negative-z-thresholds=-2,-3",
+            "--pc-counts",
+            "0,10",
+            "--pc-grid-mode",
+            "adaptive",
+            "--results-output",
+            "results.tsv",
+            "--summary-output",
+            "summary.json",
+            "--gene-pc-qc-output",
+            "gene-pc-qc.tsv.gz",
+            "--analysis-qc-output",
+            "analysis-qc.json",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received == [
+        Path("phenotypes.bed.gz"),
+        Path("carrier_definitions.tsv.gz"),
+        Path("carrier_definitions.qc.json"),
+        Path("pcs.tsv"),
+        Path("genes.tsv"),
+        [-2.0, -3.0],
+        [0, 10],
+        Path("results.tsv"),
+        Path("summary.json"),
+        Path("gene-pc-qc.tsv.gz"),
+        Path("analysis-qc.json"),
+    ]
+    assert keywords == {
+        "pc_grid_mode": "adaptive",
+        "additional_covariates_path": Path("covariates.tsv"),
+    }
 
 
 def test_lof_pc_enrichment_cli_dispatches_optional_additional_covariates(
