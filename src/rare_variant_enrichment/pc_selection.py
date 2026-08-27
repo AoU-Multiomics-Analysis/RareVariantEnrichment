@@ -206,7 +206,129 @@ def analyze_lof_pc_enrichment(
     write_lof_pc_svg(plot_output, rows, median_points, selection)
 
 
+def analyze_carrier_pc_enrichment(
+    results_input: Path,
+    selection_output: Path,
+    plot_output: Path,
+    *,
+    carrier_definitions: Sequence[str],
+    selection_z_thresholds: Sequence[float] = DEFAULT_SELECTION_Z_THRESHOLDS,
+    plateau_fraction: float = DEFAULT_PLATEAU_FRACTION,
+) -> None:
+    """Select a PC count across any ordered set of carrier definitions."""
+    rows = read_enrichment_rows(results_input)
+    definitions = _validate_definitions(carrier_definitions)
+    thresholds = _validate_selection_thresholds(selection_z_thresholds)
+    observed_definitions = {
+        str(row.get("carrier_definition", "")) for row in rows
+    }
+    missing = [value for value in definitions if value not in observed_definitions]
+    if missing:
+        raise ValueError(
+            "Requested carrier definitions are absent from enrichment results: "
+            + ", ".join(missing)
+        )
+
+    excluded: dict[str, str] = {}
+    median_points: list[dict[str, object]] = []
+    estimable: list[str] = []
+    for definition in definitions:
+        definition_rows = [
+            row
+            for row in rows
+            if row.get("carrier_definition") == definition
+            and _row_threshold(row) in thresholds
+        ]
+        reason = _definition_exclusion_reason(definition_rows)
+        if reason is not None:
+            excluded[definition] = reason
+            continue
+        try:
+            definition_points = median_log_or_by_pc(
+                definition_rows, thresholds, [definition]
+            )
+        except ValueError:
+            definition_points = []
+        if not definition_points:
+            excluded[definition] = "incomplete_finite_curve"
+            continue
+        estimable.append(definition)
+        median_points.extend(definition_points)
+
+    if estimable:
+        selection = select_minimum_sufficient_pc_count(
+            median_points,
+            plateau_fraction,
+            estimable,
+        )
+    else:
+        selection = {
+            "carrier_definitions": [],
+            "plateau_fraction": plateau_fraction,
+            "max_median_log_odds_ratio_by_definition": {},
+            "plateau_log_odds_ratio_threshold_by_definition": {},
+            "minimum_pc_count_within_plateau_by_definition": {},
+            "selected_pc_count": None,
+        }
+    selection["carrier_definitions"] = list(definitions)
+    selection["estimable_carrier_definitions"] = estimable
+    selection["excluded_definitions"] = excluded
+    selection["included_z_thresholds"] = list(thresholds)
+    observed_thresholds = sorted(
+        {
+            float(row["z_threshold"])
+            for row in rows
+            if row.get("z_threshold") not in (None, "")
+        }
+    )
+    selection["excluded_z_thresholds"] = [
+        value for value in observed_thresholds if value not in thresholds
+    ]
+    payload = {"selection": selection, "median_log_or": median_points}
+    write_json(selection_output, payload)
+    write_carrier_pc_svg(plot_output, rows, median_points, selection)
+
+
+def _row_threshold(row: Mapping[str, object]) -> float | None:
+    try:
+        value = float(row.get("z_threshold", ""))
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _definition_exclusion_reason(
+    rows: Sequence[Mapping[str, object]],
+) -> str | None:
+    if not rows:
+        return "incomplete_finite_curve"
+    totals = [_nonnegative_count(row.get("total_observations")) for row in rows]
+    if all(value == 0 for value in totals):
+        return "zero_observations"
+    carriers = [_nonnegative_count(row.get("carrier_observations")) for row in rows]
+    if all(value == 0 for value in carriers):
+        return "zero_carriers"
+    return None
+
+
+def _nonnegative_count(value: object) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
 def write_lof_pc_svg(
+    path: Path,
+    rows: Sequence[Mapping[str, object]],
+    median_points: Sequence[Mapping[str, object]],
+    selection: Mapping[str, object],
+) -> None:
+    write_carrier_pc_svg(path, rows, median_points, selection)
+
+
+def write_carrier_pc_svg(
     path: Path,
     rows: Sequence[Mapping[str, object]],
     median_points: Sequence[Mapping[str, object]],
@@ -227,22 +349,31 @@ def write_lof_pc_svg(
         if row.get("carrier_definition") in definitions
         and _positive_finite(row.get("odds_ratio"))
     ]
-    if not plot_rows:
-        raise ValueError("No finite positive odds ratios available for the plot")
-    x_values = [int(row["pc_count"]) for row in plot_rows]
+    relevant_rows = [
+        row for row in rows if row.get("carrier_definition") in definitions
+    ]
+    x_values = [int(row["pc_count"]) for row in relevant_rows] or [0]
     y_values = [float(row["odds_ratio"]) for row in plot_rows]
     y_values.extend(math.exp(float(point["median_log_odds_ratio"])) for point in median_points)
+    if not y_values:
+        y_values = [1.0]
     x_min, x_max = min(x_values), max(x_values)
     y_min = max(0.75, min(y_values) / 1.18)
     y_max = max(y_values) * 1.22
-    width, height = 1400, 620
+    height = 620
     margin_left, margin_right, gap = 90, 35, 70
-    panel_width = (width - margin_left - margin_right - gap) / 2
+    panel_width = 602.5
+    width = round(
+        margin_left
+        + margin_right
+        + panel_width * len(definitions)
+        + gap * max(0, len(definitions) - 1)
+    )
     plot_top, plot_bottom = 92, 510
     plot_width, plot_height = panel_width - 10, plot_bottom - plot_top
     svg: list[str] = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}" role="img" aria-label="LoF enrichment across principal components">',
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="Carrier enrichment across principal components">',
         "<style>text{font-family:Arial,Helvetica,sans-serif;fill:#111827} .grid{stroke:#d1d5db;stroke-width:1} .axis{stroke:#6b7280;stroke-width:1} .reference{stroke:#6b7280;stroke-width:1.3;stroke-dasharray:5 4} .median{stroke:#111827;stroke-width:3;fill:none} .threshold{fill:none;stroke-width:2} .selection{stroke:#111827;stroke-width:2;stroke-dasharray:7 4} .definition-selection{stroke:#6b7280;stroke-width:1.5;stroke-dasharray:4 4}</style>",
     ]
     legend_x = 460
@@ -300,7 +431,19 @@ def _svg_panel(
     def sy(value: float) -> float:
         return plot_bottom - (math.log10(value) - log_min) / (log_max - log_min) * plot_height
 
-    output = [f'<text x="{x0:g}" y="70" font-size="16">{html.escape(_definition_label(definition))}</text>']
+    excluded = selection.get("excluded_definitions", {})
+    exclusion_reason = (
+        excluded.get(definition) if isinstance(excluded, Mapping) else None
+    )
+    exclusion_attribute = (
+        f' data-exclusion-reason="{html.escape(str(exclusion_reason))}"'
+        if exclusion_reason is not None
+        else ""
+    )
+    output = [
+        f'<g data-carrier-definition="{html.escape(definition)}"{exclusion_attribute}>',
+        f'<text x="{x0:g}" y="70" font-size="16">{html.escape(_definition_label(definition))}</text>',
+    ]
     for tick in (1, 2, 5, 10, 20, 50, 100, 200):
         if y_min <= tick <= y_max:
             y = sy(tick)
@@ -349,15 +492,26 @@ def _svg_panel(
         )
         output.append(f'<path class="median" data-median-log-or="{html.escape(definition)}" d="{path_data}"/>')
 
-    per_definition = selection["minimum_pc_count_within_plateau_by_definition"]
-    definition_pc = int(per_definition[definition])
-    common_pc = int(selection["selected_pc_count"])
-    x = sx(definition_pc)
-    output.append(f'<line class="definition-selection" data-definition-selection-pc="{definition_pc}" x1="{x:g}" y1="{plot_top:g}" x2="{x:g}" y2="{plot_bottom:g}"/>')
-    output.append(f'<text x="{x + 5:g}" y="{plot_top + 15:g}" font-size="11">plateau K={definition_pc:,}</text>')
-    x = sx(common_pc)
-    output.append(f'<line class="selection" data-selection-pc="{common_pc}" x1="{x:g}" y1="{plot_top:g}" x2="{x:g}" y2="{plot_bottom:g}"/>')
-    output.append(f'<text x="{x + 5:g}" y="{plot_top + 31:g}" font-size="11">selected K={common_pc:,}</text>')
+    per_definition = selection.get(
+        "minimum_pc_count_within_plateau_by_definition", {}
+    )
+    if isinstance(per_definition, Mapping) and definition in per_definition:
+        definition_pc = int(per_definition[definition])
+        x = sx(definition_pc)
+        output.append(f'<line class="definition-selection" data-definition-selection-pc="{definition_pc}" x1="{x:g}" y1="{plot_top:g}" x2="{x:g}" y2="{plot_bottom:g}"/>')
+        output.append(f'<text x="{x + 5:g}" y="{plot_top + 15:g}" font-size="11">plateau K={definition_pc:,}</text>')
+    selected_pc_count = selection.get("selected_pc_count")
+    if selected_pc_count is not None:
+        common_pc = int(selected_pc_count)
+        x = sx(common_pc)
+        output.append(f'<line class="selection" data-selection-pc="{common_pc}" x1="{x:g}" y1="{plot_top:g}" x2="{x:g}" y2="{plot_bottom:g}"/>')
+        output.append(f'<text x="{x + 5:g}" y="{plot_top + 31:g}" font-size="11">selected K={common_pc:,}</text>')
+    if exclusion_reason is not None:
+        output.append(
+            f'<text x="{x0 + plot_width / 2:g}" y="{plot_top + plot_height / 2:g}" '
+            f'text-anchor="middle" font-size="13">{html.escape(str(exclusion_reason))}</text>'
+        )
+    output.append("</g>")
     return output
 
 

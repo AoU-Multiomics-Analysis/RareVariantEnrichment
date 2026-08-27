@@ -1038,8 +1038,11 @@ def _write_merge_shard(
     *,
     pc_counts: list[int],
     p_values: list[float],
+    carrier_definitions: list[str] | None = None,
+    generic: bool = False,
 ) -> dict[str, Path]:
-    carrier_definitions = list(lof_pc_module().CARRIER_DEFINITIONS)
+    if carrier_definitions is None:
+        carrier_definitions = list(lof_pc_module().CARRIER_DEFINITIONS)
     assert len(p_values) == len(carrier_definitions)
     shard_dir = tmp_path / name
     shard_dir.mkdir()
@@ -1092,7 +1095,14 @@ def _write_merge_shard(
         "pc_grid_mode": "explicit",
         "provenance": {
             "input_files": {
-                "lof_carriers": "lof.tsv",
+                **(
+                    {
+                        "carrier_definitions": "carrier_definitions.tsv.gz",
+                        "carrier_definitions_manifest": "carrier_definitions.qc.json",
+                    }
+                    if generic
+                    else {"lof_carriers": "lof.tsv"}
+                ),
                 "phenotype_bed": "input.bed",
                 "principal_components": "pcs.tsv",
                 "protein_coding_genes": "genes.tsv",
@@ -1119,13 +1129,25 @@ def _write_merge_shard(
         "protein_coding_bed_gene_count": 1,
         "protein_coding_gene_count": 1,
         "shared_bed_pc_sample_count": 4,
-        "pre_join_carrier_pair_counts": {"any_lof": 1, "HC": 1, "HC_or_LC": 1},
-        "lof_carrier_table": {"input_row_count": 1},
+        "pre_join_carrier_pair_counts": {
+            definition: 1 for definition in carrier_definitions
+        },
+        **(
+            {
+                "carrier_definitions_manifest": {
+                    "manifest_artifact": {"sha256": "a" * 64}
+                }
+            }
+            if generic
+            else {"lof_carrier_table": {"input_row_count": 1}}
+        ),
         "per_pc": {
             str(pc_count): {
                 "eligible_gene_count": 1,
                 "total_observations": 4,
-                "carrier_observations": {"any_lof": 1, "HC": 1, "HC_or_LC": 1},
+                "carrier_observations": {
+                    definition: 1 for definition in carrier_definitions
+                },
                 "exclusion_counts": {
                     "insufficient_dof": 0,
                     "invalid_or_zero_residual_sd": 0,
@@ -1193,6 +1215,66 @@ def _merge_shards(tmp_path: Path, shards: list[dict[str, Path]]) -> dict[str, Pa
         outputs["analysis_qc"],
     )
     return outputs
+
+
+def _merge_generic_shards(
+    tmp_path: Path, shards: list[dict[str, Path]]
+) -> dict[str, Path]:
+    outputs = {
+        "results": tmp_path / "merged-generic-results.tsv",
+        "summary": tmp_path / "merged-generic-summary.json",
+        "gene_qc": tmp_path / "merged-generic-gene-pc-qc.tsv.gz",
+        "analysis_qc": tmp_path / "merged-generic-analysis-qc.json",
+    }
+    lof_pc_module().merge_carrier_pc_enrichment(
+        [shard["results"] for shard in shards],
+        [shard["summary"] for shard in shards],
+        [shard["gene_qc"] for shard in shards],
+        [shard["analysis_qc"] for shard in shards],
+        outputs["results"],
+        outputs["summary"],
+        outputs["gene_qc"],
+        outputs["analysis_qc"],
+    )
+    return outputs
+
+
+def test_merge_carrier_pc_enrichment_keeps_dynamic_order_and_global_fdr(
+    tmp_path: Path,
+):
+    definitions = ["lof_hc", "missense", "splice_any"]
+    shard_one = _write_merge_shard(
+        tmp_path,
+        "generic-one",
+        pc_counts=[0],
+        p_values=[0.01, 0.20, 0.30],
+        carrier_definitions=definitions,
+        generic=True,
+    )
+    shard_two = _write_merge_shard(
+        tmp_path,
+        "generic-two",
+        pc_counts=[1],
+        p_values=[0.02, 0.50, 0.60],
+        carrier_definitions=definitions,
+        generic=True,
+    )
+
+    outputs = _merge_generic_shards(tmp_path, [shard_one, shard_two])
+
+    rows = _read_merge_result_rows(outputs["results"])
+    assert [row["carrier_definition"] for row in rows] == definitions * 2
+    assert [row["fisher_fdr_bh"] for row in rows] == [
+        "0.06",
+        "0.4000000000000001",
+        "0.44999999999999996",
+        "0.06",
+        "0.6",
+        "0.6",
+    ]
+    assert json.loads(outputs["summary"].read_text())["carrier_definitions"] == (
+        definitions
+    )
 
 
 def test_merge_lof_pc_enrichment_recomputes_global_fdr_and_combines_qc(tmp_path: Path):

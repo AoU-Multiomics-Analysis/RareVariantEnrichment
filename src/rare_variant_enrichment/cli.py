@@ -15,6 +15,7 @@ from rare_variant_enrichment.lof_pc import (
     build_pc_chunks,
     calculate_carrier_pc_enrichment,
     calculate_lof_pc_enrichment,
+    merge_carrier_pc_enrichment,
     merge_lof_pc_enrichment,
     prepare_protein_coding_genes,
     read_principal_component_header,
@@ -22,6 +23,7 @@ from rare_variant_enrichment.lof_pc import (
 from rare_variant_enrichment.pc_selection import (
     DEFAULT_PLATEAU_FRACTION,
     DEFAULT_SELECTION_Z_THRESHOLDS,
+    analyze_carrier_pc_enrichment,
     analyze_lof_pc_enrichment,
 )
 from rare_variant_enrichment.phenotypes import prepare_phenotypes
@@ -40,7 +42,9 @@ COMMANDS = (
     "lof-pc-enrichment",
     "carrier-pc-enrichment",
     "merge-lof-pc-enrichment",
+    "merge-carrier-pc-enrichment",
     "analyze-lof-pc-enrichment",
+    "analyze-carrier-pc-enrichment",
     "pc-chunks",
     "prepare-carrier-inputs",
     "extract-gene-carriers",
@@ -96,6 +100,27 @@ def build_parser() -> argparse.ArgumentParser:
     merge_lof_pc_parser.add_argument("--summary-output", required=True, type=Path)
     merge_lof_pc_parser.add_argument("--gene-pc-qc-output", required=True, type=Path)
     merge_lof_pc_parser.add_argument("--analysis-qc-output", required=True, type=Path)
+    merge_carrier_pc_parser = subparsers.add_parser("merge-carrier-pc-enrichment")
+    merge_carrier_pc_parser.add_argument(
+        "--results-input", action="append", required=True, type=Path
+    )
+    merge_carrier_pc_parser.add_argument(
+        "--summary-input", action="append", required=True, type=Path
+    )
+    merge_carrier_pc_parser.add_argument(
+        "--gene-pc-qc-input", action="append", required=True, type=Path
+    )
+    merge_carrier_pc_parser.add_argument(
+        "--analysis-qc-input", action="append", required=True, type=Path
+    )
+    merge_carrier_pc_parser.add_argument("--results-output", required=True, type=Path)
+    merge_carrier_pc_parser.add_argument("--summary-output", required=True, type=Path)
+    merge_carrier_pc_parser.add_argument(
+        "--gene-pc-qc-output", required=True, type=Path
+    )
+    merge_carrier_pc_parser.add_argument(
+        "--analysis-qc-output", required=True, type=Path
+    )
     analyze_lof_pc_parser = subparsers.add_parser("analyze-lof-pc-enrichment")
     analyze_lof_pc_parser.add_argument("--results-input", required=True, type=Path)
     analyze_lof_pc_parser.add_argument("--selection-output", required=True, type=Path)
@@ -106,6 +131,25 @@ def build_parser() -> argparse.ArgumentParser:
         default=list(DEFAULT_SELECTION_Z_THRESHOLDS),
     )
     analyze_lof_pc_parser.add_argument(
+        "--plateau-fraction", type=float, default=DEFAULT_PLATEAU_FRACTION
+    )
+    analyze_carrier_pc_parser = subparsers.add_parser(
+        "analyze-carrier-pc-enrichment"
+    )
+    analyze_carrier_pc_parser.add_argument("--results-input", required=True, type=Path)
+    analyze_carrier_pc_parser.add_argument(
+        "--selection-output", required=True, type=Path
+    )
+    analyze_carrier_pc_parser.add_argument("--plot-output", required=True, type=Path)
+    analyze_carrier_pc_parser.add_argument(
+        "--carrier-definitions", required=True, type=parse_csv_strings
+    )
+    analyze_carrier_pc_parser.add_argument(
+        "--selection-z-thresholds",
+        type=parse_csv_floats,
+        default=list(DEFAULT_SELECTION_Z_THRESHOLDS),
+    )
+    analyze_carrier_pc_parser.add_argument(
         "--plateau-fraction", type=float, default=DEFAULT_PLATEAU_FRACTION
     )
     pc_chunks_parser = subparsers.add_parser("pc-chunks")
@@ -308,11 +352,31 @@ def main() -> int:
             args.gene_pc_qc_output,
             args.analysis_qc_output,
         )
+    elif args.command == "merge-carrier-pc-enrichment":
+        merge_carrier_pc_enrichment(
+            args.results_input,
+            args.summary_input,
+            args.gene_pc_qc_input,
+            args.analysis_qc_input,
+            args.results_output,
+            args.summary_output,
+            args.gene_pc_qc_output,
+            args.analysis_qc_output,
+        )
     elif args.command == "analyze-lof-pc-enrichment":
         analyze_lof_pc_enrichment(
             args.results_input,
             args.selection_output,
             args.plot_output,
+            selection_z_thresholds=args.selection_z_thresholds,
+            plateau_fraction=args.plateau_fraction,
+        )
+    elif args.command == "analyze-carrier-pc-enrichment":
+        analyze_carrier_pc_enrichment(
+            args.results_input,
+            args.selection_output,
+            args.plot_output,
+            carrier_definitions=args.carrier_definitions,
             selection_z_thresholds=args.selection_z_thresholds,
             plateau_fraction=args.plateau_fraction,
         )

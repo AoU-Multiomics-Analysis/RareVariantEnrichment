@@ -1540,6 +1540,54 @@ def merge_lof_pc_enrichment(
     gene_pc_qc_output: Path,
     analysis_qc_output: Path,
 ) -> None:
+    _merge_pc_enrichment(
+        results_inputs,
+        summary_inputs,
+        gene_pc_qc_inputs,
+        analysis_qc_inputs,
+        results_output,
+        summary_output,
+        gene_pc_qc_output,
+        analysis_qc_output,
+        legacy_lof=True,
+    )
+
+
+def merge_carrier_pc_enrichment(
+    results_inputs: Sequence[Path],
+    summary_inputs: Sequence[Path],
+    gene_pc_qc_inputs: Sequence[Path],
+    analysis_qc_inputs: Sequence[Path],
+    results_output: Path,
+    summary_output: Path,
+    gene_pc_qc_output: Path,
+    analysis_qc_output: Path,
+) -> None:
+    _merge_pc_enrichment(
+        results_inputs,
+        summary_inputs,
+        gene_pc_qc_inputs,
+        analysis_qc_inputs,
+        results_output,
+        summary_output,
+        gene_pc_qc_output,
+        analysis_qc_output,
+        legacy_lof=False,
+    )
+
+
+def _merge_pc_enrichment(
+    results_inputs: Sequence[Path],
+    summary_inputs: Sequence[Path],
+    gene_pc_qc_inputs: Sequence[Path],
+    analysis_qc_inputs: Sequence[Path],
+    results_output: Path,
+    summary_output: Path,
+    gene_pc_qc_output: Path,
+    analysis_qc_output: Path,
+    *,
+    legacy_lof: bool,
+) -> None:
     shard_count = len(results_inputs)
     if shard_count == 0 or any(
         len(inputs) != shard_count
@@ -1560,7 +1608,7 @@ def merge_lof_pc_enrichment(
         "statistical_limitation",
     )
     for summary in summaries:
-        _validate_merge_summary_metadata(summary)
+        _validate_merge_summary_metadata(summary, legacy_lof=legacy_lof)
     for summary in summaries[1:]:
         for key in metadata_keys:
             if summary.get(key) != first_summary.get(key):
@@ -1672,7 +1720,9 @@ def merge_lof_pc_enrichment(
             raise ValueError("Analysis QC per_pc keys do not match the shard summary")
         validated_per_pc_by_shard.append(
             {
-                str(pc_count): _merge_pc_qc(per_pc[str(pc_count)])
+                str(pc_count): _merge_pc_qc(
+                    per_pc[str(pc_count)], carrier_definitions
+                )
                 for pc_count in shard_pc_counts
             }
         )
@@ -1726,10 +1776,12 @@ def _read_json_object(path: Path, description: str) -> dict[str, object]:
     return payload
 
 
-def _validate_merge_summary_metadata(summary: Mapping[str, object]) -> None:
+def _validate_merge_summary_metadata(
+    summary: Mapping[str, object], *, legacy_lof: bool
+) -> None:
     _read_available_pc_count(summary)
     carrier_definitions = _read_ordered_strings(summary, "carrier_definitions")
-    if carrier_definitions != list(CARRIER_DEFINITIONS):
+    if legacy_lof and carrier_definitions != list(CARRIER_DEFINITIONS):
         raise ValueError("Summary carrier_definitions do not match the result schema")
     validate_negative_z_thresholds(_read_ordered_floats(summary, "negative_z_thresholds"))
     _read_emitted_result_rows(summary)
@@ -1751,7 +1803,7 @@ def _validate_merge_summary_metadata(summary: Mapping[str, object]) -> None:
         or residual_sd_ddof < 0
     ):
         raise ValueError("Summary residualization ddof must be a non-negative integer")
-    _validate_provenance(summary.get("provenance"))
+    _validate_provenance(summary.get("provenance"), legacy_lof=legacy_lof)
 
 
 def _read_available_pc_count(summary: Mapping[str, object]) -> int:
@@ -1775,12 +1827,16 @@ def _read_nonempty_summary_string(summary: Mapping[str, object], key: str) -> st
     return value
 
 
-def _validate_provenance(value: object) -> None:
+def _validate_provenance(value: object, *, legacy_lof: bool) -> None:
     if not isinstance(value, dict):
         raise ValueError("Summary provenance must be an object")
     required_sections = {
         "input_files": (
-            "lof_carriers",
+            *(
+                ("lof_carriers",)
+                if legacy_lof
+                else ("carrier_definitions", "carrier_definitions_manifest")
+            ),
             "phenotype_bed",
             "principal_components",
             "protein_coding_genes",
@@ -1979,7 +2035,9 @@ def _parse_gene_pc_qc_count(
     return parsed
 
 
-def _merge_pc_qc(pc_qc: Mapping[str, object]) -> dict[str, object]:
+def _merge_pc_qc(
+    pc_qc: Mapping[str, object], carrier_definitions: Sequence[str]
+) -> dict[str, object]:
     carrier_observations = pc_qc.get("carrier_observations")
     exclusion_counts = pc_qc.get("exclusion_counts")
     if not isinstance(carrier_observations, dict) or not isinstance(exclusion_counts, dict):
@@ -1989,7 +2047,7 @@ def _merge_pc_qc(pc_qc: Mapping[str, object]) -> dict[str, object]:
         "total_observations": _read_qc_count(pc_qc, "total_observations"),
         "carrier_observations": {
             definition: _read_qc_count(carrier_observations, definition)
-            for definition in CARRIER_DEFINITIONS
+            for definition in carrier_definitions
         },
         "exclusion_counts": {
             reason: _read_qc_count(exclusion_counts, reason)

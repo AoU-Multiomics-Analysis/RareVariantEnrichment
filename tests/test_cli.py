@@ -32,6 +32,8 @@ def test_cli_lists_workflow_subcommands():
         "gather-gene-carriers",
         "build-carrier-definitions",
         "carrier-pc-enrichment",
+        "merge-carrier-pc-enrichment",
+        "analyze-carrier-pc-enrichment",
     ):
         assert command in result.stdout
 
@@ -427,6 +429,49 @@ def test_merge_lof_pc_enrichment_cli_dispatches_direct_inputs(monkeypatch):
     ]
 
 
+def test_merge_carrier_pc_enrichment_cli_dispatches_direct_inputs(monkeypatch):
+    received: list[object] = []
+    monkeypatch.setattr(
+        cli, "merge_carrier_pc_enrichment", lambda *args: received.extend(args)
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "merge-carrier-pc-enrichment",
+            "--results-input",
+            "results-0.tsv",
+            "--summary-input",
+            "summary-0.json",
+            "--gene-pc-qc-input",
+            "gene-0.tsv.gz",
+            "--analysis-qc-input",
+            "analysis-0.json",
+            "--results-output",
+            "results.tsv",
+            "--summary-output",
+            "summary.json",
+            "--gene-pc-qc-output",
+            "gene.tsv.gz",
+            "--analysis-qc-output",
+            "analysis.json",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received == [
+        [Path("results-0.tsv")],
+        [Path("summary-0.json")],
+        [Path("gene-0.tsv.gz")],
+        [Path("analysis-0.json")],
+        Path("results.tsv"),
+        Path("summary.json"),
+        Path("gene.tsv.gz"),
+        Path("analysis.json"),
+    ]
+
+
 def test_analyze_lof_pc_enrichment_cli_dispatches_selection_options(monkeypatch):
     received: list[object] = []
 
@@ -456,6 +501,44 @@ def test_analyze_lof_pc_enrichment_cli_dispatches_selection_options(monkeypatch)
     assert received == [
         (Path("results.tsv"), Path("selection.json"), Path("plot.svg")),
         {"selection_z_thresholds": [-3.0, -4.0, -5.0, -6.0], "plateau_fraction": 0.95},
+    ]
+
+
+def test_analyze_carrier_pc_enrichment_cli_dispatches_dynamic_definitions(monkeypatch):
+    received: list[object] = []
+
+    def fake_analyze(*arguments: object, **keyword_arguments: object) -> None:
+        received.extend([arguments, keyword_arguments])
+
+    monkeypatch.setattr(cli, "analyze_carrier_pc_enrichment", fake_analyze)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "analyze-carrier-pc-enrichment",
+            "--results-input",
+            "results.tsv",
+            "--selection-output",
+            "selection.json",
+            "--plot-output",
+            "plot.svg",
+            "--carrier-definitions",
+            "lof_hc,missense,splice_any",
+            "--selection-z-thresholds=-3,-4",
+            "--plateau-fraction",
+            "0.95",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received == [
+        (Path("results.tsv"), Path("selection.json"), Path("plot.svg")),
+        {
+            "carrier_definitions": ["lof_hc", "missense", "splice_any"],
+            "selection_z_thresholds": [-3.0, -4.0],
+            "plateau_fraction": 0.95,
+        },
     ]
 
 
