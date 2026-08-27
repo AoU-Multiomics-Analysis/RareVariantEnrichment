@@ -1,5 +1,6 @@
 import csv
 import gzip
+import hashlib
 import json
 from pathlib import Path
 
@@ -81,6 +82,13 @@ def test_gather_deduplicates_audit_and_aggregates_classes(tmp_path: Path):
     assert payload["duplicate_audit_rows"] == 1
     assert payload["audit_row_count"] == 2
     assert payload["carrier_row_count"] == 2
+    assert payload["audit_artifact"] == {
+        "logical_name": "variant_carrier_audit.tsv.gz",
+        "header": list(AUDIT_HEADER),
+        "row_count": 2,
+        "size_bytes": audit.stat().st_size,
+        "sha256": hashlib.sha256(audit.read_bytes()).hexdigest(),
+    }
     assert payload["quality_or_frequency_filters_applied"] is False
     assert payload["vcf_index_provenance"] == "supplied"
     assert payload["transcript_index_provenance"] == "generated"

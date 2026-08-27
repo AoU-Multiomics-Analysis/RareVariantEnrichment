@@ -12,6 +12,7 @@ import sqlite3
 import tempfile
 from typing import Any, Sequence
 
+from rare_variant_enrichment.artifacts import file_artifact
 from rare_variant_enrichment.carrier_extraction import AUDIT_HEADER
 from rare_variant_enrichment.io import open_text, write_json
 
@@ -148,6 +149,12 @@ def gather_variant_carriers(
             raise ValueError("Chromosome QC audit row counts do not match audit inputs")
 
         audit_count = _write_audit(connection, audit_output)
+        audit_artifact = file_artifact(
+            audit_output,
+            "variant_carrier_audit.tsv.gz",
+            AUDIT_HEADER,
+            audit_count,
+        )
         carrier_count = _write_carriers(connection, carrier_output)
         unique_sample_count = _scalar(connection, "SELECT count(DISTINCT sample_id) FROM audit")
         unique_gene_count = _scalar(connection, "SELECT count(DISTINCT gene_id) FROM audit")
@@ -174,6 +181,7 @@ def gather_variant_carriers(
                 "qc_inputs": [str(path) for path in qc_inputs],
                 "duplicate_audit_rows": duplicate_rows,
                 "audit_row_count": audit_count,
+                "audit_artifact": audit_artifact,
                 "carrier_row_count": carrier_count,
                 "unique_sample_count": unique_sample_count,
                 "unique_gene_count": unique_gene_count,

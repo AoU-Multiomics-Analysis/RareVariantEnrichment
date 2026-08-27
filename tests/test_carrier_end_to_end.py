@@ -1,10 +1,12 @@
 import csv
 import gzip
+import hashlib
 import json
 from pathlib import Path
 
 from rare_variant_enrichment.carrier_aggregation import gather_variant_carriers
 from rare_variant_enrichment.carrier_extraction import (
+    AUDIT_HEADER,
     extract_chromosome_carriers,
     prepare_carrier_inputs,
 )
@@ -76,3 +78,10 @@ def test_gene_matched_carrier_extraction_end_to_end(prepared_fixture, tmp_path: 
     assert chromosome_payload["carrier_audit_rows"] == len(audit_rows)
     assert gathered_payload["audit_row_count"] == len(audit_rows)
     assert gathered_payload["carrier_row_count"] == len(carrier_rows)
+    assert gathered_payload["audit_artifact"] == {
+        "logical_name": "variant_carrier_audit.tsv.gz",
+        "header": list(AUDIT_HEADER),
+        "row_count": len(audit_rows),
+        "size_bytes": final_audit.stat().st_size,
+        "sha256": hashlib.sha256(final_audit.read_bytes()).hexdigest(),
+    }
