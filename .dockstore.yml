@@ -4,3 +4,5 @@ workflows:
     primaryDescriptorPath: /workflows/rare_variant_enrichment.wdl
   - subclass: WDL
     primaryDescriptorPath: /workflows/extract_variant_carriers.wdl
+  - subclass: WDL
+    primaryDescriptorPath: /workflows/carrier_enrichment.wdl
