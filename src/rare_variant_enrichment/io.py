@@ -19,5 +19,10 @@ def read_nonempty_lines(path: Path) -> list[str]:
         return [line.strip() for line in handle if line.strip()]
 
 
-def write_json(path: Path, payload: Mapping[str, object] | Sequence[object]) -> None:
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+def write_json(
+    path: Path,
+    payload: Mapping[str, object] | Sequence[object],
+    *,
+    sort_keys: bool = True,
+) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=sort_keys) + "\n")

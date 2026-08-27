@@ -38,6 +38,7 @@ CARRIER_DEFINITION_HEADER = (
     "n_variants",
     "variant_ids",
 )
+PROGRESS_INTERVAL_AUDIT_ROWS = 1_000_000
 LOGGER = logging.getLogger(__name__)
 
 
@@ -192,6 +193,9 @@ def build_carrier_definitions(
             if tuple(reader.fieldnames or ()) != AUDIT_HEADER:
                 raise ValueError("Carrier audit header does not match extraction QC")
             for line_number, row in enumerate(reader, start=2):
+                processed_rows = line_number - 1
+                if processed_rows % PROGRESS_INTERVAL_AUDIT_ROWS == 0:
+                    LOGGER.info("Processed %d carrier audit rows", processed_rows)
                 if None in row:
                     raise ValueError(
                         f"Carrier audit line {line_number} has too many columns"
@@ -339,6 +343,7 @@ def build_carrier_definitions(
                     "container_image": container_image,
                 },
             },
+            sort_keys=False,
         )
         LOGGER.info(
             "Built %d carrier-definition rows from %d deduplicated audit rows",
@@ -386,8 +391,9 @@ def _parse_definition(raw_definition: Any, index: int) -> CarrierDefinition:
             + ", ".join(invalid_classes)
         )
 
-    minimum_revel = raw_definition.get("minimum_revel")
-    if minimum_revel is not None:
+    minimum_revel = None
+    if "minimum_revel" in raw_definition:
+        minimum_revel = raw_definition["minimum_revel"]
         if isinstance(minimum_revel, bool) or not isinstance(minimum_revel, (int, float)):
             raise ValueError(f"Definition {name} minimum_revel must be numeric")
         minimum_revel = float(minimum_revel)

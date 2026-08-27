@@ -239,6 +239,43 @@ def test_dynamic_selection_writes_valid_outputs_when_every_definition_is_unestim
     assert plot_svg.read_text().endswith("</svg>\n")
 
 
+def test_dynamic_svg_keeps_default_legend_inside_one_definition_viewbox(
+    tmp_path: Path,
+):
+    results = tmp_path / "results.tsv"
+    rows = [
+        [
+            "pc_count",
+            "z_threshold",
+            "carrier_definition",
+            "odds_ratio",
+            "total_observations",
+            "carrier_observations",
+        ]
+    ]
+    for pc_count in (0, 10):
+        for threshold in (-2, -3, -4, -5, -6):
+            rows.append(
+                [str(pc_count), str(threshold), "missense", "2", "100", "5"]
+            )
+    results.write_text("\n".join("\t".join(row) for row in rows) + "\n")
+    selection_json = tmp_path / "selection.json"
+    plot_svg = tmp_path / "plot.svg"
+
+    analyze_carrier_pc_enrichment(
+        results,
+        selection_json,
+        plot_svg,
+        carrier_definitions=["missense"],
+        selection_z_thresholds=[-3, -4, -5, -6],
+    )
+
+    svg = plot_svg.read_text()
+    width = int(svg.split('width="', 1)[1].split('"', 1)[0])
+    assert width >= 1_155
+    assert 'x2="1017"' in svg
+
+
 def test_r_pc_sweep_accepts_ordered_dynamic_definitions(tmp_path: Path):
     rscript = shutil.which("Rscript")
     if rscript is None:
@@ -300,3 +337,63 @@ def test_r_pc_sweep_accepts_ordered_dynamic_definitions(tmp_path: Path):
         definitions
     )
     assert plot.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_r_pc_sweep_excludes_incomplete_threshold_curves(tmp_path: Path):
+    rscript = shutil.which("Rscript")
+    if rscript is None:
+        pytest.skip("Rscript is unavailable")
+    package_check = subprocess.run(
+        [
+            rscript,
+            "-e",
+            'quit(status=ifelse(requireNamespace("tidyverse", quietly=TRUE) && '
+            'requireNamespace("ggrepel", quietly=TRUE), 0, 1))',
+        ],
+        check=False,
+    )
+    if package_check.returncode != 0:
+        pytest.skip("tidyverse or ggrepel is unavailable")
+
+    results = tmp_path / "results.tsv"
+    results.write_text(
+        "pc_count\tz_threshold\tcarrier_definition\todds_ratio\n"
+        "0\t-3\tmissense\t2\n"
+        "0\t-4\tmissense\tNA\n"
+        "10\t-3\tmissense\t3\n"
+        "10\t-4\tmissense\t3\n"
+    )
+    summary = tmp_path / "summary.tsv"
+    plot = tmp_path / "plot.png"
+
+    completed = subprocess.run(
+        [
+            rscript,
+            "scripts/pc_sweep_qc.R",
+            "--results-input",
+            str(results),
+            "--summary-output",
+            str(summary),
+            "--plot-output",
+            str(plot),
+            "--selection-z-thresholds",
+            "-3,-4",
+            "--carrier-definitions",
+            "missense",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    with summary.open(newline="") as handle:
+        rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert rows[0]["pc_count"] == "0"
+    assert rows[0]["n_thresholds"] == "1"
+    assert rows[0]["median_odds_ratio"] == "NA"
+    assert rows[0]["percent_of_maximum"] == "NA"
+    assert rows[1]["pc_count"] == "10"
+    assert rows[1]["n_thresholds"] == "2"
+    assert float(rows[1]["median_odds_ratio"]) == pytest.approx(3.0)
+    assert rows[1]["maximum_pc"] == "10"

@@ -208,6 +208,11 @@ uses 2 CPUs, 32 GB RAM, and 500 GB disk. Analysis and merge tasks use 8 CPUs,
 requires more space. `pc_preemptible` controls the preemptible retry count for
 the PC scatter. `max_retries` applies to all tasks.
 
+Materialization uses SQLite and can expand the compressed audit when one row
+matches several definitions. Increase `prepare_disk_gb` above its 500 GB
+default for an unusually large audit or a configuration with extensive
+overlap.
+
 Run the generic workflow with the audit and QC outputs from extraction:
 
 ```bash
@@ -266,11 +271,16 @@ The generic workflow emits 12 files:
 - `results_tsv`: one row per PC count × negative threshold × carrier
   definition, merged across PC shards.
 - `summary_json`: grid settings, global FDR scope, residualization details,
-  provenance, and the screening limitation.
+  provenance, and the screening limitation. The
+  `carrier_definition_materialization` object contains the normalized rules,
+  manifest digest, package version, and materializer image.
 - `gene_pc_qc_tsv_gz`: compressed gene-by-PC QC with usable sample counts,
   model rank, residual summaries, status, and exclusion reason.
 - `analysis_qc_json`: sample overlap, carrier counts, and structured PC-specific
-  exclusion counters.
+  exclusion counters. Its `carrier_pair_counts` object reports input pairs,
+  pairs after sample intersection, pairs with coding genes, and pairs in the
+  complete analysis universe for every definition. Per-PC records report
+  eligible carrier observations.
 - `pc_selection_json`: definition-specific plateau summaries and the minimum
   common PC count that meets the configured plateau fraction.
 - `enrichment_plot_svg`: threshold and median log-odds curves for the selected

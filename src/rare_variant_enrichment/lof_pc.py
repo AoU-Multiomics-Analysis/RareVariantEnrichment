@@ -623,6 +623,25 @@ def read_generic_carriers(table_path: Path, manifest_path: Path) -> CarrierSets:
         for item in raw_definitions
     ] != list(definitions):
         raise ValueError("Carrier-definition manifest definitions do not match definition_order")
+    materializer = manifest.get("provenance")
+    if not isinstance(materializer, dict):
+        raise ValueError("Carrier-definition manifest provenance is malformed")
+    container_image = materializer.get("container_image")
+    package_versions = materializer.get("package_versions")
+    if not isinstance(container_image, str) or not container_image:
+        raise ValueError("Carrier-definition manifest container image is malformed")
+    if (
+        not isinstance(package_versions, dict)
+        or not package_versions
+        or any(
+            not isinstance(key, str)
+            or not key
+            or not isinstance(value, str)
+            or not value
+            for key, value in package_versions.items()
+        )
+    ):
+        raise ValueError("Carrier-definition manifest package versions are malformed")
 
     output_artifact = manifest.get("output_artifact")
     required_artifact_keys = {
@@ -1106,6 +1125,39 @@ def _calculate_pc_enrichment(
         raise ValueError(
             "No protein-coding genes from the supplied list occur in the phenotype BED"
         )
+    generic_pair_counts: dict[str, dict[str, int]] = {}
+    generic_materialization: dict[str, object] | None = None
+    if not legacy_lof:
+        shared_sample_set = set(shared_samples)
+        coding_bed_genes = {gene_id for gene_id, _ in coding_expression}
+        for definition in carriers.definitions:
+            input_pairs = carriers.pairs_by_definition[definition]
+            sample_pairs = {
+                pair for pair in input_pairs if pair[0] in shared_sample_set
+            }
+            coding_pairs = {
+                pair for pair in sample_pairs if pair[1] in coding_genes
+            }
+            universe_pairs = {
+                pair for pair in coding_pairs if pair[1] in coding_bed_genes
+            }
+            generic_pair_counts[definition] = {
+                "input_sample_gene_pairs": len(input_pairs),
+                "sample_intersection_pairs": len(sample_pairs),
+                "protein_coding_gene_pairs": len(coding_pairs),
+                "complete_analysis_universe_pairs": len(universe_pairs),
+            }
+        manifest = carriers.qc.get("manifest")
+        manifest_artifact = carriers.qc.get("manifest_artifact")
+        if not isinstance(manifest, dict) or not isinstance(
+            manifest_artifact, dict
+        ):
+            raise ValueError("Generic carrier metadata is malformed")
+        generic_materialization = {
+            "definitions": manifest["definitions"],
+            "manifest_artifact": manifest_artifact,
+            "materializer": manifest["provenance"],
+        }
 
     with gzip.open(
         gene_pc_qc_output, "wt", encoding="utf-8", newline=""
@@ -1370,7 +1422,11 @@ def _calculate_pc_enrichment(
             **(
                 {"lof_carrier_table": carriers.qc}
                 if legacy_lof
-                else {"carrier_definitions_manifest": carriers.qc}
+                else {
+                    "carrier_definitions": list(carriers.definitions),
+                    "carrier_pair_counts": generic_pair_counts,
+                    "carrier_definitions_manifest": carriers.qc,
+                }
             ),
             "per_pc": per_pc,
         },
@@ -1380,6 +1436,11 @@ def _calculate_pc_enrichment(
         {
             "available_pc_count": principal_components.available_pc_count,
             "carrier_definitions": list(carriers.definitions),
+            **(
+                {}
+                if legacy_lof
+                else {"carrier_definition_materialization": generic_materialization}
+            ),
             "emitted_result_rows": len(rows),
             "fdr_scope": "global_across_all_emitted_rows",
             "negative_z_thresholds": thresholds,
@@ -1600,6 +1661,7 @@ def _merge_pc_enrichment(
     metadata_keys = (
         "negative_z_thresholds",
         "carrier_definitions",
+        *(("carrier_definition_materialization",) if not legacy_lof else ()),
         "available_pc_count",
         "provenance",
         "observation_unit",
@@ -1783,6 +1845,10 @@ def _validate_merge_summary_metadata(
     carrier_definitions = _read_ordered_strings(summary, "carrier_definitions")
     if legacy_lof and carrier_definitions != list(CARRIER_DEFINITIONS):
         raise ValueError("Summary carrier_definitions do not match the result schema")
+    if not legacy_lof:
+        _validate_carrier_definition_materialization(
+            summary.get("carrier_definition_materialization"), carrier_definitions
+        )
     validate_negative_z_thresholds(_read_ordered_floats(summary, "negative_z_thresholds"))
     _read_emitted_result_rows(summary)
     _read_nonempty_summary_string(summary, "fdr_scope")
@@ -1804,6 +1870,72 @@ def _validate_merge_summary_metadata(
     ):
         raise ValueError("Summary residualization ddof must be a non-negative integer")
     _validate_provenance(summary.get("provenance"), legacy_lof=legacy_lof)
+
+
+def _validate_carrier_definition_materialization(
+    value: object, carrier_definitions: Sequence[str]
+) -> None:
+    if not isinstance(value, dict) or set(value) != {
+        "definitions",
+        "manifest_artifact",
+        "materializer",
+    }:
+        raise ValueError("Summary carrier_definition_materialization is malformed")
+    definitions = value["definitions"]
+    if not isinstance(definitions, list) or [
+        item.get("name") if isinstance(item, dict) else None for item in definitions
+    ] != list(carrier_definitions):
+        raise ValueError(
+            "Summary carrier_definition_materialization definitions are malformed"
+        )
+    manifest_artifact = value["manifest_artifact"]
+    if not isinstance(manifest_artifact, dict) or set(manifest_artifact) != {
+        "logical_name",
+        "size_bytes",
+        "sha256",
+    }:
+        raise ValueError(
+            "Summary carrier_definition_materialization manifest artifact is malformed"
+        )
+    if manifest_artifact.get("logical_name") != "carrier_definitions.qc.json":
+        raise ValueError(
+            "Summary carrier_definition_materialization manifest artifact is malformed"
+        )
+    size_bytes = manifest_artifact.get("size_bytes")
+    digest = manifest_artifact.get("sha256")
+    if (
+        isinstance(size_bytes, bool)
+        or not isinstance(size_bytes, int)
+        or size_bytes < 0
+        or not isinstance(digest, str)
+        or SHA256_PATTERN.fullmatch(digest) is None
+    ):
+        raise ValueError(
+            "Summary carrier_definition_materialization manifest artifact is malformed"
+        )
+    materializer = value["materializer"]
+    if not isinstance(materializer, dict):
+        raise ValueError(
+            "Summary carrier_definition_materialization materializer is malformed"
+        )
+    container_image = materializer.get("container_image")
+    package_versions = materializer.get("package_versions")
+    if (
+        not isinstance(container_image, str)
+        or not container_image
+        or not isinstance(package_versions, dict)
+        or not package_versions
+        or any(
+            not isinstance(key, str)
+            or not key
+            or not isinstance(item, str)
+            or not item
+            for key, item in package_versions.items()
+        )
+    ):
+        raise ValueError(
+            "Summary carrier_definition_materialization materializer is malformed"
+        )
 
 
 def _read_available_pc_count(summary: Mapping[str, object]) -> int:

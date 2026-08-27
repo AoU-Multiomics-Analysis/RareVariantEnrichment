@@ -1,5 +1,6 @@
 import csv
 import gzip
+import hashlib
 import json
 from pathlib import Path
 
@@ -409,6 +410,15 @@ def test_generic_carrier_enrichment_runs_from_audit_through_selection(tmp_path: 
     assert summary["carrier_definitions"] == DEFINITIONS
     assert summary["selected_pc_counts"] == [0, 1]
     assert summary["fdr_scope"] == "global_across_all_emitted_rows"
+    assert summary["carrier_definition_materialization"] == {
+        "definitions": manifest["definitions"],
+        "manifest_artifact": {
+            "logical_name": "carrier_definitions.qc.json",
+            "size_bytes": manifest_path.stat().st_size,
+            "sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        },
+        "materializer": manifest["provenance"],
+    }
 
     analysis_qc = json.loads(merged["analysis_qc"].read_text())
     expected_carrier_counts = {
@@ -422,6 +432,16 @@ def test_generic_carrier_enrichment_runs_from_audit_through_selection(tmp_path: 
         "missense_revel_ge_1": 0,
     }
     assert list(analysis_qc["per_pc"]) == ["0", "1"]
+    assert analysis_qc["carrier_definitions"] == DEFINITIONS
+    assert analysis_qc["carrier_pair_counts"] == {
+        definition: {
+            "input_sample_gene_pairs": count,
+            "sample_intersection_pairs": count,
+            "protein_coding_gene_pairs": count,
+            "complete_analysis_universe_pairs": count,
+        }
+        for definition, count in expected_carrier_counts.items()
+    }
     for pc_count in ("0", "1"):
         assert analysis_qc["per_pc"][pc_count]["total_observations"] == 12
         assert analysis_qc["per_pc"][pc_count]["carrier_observations"] == (

@@ -363,12 +363,16 @@ def write_carrier_pc_svg(
     height = 620
     margin_left, margin_right, gap = 90, 35, 70
     panel_width = 602.5
-    width = round(
+    panel_layout_width = round(
         margin_left
         + margin_right
         + panel_width * len(definitions)
         + gap * max(0, len(definitions) - 1)
     )
+    legend_x_start = 460
+    legend_item_width = 105
+    median_legend_x = legend_x_start + len(thresholds) * legend_item_width + 10
+    width = max(panel_layout_width, median_legend_x + 170)
     plot_top, plot_bottom = 92, 510
     plot_width, plot_height = panel_width - 10, plot_bottom - plot_top
     svg: list[str] = [
@@ -376,14 +380,19 @@ def write_carrier_pc_svg(
         f'viewBox="0 0 {width} {height}" role="img" aria-label="Carrier enrichment across principal components">',
         "<style>text{font-family:Arial,Helvetica,sans-serif;fill:#111827} .grid{stroke:#d1d5db;stroke-width:1} .axis{stroke:#6b7280;stroke-width:1} .reference{stroke:#6b7280;stroke-width:1.3;stroke-dasharray:5 4} .median{stroke:#111827;stroke-width:3;fill:none} .threshold{fill:none;stroke-width:2} .selection{stroke:#111827;stroke-width:2;stroke-dasharray:7 4} .definition-selection{stroke:#6b7280;stroke-width:1.5;stroke-dasharray:4 4}</style>",
     ]
-    legend_x = 460
+    legend_x = legend_x_start
     for threshold in thresholds:
         color = PLOT_COLORS.get(threshold, "#4b5563")
         svg.append(f'<line x1="{legend_x}" y1="31" x2="{legend_x + 22}" y2="31" stroke="{color}" stroke-width="3"/>')
         svg.append(f'<text x="{legend_x + 30}" y="36" font-size="13">z &lt;= {threshold:g}</text>')
-        legend_x += 105
-    svg.append('<line x1="995" y1="31" x2="1017" y2="31" stroke="#111827" stroke-width="4"/>')
-    svg.append('<text x="1025" y="36" font-size="13">median logOR</text>')
+        legend_x += legend_item_width
+    svg.append(
+        f'<line x1="{median_legend_x}" y1="31" x2="{median_legend_x + 22}" '
+        'y2="31" stroke="#111827" stroke-width="4"/>'
+    )
+    svg.append(
+        f'<text x="{median_legend_x + 30}" y="36" font-size="13">median logOR</text>'
+    )
 
     for index, definition in enumerate(definitions):
         x0 = margin_left + index * (panel_width + gap)

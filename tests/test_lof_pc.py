@@ -394,6 +394,10 @@ def _write_generic_carrier_fixture(
                     CARRIER_DEFINITION_HEADER,
                     len(rows),
                 ),
+                "provenance": {
+                    "package_versions": {"rare_variant_enrichment": "test"},
+                    "container_image": "example.invalid/enrichment@sha256:test",
+                },
             },
             sort_keys=True,
         ),
@@ -917,6 +921,67 @@ def test_generic_pc_enrichment_emits_dynamic_fisher_cells_with_one_projection(
     }
 
 
+def test_generic_pc_enrichment_reports_filter_stages_and_materializer_provenance(
+    tmp_path: Path,
+):
+    inputs = _write_analysis_fixture(tmp_path)
+    inputs["genes"].write_text("gene_id\nENSG1\nENSG2\nENSG4\n")
+    table, manifest = _write_generic_carrier_fixture(
+        tmp_path,
+        ["mixed", "zero_definition"],
+        [
+            ("S1", "ENSG1", "G1", "mixed", 1, "chr1:100:A:C"),
+            ("SX", "ENSG1", "G1", "mixed", 1, "chr1:110:A:G"),
+            ("S1", "ENSG3", "G3", "mixed", 1, "chr1:120:A:T"),
+            ("S2", "ENSG4", "G4", "mixed", 1, "chr1:130:C:T"),
+        ],
+    )
+
+    outputs = _run_generic_analysis(
+        tmp_path,
+        inputs,
+        table,
+        manifest,
+        thresholds=[-0.8],
+        pc_counts=[0],
+    )
+
+    analysis_qc = json.loads(outputs["analysis_qc"].read_text())
+    assert analysis_qc["carrier_definitions"] == ["mixed", "zero_definition"]
+    assert analysis_qc["carrier_pair_counts"] == {
+        "mixed": {
+            "input_sample_gene_pairs": 4,
+            "sample_intersection_pairs": 3,
+            "protein_coding_gene_pairs": 2,
+            "complete_analysis_universe_pairs": 1,
+        },
+        "zero_definition": {
+            "input_sample_gene_pairs": 0,
+            "sample_intersection_pairs": 0,
+            "protein_coding_gene_pairs": 0,
+            "complete_analysis_universe_pairs": 0,
+        },
+    }
+    assert analysis_qc["per_pc"]["0"]["carrier_observations"] == {
+        "mixed": 1,
+        "zero_definition": 0,
+    }
+
+    summary = json.loads(outputs["summary"].read_text())
+    materialization = summary["carrier_definition_materialization"]
+    assert [item["name"] for item in materialization["definitions"]] == [
+        "mixed",
+        "zero_definition",
+    ]
+    assert materialization["manifest_artifact"] == analysis_qc[
+        "carrier_definitions_manifest"
+    ]["manifest_artifact"]
+    assert materialization["materializer"] == {
+        "package_versions": {"rare_variant_enrichment": "test"},
+        "container_image": "example.invalid/enrichment@sha256:test",
+    }
+
+
 def test_lof_pc_enrichment_accepts_susie_ids_and_collapses_duplicate_features(
     tmp_path: Path,
 ):
@@ -1088,6 +1153,29 @@ def _write_merge_shard(
     summary = {
         "available_pc_count": 2,
         "carrier_definitions": carrier_definitions,
+        **(
+            {
+                "carrier_definition_materialization": {
+                    "definitions": [
+                        {"name": definition, "variant_classes": ["missense"]}
+                        for definition in carrier_definitions
+                    ],
+                    "manifest_artifact": {
+                        "logical_name": "carrier_definitions.qc.json",
+                        "size_bytes": 100,
+                        "sha256": "a" * 64,
+                    },
+                    "materializer": {
+                        "package_versions": {
+                            "rare_variant_enrichment": "0.3.0"
+                        },
+                        "container_image": "image@sha256:test",
+                    },
+                }
+            }
+            if generic
+            else {}
+        ),
         "emitted_result_rows": len(pc_counts) * len(p_values),
         "fdr_scope": "global_across_all_emitted_rows",
         "negative_z_thresholds": [-2.0],
@@ -1134,6 +1222,16 @@ def _write_merge_shard(
         },
         **(
             {
+                "carrier_definitions": carrier_definitions,
+                "carrier_pair_counts": {
+                    definition: {
+                        "input_sample_gene_pairs": 1,
+                        "sample_intersection_pairs": 1,
+                        "protein_coding_gene_pairs": 1,
+                        "complete_analysis_universe_pairs": 1,
+                    }
+                    for definition in carrier_definitions
+                },
                 "carrier_definitions_manifest": {
                     "manifest_artifact": {"sha256": "a" * 64}
                 }
@@ -1275,6 +1373,36 @@ def test_merge_carrier_pc_enrichment_keeps_dynamic_order_and_global_fdr(
     assert json.loads(outputs["summary"].read_text())["carrier_definitions"] == (
         definitions
     )
+
+
+def test_merge_carrier_pc_enrichment_rejects_materializer_provenance_mismatch(
+    tmp_path: Path,
+):
+    definitions = ["lof_hc", "missense"]
+    shard_one = _write_merge_shard(
+        tmp_path,
+        "generic-one",
+        pc_counts=[0],
+        p_values=[0.01, 0.20],
+        carrier_definitions=definitions,
+        generic=True,
+    )
+    shard_two = _write_merge_shard(
+        tmp_path,
+        "generic-two",
+        pc_counts=[1],
+        p_values=[0.02, 0.50],
+        carrier_definitions=definitions,
+        generic=True,
+    )
+    second_summary = json.loads(shard_two["summary"].read_text())
+    second_summary["carrier_definition_materialization"]["manifest_artifact"][
+        "sha256"
+    ] = "b" * 64
+    shard_two["summary"].write_text(json.dumps(second_summary))
+
+    with pytest.raises(ValueError, match="carrier_definition_materialization"):
+        _merge_generic_shards(tmp_path, [shard_one, shard_two])
 
 
 def test_merge_lof_pc_enrichment_recomputes_global_fdr_and_combines_qc(tmp_path: Path):

@@ -2,6 +2,7 @@ import csv
 import gzip
 import hashlib
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -157,6 +158,19 @@ def test_definition_matches_class_union_and_revel_threshold():
                         "name": "bad",
                         "variant_classes": ["missense"],
                         "minimum_revel": 1.1,
+                    }
+                ],
+            },
+            "minimum_revel",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "definitions": [
+                    {
+                        "name": "bad",
+                        "variant_classes": ["missense"],
+                        "minimum_revel": None,
                     }
                 ],
             },
@@ -434,3 +448,79 @@ def test_build_carrier_definitions_writes_header_and_zero_counts(tmp_path: Path)
         "distinct_sample_gene_pairs": 0,
         "output_rows": 0,
     }
+
+
+def test_manifest_count_map_preserves_definition_configuration_order(
+    tmp_path: Path,
+):
+    audit, extraction_qc = _write_audit_with_qc(
+        tmp_path, [_audit_row("chr1:100:A:C", "missense", revel="0.8")]
+    )
+    config = _write_config(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "definitions": [
+                {"name": "splice_core", "variant_classes": ["splice_core"]},
+                {"name": "missense", "variant_classes": ["missense"]},
+                {"name": "lof_hc", "variant_classes": ["lof_hc"]},
+            ],
+        },
+    )
+    output = tmp_path / "output.tsv.gz"
+    manifest_path = tmp_path / "output.json"
+
+    build_carrier_definitions(
+        audit,
+        extraction_qc,
+        config,
+        output,
+        manifest_path,
+        container_image="image@sha256:abc",
+    )
+
+    manifest = json.loads(manifest_path.read_text())
+    assert list(manifest["definition_counts"]) == [
+        "splice_core",
+        "missense",
+        "lof_hc",
+    ]
+
+
+def test_materialization_logs_periodic_aggregate_progress(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+):
+    rows = [
+        _audit_row("chr1:100:A:C", "missense", revel="0.8"),
+        _audit_row("chr1:110:A:G", "missense", revel="0.9"),
+        _audit_row("chr1:120:A:T", "missense", revel="0.7"),
+    ]
+    audit, extraction_qc = _write_audit_with_qc(tmp_path, rows)
+    config = _write_config(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "definitions": [
+                {"name": "missense", "variant_classes": ["missense"]}
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "rare_variant_enrichment.carrier_definitions.PROGRESS_INTERVAL_AUDIT_ROWS",
+        2,
+        raising=False,
+    )
+
+    with caplog.at_level(
+        logging.INFO, logger="rare_variant_enrichment.carrier_definitions"
+    ):
+        build_carrier_definitions(
+            audit,
+            extraction_qc,
+            config,
+            tmp_path / "output.tsv.gz",
+            tmp_path / "output.json",
+            container_image="image@sha256:abc",
+        )
+
+    assert "Processed 2 carrier audit rows" in caplog.messages

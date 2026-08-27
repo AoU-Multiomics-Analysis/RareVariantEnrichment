@@ -76,6 +76,8 @@ def test_carrier_enrichment_wdl_scatter_and_commands_are_generic_and_logged():
     assert '--container-image "~{docker_image}"' in source
     assert '--carrier-definitions "$carrier_definitions_csv"' in source
     assert 'Rscript "/opt/rare-variant-enrichment/pc_sweep_qc.R"' in source
+    assert "Selected definition names:" in source
+    assert "PC chunk values:" in source
 
     for task in document.tasks:
         command = str(task.command)
@@ -181,8 +183,16 @@ def test_readme_and_ci_document_and_test_the_generic_handoff():
     assert "Materialization" in readme
     assert "The legacy LoF table is not expanded" in readme
     assert "global Benjamini–Hochberg FDR" in readme
+    assert "`carrier_pair_counts`" in readme
+    assert "`carrier_definition_materialization`" in readme
+    assert "Increase `prepare_disk_gb`" in readme
 
     workflow = Path(".github/workflows/python-tests.yml").read_text()
-    for path_filter in ('"scripts/**"', '"examples/**"', '".dockstore.yml"'):
+    for path_filter in (
+        '"scripts/**"',
+        '"examples/**"',
+        '".dockstore.yml"',
+        '"README.md"',
+    ):
         assert workflow.count(path_filter) == 2
     assert "all Docker-backed WDL modes" in workflow

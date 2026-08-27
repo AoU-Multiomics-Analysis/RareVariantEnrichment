@@ -91,12 +91,12 @@ summary_table <- selected_results |>
       collapse = ","
     ),
     median_log_odds_ratio = if_else(
-      any(finite_odds_ratio),
+      n_thresholds == length(thresholds),
       median(log(odds_ratio[finite_odds_ratio])),
       NA_real_
     ),
     median_odds_ratio = if_else(
-      any(finite_odds_ratio),
+      n_thresholds == length(thresholds),
       exp(median(log(odds_ratio[finite_odds_ratio]))),
       NA_real_
     ),

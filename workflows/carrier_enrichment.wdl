@@ -29,6 +29,8 @@ task BuildCarrierDefinitions {
 
         carrier_count=$(gzip -cd carrier_definitions.tsv.gz | tail -n +2 | wc -l | tr -d ' ')
         definition_count=$(python -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["definition_order"]))' carrier_definitions.qc.json)
+        definition_names=$(python -c 'import json,sys; print(",".join(json.load(open(sys.argv[1], encoding="utf-8"))["definition_order"]))' carrier_definitions.qc.json)
+        echo "Selected definition names: $definition_names"
         echo "Completed carrier-definition construction; definition count: $definition_count; carrier row count: $carrier_count"
     >>>
 
@@ -110,6 +112,7 @@ task PreparePcChunks {
             pc_count_values+=("$value")
         done < "~{pc_counts_file}"
         pc_counts_csv="$(join_by_comma "${pc_count_values[@]}")"
+        echo "PC chunk values: ${pc_counts_csv:-adaptive grid}"
 
         rare-variant-enrichment pc-chunks \
             --principal-components "~{principal_components_tsv}" \
@@ -180,7 +183,10 @@ task CalculateCarrierPcEnrichment {
         negative_z_thresholds_csv="$(join_by_comma "${negative_z_threshold_values[@]}")"
         pc_counts_csv="$(join_by_comma "${pc_count_values[@]}")"
         definition_count=$(python -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["definition_order"]))' "~{carrier_definitions_qc_json}")
+        definition_names=$(python -c 'import json,sys; print(",".join(json.load(open(sys.argv[1], encoding="utf-8"))["definition_order"]))' "~{carrier_definitions_qc_json}")
         echo "Starting carrier/PC enrichment; definition count: $definition_count; PC count: ${#pc_count_values[@]}; threshold count: ${#negative_z_threshold_values[@]}"
+        echo "Selected definition names: $definition_names"
+        echo "PC chunk values: $pc_counts_csv"
 
         rare-variant-enrichment carrier-pc-enrichment \
             --phenotype-bed "~{phenotype_bed}" \
@@ -306,6 +312,7 @@ task AnalyzeCarrierPcEnrichment {
         fi
         definition_count=$(python -c 'import sys; print(len(sys.argv[1].split(",")))' "$carrier_definitions_csv")
         echo "Starting carrier/PC analysis; selected definition count: $definition_count; threshold count: ${#selection_z_threshold_values[@]}"
+        echo "Selected definition names: $carrier_definitions_csv"
 
         rare-variant-enrichment analyze-carrier-pc-enrichment \
             --results-input "~{results_tsv}" \
