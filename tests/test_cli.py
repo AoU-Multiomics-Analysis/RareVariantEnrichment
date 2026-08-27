@@ -30,6 +30,7 @@ def test_cli_lists_workflow_subcommands():
         "prepare-carrier-inputs",
         "extract-gene-carriers",
         "gather-gene-carriers",
+        "build-carrier-definitions",
     ):
         assert command in result.stdout
 
@@ -93,6 +94,47 @@ def test_gather_gene_carriers_cli_dispatches_exact_contract(monkeypatch):
         Path("transcript.prepare.qc.json"), Path("variant_carrier_audit.tsv.gz"),
         Path("variant_carriers.tsv.gz"), Path("variant_carriers.qc.json"),
     ]
+
+
+def test_build_carrier_definitions_cli_dispatches_exact_contract(monkeypatch):
+    received: list[object] = []
+    keywords: dict[str, object] = {}
+
+    def fake_build(*arguments: object, **keyword_arguments: object) -> None:
+        received.extend(arguments)
+        keywords.update(keyword_arguments)
+
+    monkeypatch.setattr(cli, "build_carrier_definitions", fake_build)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "rare-variant-enrichment",
+            "build-carrier-definitions",
+            "--audit",
+            "variant_carrier_audit.tsv.gz",
+            "--extraction-qc",
+            "variant_carriers.qc.json",
+            "--definitions",
+            "definitions.json",
+            "--container-image",
+            "image@sha256:abc",
+            "--output",
+            "carrier_definitions.tsv.gz",
+            "--qc-output",
+            "carrier_definitions.qc.json",
+        ],
+    )
+
+    assert cli.main() == 0
+    assert received == [
+        Path("variant_carrier_audit.tsv.gz"),
+        Path("variant_carriers.qc.json"),
+        Path("definitions.json"),
+        Path("carrier_definitions.tsv.gz"),
+        Path("carrier_definitions.qc.json"),
+    ]
+    assert keywords == {"container_image": "image@sha256:abc"}
 
 
 def test_prepare_protein_coding_genes_cli_dispatches_exact_paths(monkeypatch):

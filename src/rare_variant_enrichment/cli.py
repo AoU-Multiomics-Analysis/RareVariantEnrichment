@@ -5,6 +5,7 @@ from pathlib import Path
 
 from rare_variant_enrichment.aggregation import gather_outputs
 from rare_variant_enrichment.carrier_aggregation import gather_variant_carriers
+from rare_variant_enrichment.carrier_definitions import build_carrier_definitions
 from rare_variant_enrichment.carrier_extraction import (
     extract_chromosome_carriers,
     prepare_carrier_inputs,
@@ -42,6 +43,7 @@ COMMANDS = (
     "prepare-carrier-inputs",
     "extract-gene-carriers",
     "gather-gene-carriers",
+    "build-carrier-definitions",
 )
 
 
@@ -207,6 +209,14 @@ def build_parser() -> argparse.ArgumentParser:
     gather_carrier_parser.add_argument("--audit-output", required=True, type=Path)
     gather_carrier_parser.add_argument("--carrier-output", required=True, type=Path)
     gather_carrier_parser.add_argument("--qc-output", required=True, type=Path)
+
+    definition_parser = subparsers.add_parser("build-carrier-definitions")
+    definition_parser.add_argument("--audit", required=True, type=Path)
+    definition_parser.add_argument("--extraction-qc", required=True, type=Path)
+    definition_parser.add_argument("--definitions", required=True, type=Path)
+    definition_parser.add_argument("--container-image", required=True)
+    definition_parser.add_argument("--output", required=True, type=Path)
+    definition_parser.add_argument("--qc-output", required=True, type=Path)
     return parser
 
 
@@ -355,6 +365,15 @@ def main() -> int:
             args.audit_output,
             args.carrier_output,
             args.qc_output,
+        )
+    elif args.command == "build-carrier-definitions":
+        build_carrier_definitions(
+            args.audit,
+            args.extraction_qc,
+            args.definitions,
+            args.output,
+            args.qc_output,
+            container_image=args.container_image,
         )
     return 0
 
