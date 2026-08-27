@@ -637,7 +637,7 @@ Expected: FAIL because the image and examples are not updated.
 
 - [ ] **Step 3: Replace the runtime image definition**
 
-Use `mambaorg/micromamba:2.8.1` as the base. Configure strict channel priority with `conda-forge` before `bioconda`. Install `python=3.12.14`, `numpy=2.5.2`, `htslib=1.24`, `r-base=4.6.1`, `r-tidyverse=2.0.0`, `r-ggplot2=4.0.3`, and `r-ggrepel=0.9.8`. Install the repository with `/opt/conda/bin/python -m pip install --no-deps .` so the Python package does not start a second dependency solve.
+Use `mambaorg/micromamba:2.8.1` as the base. Configure strict channel priority with `conda-forge` before `bioconda`. Install `python=3.12.14`, `numpy=2.5.2`, `htslib=1.24`, `r-base=4.5.3`, `r-tidyverse=2.0.0`, `r-ggplot2=4.0.3`, and `r-ggrepel=0.9.8`. Install the repository with `/opt/conda/bin/python -m pip install --no-deps .` so the Python package does not start a second dependency solve.
 
 - [ ] **Step 4: Add definition and WDL input examples**
 

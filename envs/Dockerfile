@@ -11,7 +11,7 @@ RUN micromamba install --yes --name base --strict-channel-priority \
         python=3.12.14 \
         numpy=2.5.2 \
         htslib=1.24 \
-        r-base=4.6.1 \
+        r-base=4.5.3 \
         r-tidyverse=2.0.0 \
         r-ggplot2=4.0.3 \
         r-ggrepel=0.9.8 \

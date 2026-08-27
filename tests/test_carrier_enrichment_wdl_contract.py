@@ -121,7 +121,7 @@ def test_runtime_image_uses_exact_micromamba_package_contract():
         "python=3.12.14",
         "numpy=2.5.2",
         "htslib=1.24",
-        "r-base=4.6.1",
+        "r-base=4.5.3",
         "r-tidyverse=2.0.0",
         "r-ggplot2=4.0.3",
         "r-ggrepel=0.9.8",
