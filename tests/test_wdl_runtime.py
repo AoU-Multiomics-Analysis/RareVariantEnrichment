@@ -1,4 +1,5 @@
 import csv
+import gzip
 import json
 import os
 from pathlib import Path
@@ -91,6 +92,9 @@ def test_wdl_runs_the_four_input_lof_pc_fixture_with_known_cells(tmp_path: Path)
         "RareVariantEnrichment.gene_pc_qc_tsv_gz",
         "RareVariantEnrichment.analysis_qc_json",
         "RareVariantEnrichment.pc_selection_json",
+        "RareVariantEnrichment.selected_pc_z_scores_tsv_gz",
+        "RareVariantEnrichment.selected_pc_z_scores_gene_qc_tsv_gz",
+        "RareVariantEnrichment.selected_pc_z_scores_summary_json",
         "RareVariantEnrichment.enrichment_plot_svg",
         "RareVariantEnrichment.pc_sweep_qc_summary_tsv",
         "RareVariantEnrichment.pc_sweep_qc_plot_png",
@@ -110,6 +114,7 @@ def test_wdl_runs_the_four_input_lof_pc_fixture_with_known_cells(tmp_path: Path)
     assert summary["selected_pc_counts"] == [0, 1]
     assert summary["fdr_scope"] == "global_across_all_emitted_rows"
     assert Path(outputs["RareVariantEnrichment.gene_pc_qc_tsv_gz"]).read_bytes()[:2] == b"\x1f\x8b"
+    _check_selected_matrix(outputs, ["S1", "S2", "S3", "S4", "S5", "S6"])
 
 
 def test_wdl_runs_optional_covariate_fixture_and_reports_intersection(
@@ -179,3 +184,17 @@ def test_wdl_runs_optional_covariate_fixture_and_reports_intersection(
     assert analysis_qc["additional_covariate_count"] == 2
     assert analysis_qc["additional_covariate_sample_count"] == 5
     assert analysis_qc["shared_bed_pc_covariate_sample_count"] == 5
+    _check_selected_matrix(outputs, ["S1", "S2", "S3", "S4", "S5"])
+
+
+def _check_selected_matrix(outputs, samples):
+    selection = json.loads(Path(outputs["RareVariantEnrichment.pc_selection_json"]).read_text())
+    summary = json.loads(Path(outputs["RareVariantEnrichment.selected_pc_z_scores_summary_json"]).read_text())
+    assert summary["selected_pc_count"] == selection["selection"]["selected_pc_count"]
+    assert summary["sample_count"] == len(samples)
+    assert summary["gene_count"] == 3
+    with gzip.open(outputs["RareVariantEnrichment.selected_pc_z_scores_tsv_gz"], "rt") as handle:
+        rows = list(csv.reader(handle, delimiter="\t"))
+    assert rows[0] == ["gene_id", *samples]
+    assert [row[0] for row in rows[1:]] == ["ENSG1", "ENSG2", "ENSG3"]
+    assert Path(outputs["RareVariantEnrichment.selected_pc_z_scores_gene_qc_tsv_gz"]).read_bytes()[:2] == b"\x1f\x8b"

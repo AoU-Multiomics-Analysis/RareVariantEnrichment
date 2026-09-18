@@ -26,6 +26,7 @@ from rare_variant_enrichment.phenotypes import prepare_phenotypes
 from rare_variant_enrichment.statistics import calculate_enrichment
 from rare_variant_enrichment.vat import prepare_vat
 from rare_variant_enrichment.variants import classify_chromosome
+from rare_variant_enrichment.zscore_matrix import export_zscore_matrix
 
 
 COMMANDS = (
@@ -39,6 +40,7 @@ COMMANDS = (
     "merge-lof-pc-enrichment",
     "analyze-lof-pc-enrichment",
     "pc-chunks",
+    "export-zscore-matrix",
     "prepare-carrier-inputs",
     "extract-gene-carriers",
     "gather-gene-carriers",
@@ -88,6 +90,14 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_lof_pc_parser.add_argument(
         "--plateau-fraction", type=float, default=DEFAULT_PLATEAU_FRACTION
     )
+    matrix_parser = subparsers.add_parser("export-zscore-matrix")
+    matrix_parser.add_argument("--phenotype-bed", required=True, type=Path)
+    matrix_parser.add_argument("--principal-components", required=True, type=Path)
+    matrix_parser.add_argument("--additional-covariates", type=Path)
+    matrix_parser.add_argument("--selection-input", required=True, type=Path)
+    matrix_parser.add_argument("--matrix-output", required=True, type=Path)
+    matrix_parser.add_argument("--gene-qc-output", required=True, type=Path)
+    matrix_parser.add_argument("--summary-output", required=True, type=Path)
     pc_chunks_parser = subparsers.add_parser("pc-chunks")
     pc_chunks_parser.add_argument("--principal-components", required=True, type=Path)
     pc_chunks_parser.add_argument("--pc-counts", required=True, type=parse_csv_ints)
@@ -237,6 +247,16 @@ def main() -> int:
         if args.additional_covariates is not None:
             calculate_options["additional_covariates_path"] = args.additional_covariates
         calculate_lof_pc_enrichment(*calculate_arguments, **calculate_options)
+    elif args.command == "export-zscore-matrix":
+        export_zscore_matrix(
+            args.phenotype_bed,
+            args.principal_components,
+            args.selection_input,
+            args.matrix_output,
+            args.gene_qc_output,
+            args.summary_output,
+            additional_covariates_path=args.additional_covariates,
+        )
     elif args.command == "pc-chunks":
         available_pc_count = read_principal_component_header(args.principal_components)
         write_json(

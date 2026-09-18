@@ -260,6 +260,51 @@ task AnalyzeLofPcEnrichment {
     }
 }
 
+task ExportSelectedPcZScores {
+    input {
+        File phenotype_bed
+        File principal_components_tsv
+        File? additional_covariates_tsv
+        File selection_json
+        String docker_image
+        Int cpu
+        Int memory_gb
+        Int disk_gb
+        Int max_retries
+        Int preemptible
+    }
+
+    command <<<
+        set -euo pipefail
+
+        echo "Starting Z-score matrix export at the selected PC count" >&2
+        rare-variant-enrichment export-zscore-matrix \
+            --phenotype-bed '~{sub(phenotype_bed, "'", "'\"'\"'")}' \
+            --principal-components '~{sub(principal_components_tsv, "'", "'\"'\"'")}' \
+            ~{if defined(additional_covariates_tsv) then "--additional-covariates '" + sub(select_first([additional_covariates_tsv]), "'", "'\"'\"'") + "'" else ""} \
+            --selection-input '~{sub(selection_json, "'", "'\"'\"'")}' \
+            --matrix-output "selected_pc_z_scores.tsv.gz" \
+            --gene-qc-output "selected_pc_z_scores.gene_qc.tsv.gz" \
+            --summary-output "selected_pc_z_scores.summary.json"
+        echo "Finished Z-score matrix export" >&2
+    >>>
+
+    output {
+        File matrix_tsv_gz = "selected_pc_z_scores.tsv.gz"
+        File gene_qc_tsv_gz = "selected_pc_z_scores.gene_qc.tsv.gz"
+        File summary_json = "selected_pc_z_scores.summary.json"
+    }
+
+    runtime {
+        docker: docker_image
+        cpu: cpu
+        memory: "~{memory_gb} GB"
+        disks: "local-disk ~{disk_gb} HDD"
+        maxRetries: max_retries
+        preemptible: preemptible
+    }
+}
+
 workflow RareVariantEnrichment {
     input {
         File phenotype_bed
@@ -363,7 +408,24 @@ workflow RareVariantEnrichment {
             max_retries = max_retries
     }
 
+    call ExportSelectedPcZScores {
+        input:
+            phenotype_bed = phenotype_bed,
+            principal_components_tsv = principal_components_tsv,
+            additional_covariates_tsv = additional_covariates_tsv,
+            selection_json = AnalyzeLofPcEnrichment.selection_json,
+            docker_image = docker_image,
+            cpu = analysis_cpu,
+            memory_gb = analysis_memory_gb,
+            disk_gb = dynamic_analysis_disk_gb,
+            max_retries = max_retries,
+            preemptible = pc_preemptible
+    }
+
     output {
+        File selected_pc_z_scores_tsv_gz = ExportSelectedPcZScores.matrix_tsv_gz
+        File selected_pc_z_scores_gene_qc_tsv_gz = ExportSelectedPcZScores.gene_qc_tsv_gz
+        File selected_pc_z_scores_summary_json = ExportSelectedPcZScores.summary_json
         File results_tsv = MergeLofPcEnrichment.results_tsv
         File summary_json = MergeLofPcEnrichment.summary_json
         File gene_pc_qc_tsv_gz = MergeLofPcEnrichment.gene_pc_qc_tsv_gz

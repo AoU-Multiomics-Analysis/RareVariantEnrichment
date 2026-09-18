@@ -1,4 +1,5 @@
 import csv
+import gzip
 import json
 from pathlib import Path
 import subprocess
@@ -85,3 +86,33 @@ def test_new_cli_commands_run_four_input_fixture_with_known_fisher_cells(tmp_pat
     assert json.loads(analysis_qc.read_text())["per_pc"]["0"][
         "carrier_observations"
     ] == {"HC": 2, "HC_or_LC": 4, "any_lof": 5}
+
+    selection = tmp_path / "selection.json"
+    analyze = subprocess.run(
+        [sys.executable, "-m", "rare_variant_enrichment.cli", "analyze-lof-pc-enrichment",
+         "--results-input", str(results), "--selection-output", str(selection),
+         "--plot-output", str(tmp_path / "plot.svg"), "--selection-z-thresholds=-0.8"],
+        text=True, capture_output=True, check=False,
+    )
+    assert analyze.returncode == 0, analyze.stderr
+    matrix = tmp_path / "matrix.tsv.gz"
+    export = subprocess.run(
+        [sys.executable, "-m", "rare_variant_enrichment.cli", "export-zscore-matrix",
+         "--phenotype-bed", str(FIXTURES / "lof_pc_phenotypes.bed"),
+         "--principal-components", str(FIXTURES / "principal_components.tsv"),
+         "--selection-input", str(selection), "--matrix-output", str(matrix),
+         "--gene-qc-output", str(tmp_path / "matrix_gene_qc.tsv.gz"),
+         "--summary-output", str(tmp_path / "matrix_summary.json")],
+        text=True, capture_output=True, check=False,
+    )
+    assert export.returncode == 0, export.stderr
+    matrix_summary = json.loads((tmp_path / "matrix_summary.json").read_text())
+    assert matrix_summary["selected_pc_count"] == 0
+    with gzip.open(matrix, "rt") as handle:
+        matrix_rows = list(csv.DictReader(handle, delimiter="\t"))
+    assert [row["gene_id"] for row in matrix_rows] == ["ENSG1", "ENSG2", "ENSG3"]
+    # The matrix recovers the four protein-coding outlier observations at -0.8.
+    assert sum(
+        float(value) <= -0.8
+        for row in matrix_rows[:2] for key, value in row.items() if key != "gene_id"
+    ) == 4
