@@ -7,7 +7,7 @@ import math
 import platform
 from pathlib import Path
 import re
-from typing import Mapping, Sequence
+from typing import Iterator, Mapping, Sequence
 
 import numpy as np
 
@@ -724,46 +724,25 @@ def residualize_expression(
     )
 
 
-def calculate_lof_pc_enrichment(
+@dataclass(frozen=True)
+class AlignedGeneExpression:
+    bed_samples: list[str]
+    shared_samples: list[str]
+    pc_values: np.ndarray
+    covariate_values: np.ndarray | None
+    expression: list[tuple[str, np.ndarray]]
+    bed_feature_count: int
+    bed_gene_count: int
+    selected_feature_count: int
+
+
+def read_aligned_gene_expression(
     phenotype_bed: Path,
-    lof_carriers_path: Path,
-    principal_components_path: Path,
-    protein_coding_genes_path: Path,
-    negative_z_thresholds: Sequence[float],
-    requested_pc_counts: Sequence[int],
-    results_output: Path,
-    summary_output: Path,
-    gene_pc_qc_output: Path,
-    analysis_qc_output: Path,
-    *,
-    pc_grid_mode: str | None = None,
-    additional_covariates_path: Path | None = None,
-) -> None:
-    thresholds = validate_negative_z_thresholds(negative_z_thresholds)
-    principal_components = read_principal_components(principal_components_path)
-    additional_covariates = (
-        read_additional_covariates(additional_covariates_path)
-        if additional_covariates_path is not None
-        else None
-    )
-    pc_counts = build_pc_grid(
-        requested_pc_counts, principal_components.available_pc_count
-    )
-    resolved_pc_grid_mode = "adaptive" if not requested_pc_counts else "explicit"
-    if pc_grid_mode is not None:
-        if pc_grid_mode not in {"adaptive", "explicit"}:
-            raise ValueError("pc_grid_mode must be adaptive or explicit")
-        resolved_pc_grid_mode = pc_grid_mode
-    coding_genes = _read_protein_coding_genes(protein_coding_genes_path)
-    carriers = read_lof_carriers(lof_carriers_path)
-    LOGGER.info(
-        "Starting LoF/PC enrichment: thresholds=%s pc_counts=%s coding_genes=%d "
-        "additional_covariates=%d",
-        thresholds,
-        pc_counts,
-        len(coding_genes),
-        0 if additional_covariates is None else additional_covariates.covariate_count,
-    )
+    principal_components: PrincipalComponents,
+    additional_covariates: AdditionalCovariates | None = None,
+    coding_genes: set[str] | None = None,
+) -> AlignedGeneExpression:
+    """Align samples and collapse BED features; None selects all genes."""
     pc_sample_indexes = {
         sample_id: index
         for index, sample_id in enumerate(principal_components.sample_ids)
@@ -777,28 +756,6 @@ def calculate_lof_pc_enrichment(
         }
     )
 
-    per_pc = {
-        str(pc_count): {
-            "carrier_observations": {
-                definition: 0 for definition in CARRIER_DEFINITIONS
-            },
-            "eligible_gene_count": 0,
-            "exclusion_counts": {reason: 0 for reason in EXCLUSION_REASONS},
-            "total_observations": 0,
-        }
-        for pc_count in pc_counts
-    }
-    outlier_observations = {
-        pc_count: {threshold: 0 for threshold in thresholds}
-        for pc_count in pc_counts
-    }
-    outlier_carriers = {
-        pc_count: {
-            threshold: {definition: 0 for definition in CARRIER_DEFINITIONS}
-            for threshold in thresholds
-        }
-        for pc_count in pc_counts
-    }
     bed_feature_count = 0
     coding_bed_feature_count = 0
     seen_genes: set[str] = set()
@@ -863,12 +820,12 @@ def calculate_lof_pc_enrichment(
             values = [
                 _parse_phenotype_value(value, line_number) for value in fields[4:]
             ]
-            if gene_id not in coding_genes:
+            if coding_genes is not None and gene_id not in coding_genes:
                 continue
             coding_bed_feature_count += 1
             if coding_bed_feature_count % PROGRESS_INTERVAL_GENES == 0:
                 LOGGER.info(
-                    "Processed %d protein-coding BED features",
+                    "Processed %d selected BED features",
                     coding_bed_feature_count,
                 )
             coding_expression_rows.append(
@@ -884,8 +841,228 @@ def calculate_lof_pc_enrichment(
                 )
             )
 
-    coding_expression = _collapse_gene_expression_rows(coding_expression_rows)
-    bed_gene_count = len(seen_genes)
+    return AlignedGeneExpression(
+        bed_samples=bed_samples,
+        shared_samples=shared_samples,
+        pc_values=shared_pc_values,
+        covariate_values=shared_covariate_values,
+        expression=_collapse_gene_expression_rows(coding_expression_rows),
+        bed_feature_count=bed_feature_count,
+        bed_gene_count=len(seen_genes),
+        selected_feature_count=coding_bed_feature_count,
+    )
+
+
+def iter_gene_residual_fits(
+    coding_expression: Sequence[tuple[str, np.ndarray]],
+    shared_pc_values: np.ndarray,
+    pc_counts: Sequence[int],
+    shared_covariate_values: np.ndarray | None = None,
+) -> Iterator[tuple[str, int, ResidualFit]]:
+    """Use the same projection and exclusion rules for enrichment and export."""
+    complete_expression = all(
+        np.all(np.isfinite(expression)) for _, expression in coding_expression
+    )
+    rank_deficient_requested_prefix = False
+    if complete_expression:
+        for pc_count in pc_counts:
+            try:
+                design_parts = [np.ones(shared_pc_values.shape[0])]
+                if shared_covariate_values is not None:
+                    design_parts.append(shared_covariate_values)
+                if pc_count:
+                    design_parts.append(shared_pc_values[:, :pc_count])
+                rank = int(
+                    np.linalg.matrix_rank(np.column_stack(design_parts))
+                )
+            except (np.linalg.LinAlgError, ValueError, FloatingPointError):
+                rank_deficient_requested_prefix = True
+                break
+            required_rank = (
+                1
+                + (0 if shared_covariate_values is None else shared_covariate_values.shape[1])
+                + pc_count
+            )
+            if rank < required_rank:
+                rank_deficient_requested_prefix = True
+                break
+
+    if complete_expression and not rank_deficient_requested_prefix:
+        expression_matrix = np.column_stack(
+            [expression for _, expression in coding_expression]
+        )
+        projection = prepare_complete_data_projection(
+            expression_matrix,
+            shared_pc_values,
+            pc_counts,
+            additional_covariates=shared_covariate_values,
+        )
+        prediction = projection.initial_prediction()
+        previous_pc_count = 0
+
+        for pc_count in pc_counts:
+            prediction = projection.advance_prediction(
+                previous_pc_count, pc_count, prediction
+            )
+            z_scores = projection.z_scores(prediction)
+            residuals = projection.centered_expression - prediction
+            usable_sample_count = shared_pc_values.shape[0]
+            try:
+                design_parts = [np.ones(usable_sample_count)]
+                if shared_covariate_values is not None:
+                    design_parts.append(shared_covariate_values)
+                if pc_count:
+                    design_parts.append(shared_pc_values[:, :pc_count])
+                rank = int(
+                    np.linalg.matrix_rank(np.column_stack(design_parts))
+                )
+            except (np.linalg.LinAlgError, ValueError, FloatingPointError):
+                rank = None
+            required_rank = (
+                1
+                + (0 if shared_covariate_values is None else shared_covariate_values.shape[1])
+                + pc_count
+            )
+
+            for gene_index, (gene_id, expression) in enumerate(coding_expression):
+                if rank is None:
+                    fit = ResidualFit(
+                        np.full(usable_sample_count, np.nan),
+                        usable_sample_count,
+                        None,
+                        None,
+                        None,
+                        "other",
+                    )
+                elif usable_sample_count <= rank + 1:
+                    fit = ResidualFit(
+                        np.full(usable_sample_count, np.nan),
+                        usable_sample_count,
+                        rank,
+                        None,
+                        None,
+                        "insufficient_dof",
+                    )
+                elif rank < required_rank:
+                    fit = ResidualFit(
+                        np.full(usable_sample_count, np.nan),
+                        usable_sample_count,
+                        rank,
+                        None,
+                        None,
+                        "rank_deficiency",
+                    )
+                else:
+                    residual_mean = float(np.mean(residuals[:, gene_index]))
+                    residual_sd = float(np.std(residuals[:, gene_index], ddof=0))
+                    numerical_zero = (
+                        np.finfo(float).eps
+                        * max(1.0, float(np.max(np.abs(expression))))
+                        * 16.0
+                    )
+                    exclusion_reason = None
+                    if (
+                        not math.isfinite(residual_sd)
+                        or residual_sd <= numerical_zero
+                        or not np.all(np.isfinite(z_scores[:, gene_index]))
+                    ):
+                        exclusion_reason = "invalid_or_zero_residual_sd"
+                    fit = ResidualFit(
+                        z_scores[:, gene_index],
+                        usable_sample_count,
+                        rank,
+                        residual_mean,
+                        residual_sd,
+                        exclusion_reason,
+                    )
+                yield gene_id, pc_count, fit
+
+            previous_pc_count = pc_count
+    else:
+        for pc_count in pc_counts:
+            for gene_id, expression in coding_expression:
+                yield gene_id, pc_count, residualize_expression(
+                    expression,
+                    shared_pc_values,
+                    pc_count,
+                    additional_covariates=shared_covariate_values,
+                )
+
+
+def calculate_lof_pc_enrichment(
+    phenotype_bed: Path,
+    lof_carriers_path: Path,
+    principal_components_path: Path,
+    protein_coding_genes_path: Path,
+    negative_z_thresholds: Sequence[float],
+    requested_pc_counts: Sequence[int],
+    results_output: Path,
+    summary_output: Path,
+    gene_pc_qc_output: Path,
+    analysis_qc_output: Path,
+    *,
+    pc_grid_mode: str | None = None,
+    additional_covariates_path: Path | None = None,
+) -> None:
+    thresholds = validate_negative_z_thresholds(negative_z_thresholds)
+    principal_components = read_principal_components(principal_components_path)
+    additional_covariates = (
+        read_additional_covariates(additional_covariates_path)
+        if additional_covariates_path is not None
+        else None
+    )
+    pc_counts = build_pc_grid(
+        requested_pc_counts, principal_components.available_pc_count
+    )
+    resolved_pc_grid_mode = "adaptive" if not requested_pc_counts else "explicit"
+    if pc_grid_mode is not None:
+        if pc_grid_mode not in {"adaptive", "explicit"}:
+            raise ValueError("pc_grid_mode must be adaptive or explicit")
+        resolved_pc_grid_mode = pc_grid_mode
+    coding_genes = _read_protein_coding_genes(protein_coding_genes_path)
+    carriers = read_lof_carriers(lof_carriers_path)
+    LOGGER.info(
+        "Starting LoF/PC enrichment: thresholds=%s pc_counts=%s coding_genes=%d "
+        "additional_covariates=%d",
+        thresholds,
+        pc_counts,
+        len(coding_genes),
+        0 if additional_covariates is None else additional_covariates.covariate_count,
+    )
+
+    per_pc = {
+        str(pc_count): {
+            "carrier_observations": {
+                definition: 0 for definition in CARRIER_DEFINITIONS
+            },
+            "eligible_gene_count": 0,
+            "exclusion_counts": {reason: 0 for reason in EXCLUSION_REASONS},
+            "total_observations": 0,
+        }
+        for pc_count in pc_counts
+    }
+    outlier_observations = {
+        pc_count: {threshold: 0 for threshold in thresholds}
+        for pc_count in pc_counts
+    }
+    outlier_carriers = {
+        pc_count: {
+            threshold: {definition: 0 for definition in CARRIER_DEFINITIONS}
+            for threshold in thresholds
+        }
+        for pc_count in pc_counts
+    }
+    aligned = read_aligned_gene_expression(
+        phenotype_bed, principal_components, additional_covariates, coding_genes
+    )
+    bed_samples = aligned.bed_samples
+    shared_samples = aligned.shared_samples
+    shared_pc_values = aligned.pc_values
+    shared_covariate_values = aligned.covariate_values
+    coding_expression = aligned.expression
+    bed_feature_count = aligned.bed_feature_count
+    bed_gene_count = aligned.bed_gene_count
+    coding_bed_feature_count = aligned.selected_feature_count
     coding_bed_gene_count = len(coding_expression)
     if coding_bed_gene_count == 0:
         raise ValueError(
@@ -964,145 +1141,12 @@ def calculate_lof_pc_enrichment(
                         np.count_nonzero(outlier_mask & carrier_masks[definition])
                     )
 
-        complete_expression = all(
-            np.all(np.isfinite(expression)) for _, expression in coding_expression
+        fits = iter_gene_residual_fits(
+            coding_expression, shared_pc_values, pc_counts, shared_covariate_values
         )
-        rank_deficient_requested_prefix = False
-        if complete_expression:
-            for pc_count in pc_counts:
-                try:
-                    design_parts = [np.ones(len(shared_samples))]
-                    if shared_covariate_values is not None:
-                        design_parts.append(shared_covariate_values)
-                    if pc_count:
-                        design_parts.append(shared_pc_values[:, :pc_count])
-                    rank = int(
-                        np.linalg.matrix_rank(np.column_stack(design_parts))
-                    )
-                except (np.linalg.LinAlgError, ValueError, FloatingPointError):
-                    rank_deficient_requested_prefix = True
-                    break
-                required_rank = (
-                    1
-                    + (0 if shared_covariate_values is None else shared_covariate_values.shape[1])
-                    + pc_count
-                )
-                if rank < required_rank:
-                    rank_deficient_requested_prefix = True
-                    break
-
-        if complete_expression and not rank_deficient_requested_prefix:
-            expression_matrix = np.column_stack(
-                [expression for _, expression in coding_expression]
-            )
-            projection = prepare_complete_data_projection(
-                expression_matrix,
-                shared_pc_values,
-                pc_counts,
-                additional_covariates=shared_covariate_values,
-            )
-            prediction = projection.initial_prediction()
-            previous_pc_count = 0
-
-            for pc_count in pc_counts:
-                prediction = projection.advance_prediction(
-                    previous_pc_count, pc_count, prediction
-                )
-                z_scores = projection.z_scores(prediction)
-                residuals = projection.centered_expression - prediction
-                usable_sample_count = len(shared_samples)
-                try:
-                    design_parts = [np.ones(usable_sample_count)]
-                    if shared_covariate_values is not None:
-                        design_parts.append(shared_covariate_values)
-                    if pc_count:
-                        design_parts.append(shared_pc_values[:, :pc_count])
-                    rank = int(
-                        np.linalg.matrix_rank(np.column_stack(design_parts))
-                    )
-                except (np.linalg.LinAlgError, ValueError, FloatingPointError):
-                    rank = None
-                required_rank = (
-                    1
-                    + (0 if shared_covariate_values is None else shared_covariate_values.shape[1])
-                    + pc_count
-                )
-
-                for gene_index, (gene_id, expression) in enumerate(coding_expression):
-                    if rank is None:
-                        fit = ResidualFit(
-                            np.full(usable_sample_count, np.nan),
-                            usable_sample_count,
-                            None,
-                            None,
-                            None,
-                            "other",
-                        )
-                    elif usable_sample_count <= rank + 1:
-                        fit = ResidualFit(
-                            np.full(usable_sample_count, np.nan),
-                            usable_sample_count,
-                            rank,
-                            None,
-                            None,
-                            "insufficient_dof",
-                        )
-                    elif rank < required_rank:
-                        fit = ResidualFit(
-                            np.full(usable_sample_count, np.nan),
-                            usable_sample_count,
-                            rank,
-                            None,
-                            None,
-                            "rank_deficiency",
-                        )
-                    else:
-                        residual_mean = float(np.mean(residuals[:, gene_index]))
-                        residual_sd = float(np.std(residuals[:, gene_index], ddof=0))
-                        numerical_zero = (
-                            np.finfo(float).eps
-                            * max(1.0, float(np.max(np.abs(expression))))
-                            * 16.0
-                        )
-                        exclusion_reason = None
-                        if (
-                            not math.isfinite(residual_sd)
-                            or residual_sd <= numerical_zero
-                            or not np.all(np.isfinite(z_scores[:, gene_index]))
-                        ):
-                            exclusion_reason = "invalid_or_zero_residual_sd"
-                        fit = ResidualFit(
-                            z_scores[:, gene_index],
-                            usable_sample_count,
-                            rank,
-                            residual_mean,
-                            residual_sd,
-                            exclusion_reason,
-                        )
-                    record_fit(gene_id, pc_count, fit)
-
-                pc_qc = per_pc[str(pc_count)]
-                LOGGER.info(
-                    "Completed PC count %d: eligible_genes=%d observations=%d",
-                    pc_count,
-                    pc_qc["eligible_gene_count"],
-                    pc_qc["total_observations"],
-                )
-                previous_pc_count = pc_count
-        else:
-            for pc_count in pc_counts:
-                for gene_id, expression in coding_expression:
-                    record_fit(
-                        gene_id,
-                        pc_count,
-                        residualize_expression(
-                            expression,
-                            shared_pc_values,
-                            pc_count,
-                            additional_covariates=shared_covariate_values,
-                        ),
-                    )
-
+        for index, (gene_id, pc_count, fit) in enumerate(fits, start=1):
+            record_fit(gene_id, pc_count, fit)
+            if index % coding_bed_gene_count == 0:
                 pc_qc = per_pc[str(pc_count)]
                 LOGGER.info(
                     "Completed PC count %d: eligible_genes=%d observations=%d",

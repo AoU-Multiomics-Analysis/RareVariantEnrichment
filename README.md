@@ -154,19 +154,33 @@ rare-variant-enrichment lof-pc-enrichment \
   --results-output lof_pc_enrichment.tsv --summary-output lof_pc_enrichment.summary.json \
   --gene-pc-qc-output lof_pc_enrichment.gene_pc_qc.tsv.gz \
   --analysis-qc-output lof_pc_enrichment.analysis_qc.json
+
+rare-variant-enrichment analyze-lof-pc-enrichment \
+  --results-input lof_pc_enrichment.tsv \
+  --selection-output lof_pc_selection.json --plot-output lof_pc_enrichment.svg
+
+rare-variant-enrichment export-zscore-matrix \
+  --phenotype-bed phenotypes.bed.gz --principal-components pcs.tsv \
+  --additional-covariates genetic_pcs.tsv --selection-input lof_pc_selection.json \
+  --matrix-output selected_pc_z_scores.tsv.gz \
+  --gene-qc-output selected_pc_z_scores.gene_qc.tsv.gz \
+  --summary-output selected_pc_z_scores.summary.json
 ```
 
 Legacy Python CLI commands remain available for compatibility, but are not part of the WDL or public analysis contract.
 
 ## Outputs
 
-The workflow emits exactly ten files:
+The workflow emits thirteen files:
 
 - `results_tsv`: one row per PC count × negative threshold × carrier definition, merged across analysis shards.
 - `summary_json`: selected grid/settings, global FDR scope, residualization description, provenance, and the screening limitation.
 - `gene_pc_qc_tsv_gz`: compressed per-normalized-gene/per-PC QC with usable samples, rank, residual mean/SD, status, and exclusion reason.
 - `analysis_qc_json`: BED/PC/covariate overlap counts, covariate names and input sample count when supplied, pre-join carrier-pair counts, LoF input QC, and per-PC eligibility, actual carrier-observation, and structured exclusion counters.
 - `pc_selection_json`: median-logOR plateau summaries, excluded/included z thresholds, and the minimum common PC count selected by the 95% plateau rule.
+- `selected_pc_z_scores_tsv_gz`: compressed gene-by-sample matrix of signed residual Z scores at the selected PC count. Includes all genes in the phenotype BED.
+- `selected_pc_z_scores_gene_qc_tsv_gz`: per-gene sample count, model rank, residual mean/SD, status, and exclusion reason for the matrix.
+- `selected_pc_z_scores_summary_json`: selected PC count, matrix dimensions, covariate names, exclusion counts, and calculation rules.
 - `enrichment_plot_svg`: threshold-specific enrichment curves for `HC` and `any_lof`, median logOR curves, and reference lines for the selected PC positions.
 - `pc_sweep_qc_summary_tsv`: analysis-ready PC-sweep values containing the median log odds ratio across the selected z thresholds, the maximum-enrichment PC and odds ratio, and each PC's percentage of the maximum.
 - `pc_sweep_qc_plot_png`: percentage-of-maximum QC plot with exact odds-ratio annotations at selected PC checkpoints and ggrepel-style labels for the maximum enrichment values.
@@ -192,6 +206,16 @@ The workflow also emits `pc_selection_json` and `enrichment_plot_svg`. PC select
 
 The `pc_sweep_qc_summary_tsv` and `pc_sweep_qc_plot_png` outputs use the same `z = -3, -4, -5, -6` median-logOR summary. Each carrier definition is normalized to its own maximum median odds ratio; the plot displays percentage of maximum on the y-axis, a 95% plateau reference, and exact median odds-ratio labels at selected PC counts.
 
+### Selected-PC Z-score matrix
+
+`ExportSelectedPcZScores` runs after PC selection. It reads `selection.selected_pc_count` from `pc_selection_json` and fits each gene with an intercept, all supplied additional covariates, and the first selected number of PCs. It divides residuals by their population standard deviation (`ddof=0`). The task uses the same calculation and exclusion rules as enrichment. It exports all genes in the BED, including noncoding genes and genes without LoF carriers. The enrichment and PC-selection steps still use protein-coding genes.
+
+The gzip-compressed TSV starts with `gene_id`, followed by sample-ID columns. Genes follow their first occurrence in the BED. Samples follow BED order within the intersection of the BED, PC table, and optional covariate table. Multiple BED rows for one gene are collapsed to the minimum finite value per sample before adjustment. Missing observations have `NA` values. Genes that fail the model checks remain in the matrix with an all-`NA` row; the gene QC file gives the reason. No outlier threshold is applied to matrix values.
+
+The WDL passes each input as `File` or `File?` until command rendering. The export command checks that inputs are readable and reports unresolved cloud paths as localization errors. Local tests cover cloud-to-local path substitution, optional covariates, and shell quoting. These tests do not validate a Terra run. The complete workflow with this export task has not been tested on Terra.
+
+Use an image built from this revision before running the updated WDL. The existing GitHub Actions test job runs the complete fixture workflow, including this export task, in its test image. Omit `--additional-covariates` from the CLI commands when no additional covariates were used.
+
 ## Interpretation
 
-Each test pools repeated samples and repeated genes, so Fisher p-values and globally adjusted FDR values are screening statistics, not confirmatory person-level inference. Use the raw cells, PC-specific QC, and appropriate dependence-aware models, permutations, or gene-level meta-analysis for confirmation. The workflow deliberately does not export full residual matrices.
+Each test pools repeated samples and repeated genes, so Fisher p-values and globally adjusted FDR values are screening statistics, not confirmatory person-level inference. Use the raw cells, PC-specific QC, and appropriate dependence-aware models, permutations, or gene-level meta-analysis for confirmation. The workflow exports one Z-score matrix at the selected PC count.

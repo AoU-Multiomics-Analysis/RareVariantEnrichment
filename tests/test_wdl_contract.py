@@ -1,8 +1,13 @@
 import json
+import gzip
+import os
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 
 WORKFLOW = Path("workflows/rare_variant_enrichment.wdl")
@@ -128,11 +133,12 @@ def test_wdl_has_only_the_four_file_public_inputs_and_required_defaults():
     }
 
 
-def test_wdl_scatter_and_merge_preserve_the_ten_public_outputs():
+def test_wdl_scatter_merge_and_selected_matrix_outputs():
     contract = _inspect_workflow()
     assert contract["tasks"] == [
         "AnalyzeLofPcEnrichment",
         "CalculateLofPcEnrichment",
+        "ExportSelectedPcZScores",
         "MergeLofPcEnrichment",
         "PreparePcChunks",
         "PrepareProteinCodingGenes",
@@ -142,6 +148,7 @@ def test_wdl_scatter_and_merge_preserve_the_ten_public_outputs():
         "PreparePcChunks",
         "MergeLofPcEnrichment",
         "AnalyzeLofPcEnrichment",
+        "ExportSelectedPcZScores",
     ]
     assert contract["scatters"] == [{
         "variable": "pc_count_chunk",
@@ -172,6 +179,9 @@ def test_wdl_scatter_and_merge_preserve_the_ten_public_outputs():
         "gene_pc_qc_tsv_gz": "File",
         "analysis_qc_json": "File",
         "pc_selection_json": "File",
+        "selected_pc_z_scores_tsv_gz": "File",
+        "selected_pc_z_scores_gene_qc_tsv_gz": "File",
+        "selected_pc_z_scores_summary_json": "File",
         "enrichment_plot_svg": "File",
         "pc_sweep_qc_summary_tsv": "File",
         "pc_sweep_qc_plot_png": "File",
@@ -214,6 +224,18 @@ def test_wdl_wires_chunk_preparation_merge_and_dynamic_disk_floors():
             "memory_gb": "analysis_memory_gb",
             "disk_gb": "dynamic_merge_disk_gb",
             "max_retries": "max_retries",
+        },
+        "ExportSelectedPcZScores": {
+            "phenotype_bed": "phenotype_bed",
+            "principal_components_tsv": "principal_components_tsv",
+            "additional_covariates_tsv": "additional_covariates_tsv",
+            "selection_json": "AnalyzeLofPcEnrichment.selection_json",
+            "docker_image": "docker_image",
+            "cpu": "analysis_cpu",
+            "memory_gb": "analysis_memory_gb",
+            "disk_gb": "dynamic_analysis_disk_gb",
+            "max_retries": "max_retries",
+            "preemptible": "pc_preemptible",
         },
         "AnalyzeLofPcEnrichment": {
             "results_tsv": "MergeLofPcEnrichment.results_tsv",
@@ -313,6 +335,18 @@ def test_wdl_task_interfaces_and_retries_are_complete():
             "disk_gb": "Int",
             "max_retries": "Int",
         },
+        "ExportSelectedPcZScores": {
+            "phenotype_bed": "File",
+            "principal_components_tsv": "File",
+            "additional_covariates_tsv": "File?",
+            "selection_json": "File",
+            "docker_image": "String",
+            "cpu": "Int",
+            "memory_gb": "Int",
+            "disk_gb": "Int",
+            "max_retries": "Int",
+            "preemptible": "Int",
+        },
         "AnalyzeLofPcEnrichment": {
             "results_tsv": "File",
             "selection_z_thresholds": "Array[Float]",
@@ -367,6 +401,7 @@ values = {
     'gene_pc_qc_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/gene qc one.tsv.gz'), WDL.Value.File('/tmp/gene qc two.tsv.gz')]),
     'analysis_qc_inputs': array(WDL.Type.File(), [WDL.Value.File('/tmp/analysis qc one.json'), WDL.Value.File('/tmp/analysis qc two.json')]),
     'results_tsv': WDL.Value.File('/tmp/results one.tsv'),
+    'selection_json': WDL.Value.File('/tmp/selection.json'),
     'docker_image': WDL.Value.String(dangerous_image),
     'cpu': WDL.Value.Int(1), 'memory_gb': WDL.Value.Int(1), 'disk_gb': WDL.Value.Int(1),
         'max_retries': WDL.Value.Int(1),
@@ -445,3 +480,105 @@ print(json.dumps(rendered, sort_keys=True))
     assert '--plot-output "pc_sweep_qc_percent_max.png"' in plot["command"]
     assert dangerous_image not in plot["command"]
     assert plot["generated_files"]["selection_z_thresholds_file"] == ["-3.000000", "-4.000000"]
+
+
+def test_workflow_scope_does_not_write_files():
+    script = '''
+import sys
+import WDL
+
+document = WDL.load(sys.argv[1])
+def check(node):
+    if isinstance(node, WDL.Expr.Apply):
+        assert not node.function_name.startswith("write_"), str(node)
+    if isinstance(node, WDL.Tree.Call):
+        for expression in node.inputs.values():
+            check(expression)
+    else:
+        for child in node.children:
+            check(child)
+
+for node in [*document.workflow.inputs, *document.workflow.body, *document.workflow.outputs]:
+    check(node)
+'''
+    result = subprocess.run(
+        [*_miniwdl_python(), "-c", script, str(WORKFLOW)],
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("with_covariates", [False, True])
+def test_matrix_task_localizes_cloud_files_and_runs_safely(tmp_path, with_covariates):
+    fixtures = Path(__file__).parent / "fixtures"
+    # Shell metacharacters must remain literal parts of each local path.
+    localized = tmp_path / "localized ' \" $(touch INJECTION) `touch INJECTION` $HOME"
+    localized.mkdir()
+    mapping = {}
+    for name, source in {
+        "phenotype_bed": "lof_pc_phenotypes.bed",
+        "principal_components_tsv": "principal_components.tsv",
+        "additional_covariates_tsv": "genetic_pcs.tsv",
+    }.items():
+        path = localized / source
+        shutil.copyfile(fixtures / source, path)
+        mapping[f"gs://test-bucket/{name}"] = str(path)
+    selection_path = localized / "selection.json"
+    selection_path.write_text('{"selection": {"selected_pc_count": 0}}')
+    mapping["gs://test-bucket/selection_json"] = str(selection_path)
+    script = '''
+import json
+import sys
+import WDL
+
+document = WDL.load(sys.argv[1])
+task = next(task for task in document.tasks if task.name == "ExportSelectedPcZScores")
+mapping = json.loads(sys.argv[2])
+environment = WDL.Env.Bindings()
+for declaration in task.inputs:
+    if isinstance(declaration.type, WDL.Type.File):
+        value = WDL.Value.File("gs://test-bucket/" + declaration.name)
+        if declaration.name == "additional_covariates_tsv" and sys.argv[3] == "false":
+            value = WDL.Value.Null()
+    elif isinstance(declaration.type, WDL.Type.Int):
+        value = WDL.Value.Int(1)
+    else:
+        value = WDL.Value.String("test-image")
+    environment = environment.bind(declaration.name, value)
+stdlib = WDL.StdLib.Base(document.effective_wdl_version)
+for declaration in task.postinputs:
+    environment = environment.bind(declaration.name, declaration.expr.eval(environment, stdlib))
+# Simulate the runner's localization step after input evaluation.
+environment = environment.map(
+    lambda binding: WDL.Env.Binding(
+        binding.name, WDL.Value.rewrite_paths(binding.value, lambda f: mapping[f.value])
+    )
+)
+print(task.command.eval(environment, stdlib).value)
+'''
+    rendered = subprocess.run(
+        [*_miniwdl_python(), "-c", script, str(WORKFLOW), json.dumps(mapping),
+         "true" if with_covariates else "false"],
+        text=True, capture_output=True, check=False,
+    )
+    assert rendered.returncode == 0, rendered.stderr
+    assert "gs://" not in rendered.stdout
+    if not with_covariates:
+        assert "--additional-covariates" not in rendered.stdout
+    command = (
+        "rare-variant-enrichment() { " + shlex.quote(sys.executable)
+        + ' -m rare_variant_enrichment.cli "$@"; }\n' + rendered.stdout
+    )
+    result = subprocess.run(
+        ["bash", "-c", command], cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(Path("src").resolve())},
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "INJECTION").exists()
+    with gzip.open(tmp_path / "selected_pc_z_scores.tsv.gz", "rt") as handle:
+        rows = handle.read().splitlines()
+    assert len(rows) == 4  # All three genes, including the noncoding gene.
+    assert rows[0].split("\t") == ["gene_id", "S1", "S2", "S3", "S4", "S5"] + (
+        [] if with_covariates else ["S6"]
+    )
