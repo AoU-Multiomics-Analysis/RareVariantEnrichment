@@ -1,0 +1,15 @@
+{
+  "MultiOmicsOutliers.ome_manifest": "gs://your-bucket/omics_manifest.tsv",
+  "MultiOmicsOutliers.lof_carrier_table": "gs://your-bucket/lof_carriers.tsv.gz",
+  "MultiOmicsOutliers.gene_annotation_gtf": "gs://your-bucket/genes.gtf.gz",
+  "MultiOmicsOutliers.intersection_z_thresholds": [
+    -2.0,
+    -3.0,
+    -4.0,
+    -5.0,
+    -6.0
+  ],
+  "MultiOmicsOutliers.pc_counts": [],
+  "MultiOmicsOutliers.docker_image": "ghcr.io/aou-multiomics-analysis/rarevariantenrichment:main",
+  "MultiOmicsOutliers.haplo_logcpm_drop": 1.0
+}

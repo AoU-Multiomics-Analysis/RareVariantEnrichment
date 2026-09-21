@@ -21,6 +21,7 @@ def run_export(tmp_path, *, bed=None, pcs=None, covariates=None, selected=1):
         "--principal-components", str(pcs or FIXTURES / "principal_components.tsv"),
         "--selection-input", str(selection),
         "--matrix-output", str(tmp_path / "matrix.tsv.gz"),
+        "--haplo-matrix-output", str(tmp_path / "haplo.tsv.gz"),
         "--gene-qc-output", str(tmp_path / "gene_qc.tsv.gz"),
         "--summary-output", str(tmp_path / "summary.json"),
     ]
@@ -76,6 +77,11 @@ def test_export_aligns_covariates_collapses_features_and_preserves_missing_value
     assert result.returncode == 0, result.stderr
     header, genes, values = read_matrix(tmp_path)
     assert header == ["gene_id", "S3", "S1", "S6", "S2", "S4"]
+    with gzip.open(tmp_path / "haplo.tsv.gz", "rt") as handle:
+        haplo = list(csv.reader(handle, delimiter="\t"))
+    assert haplo[0] == header
+    assert [row[0] for row in haplo[1:]] == genes
+    assert haplo[2][1] == "NA"
     assert genes == ["ENSG1", "ENSG2", "ENSG3"]
     # Independent least-squares reference, in BED sample order.
     design = np.column_stack([np.ones(5), [-1, 0, 0, 1, 2]])

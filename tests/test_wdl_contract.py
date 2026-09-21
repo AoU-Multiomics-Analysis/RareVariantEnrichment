@@ -107,6 +107,8 @@ def test_wdl_has_only_the_four_file_public_inputs_and_required_defaults():
         "principal_components_tsv": {"type": "File", "default": None},
         "additional_covariates_tsv": {"type": "File?", "default": None},
         "gene_annotation_gtf": {"type": "File", "default": None},
+        "haplo_logcpm_drop": {"type": "Float", "default": 1.0},
+        "ome_name": {"type": "String", "default": ""},
         "negative_z_thresholds": {
             "type": "Array[Float]",
             "default": [-2.0, -3.0, -4.0, -5.0, -6.0],
@@ -180,6 +182,7 @@ def test_wdl_scatter_merge_and_selected_matrix_outputs():
         "analysis_qc_json": "File",
         "pc_selection_json": "File",
         "selected_pc_z_scores_tsv_gz": "File",
+        "selected_pc_haplo_calls_tsv_gz": "File?",
         "selected_pc_z_scores_gene_qc_tsv_gz": "File",
         "selected_pc_z_scores_summary_json": "File",
         "enrichment_plot_svg": "File",
@@ -230,6 +233,8 @@ def test_wdl_wires_chunk_preparation_merge_and_dynamic_disk_floors():
             "principal_components_tsv": "principal_components_tsv",
             "additional_covariates_tsv": "additional_covariates_tsv",
             "selection_json": "AnalyzeLofPcEnrichment.selection_json",
+            "haplo_logcpm_drop": "haplo_logcpm_drop",
+            "ome_name": "ome_name",
             "docker_image": "docker_image",
             "cpu": "analysis_cpu",
             "memory_gb": "analysis_memory_gb",
@@ -340,6 +345,8 @@ def test_wdl_task_interfaces_and_retries_are_complete():
             "principal_components_tsv": "File",
             "additional_covariates_tsv": "File?",
             "selection_json": "File",
+            "haplo_logcpm_drop": "Float",
+            "ome_name": "String",
             "docker_image": "String",
             "cpu": "Int",
             "memory_gb": "Int",
@@ -393,6 +400,8 @@ values = {
     'negative_z_thresholds': array(WDL.Type.Float(), [WDL.Value.Float(-2.0)]),
     'selection_z_thresholds': array(WDL.Type.Float(), [WDL.Value.Float(-3.0), WDL.Value.Float(-4.0)]),
     'plateau_fraction': WDL.Value.Float(0.95),
+    'haplo_logcpm_drop': WDL.Value.Float(1.0),
+    'ome_name': WDL.Value.String('expression'),
     'pc_counts': array(WDL.Type.Int(), []),
     'pc_grid_mode': WDL.Value.String('adaptive'),
     'pc_counts_per_job': WDL.Value.Int(1),
@@ -437,7 +446,7 @@ print(json.dumps(rendered, sort_keys=True))
     assert '"/tmp/phenotype matrix.bed.gz"' in analysis["command"]
     assert '"/tmp/lof carriers.tsv"' in analysis["command"]
     assert '"/tmp/principal components.tsv"' in analysis["command"]
-    assert '"/tmp/genetic pcs.tsv"' in analysis["command"]
+    assert "'/tmp/genetic pcs.tsv'" in analysis["command"]
     assert '"/tmp/protein coding.tsv"' in analysis["command"]
     assert '--negative-z-thresholds="$negative_z_thresholds_csv"' in analysis["command"]
     assert '--pc-grid-mode "adaptive"' in analysis["command"]
@@ -508,8 +517,9 @@ for node in [*document.workflow.inputs, *document.workflow.body, *document.workf
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("ome_name", ["expression", "protein", "splicing", "Expression", ""])
 @pytest.mark.parametrize("with_covariates", [False, True])
-def test_matrix_task_localizes_cloud_files_and_runs_safely(tmp_path, with_covariates):
+def test_matrix_task_localizes_cloud_files_and_runs_safely(tmp_path, with_covariates, ome_name):
     fixtures = Path(__file__).parent / "fixtures"
     # Shell metacharacters must remain literal parts of each local path.
     localized = tmp_path / "localized ' \" $(touch INJECTION) `touch INJECTION` $HOME"
@@ -536,10 +546,14 @@ task = next(task for task in document.tasks if task.name == "ExportSelectedPcZSc
 mapping = json.loads(sys.argv[2])
 environment = WDL.Env.Bindings()
 for declaration in task.inputs:
-    if isinstance(declaration.type, WDL.Type.File):
+    if declaration.name == "ome_name":
+        value = WDL.Value.String(sys.argv[4])
+    elif isinstance(declaration.type, WDL.Type.File):
         value = WDL.Value.File("gs://test-bucket/" + declaration.name)
         if declaration.name == "additional_covariates_tsv" and sys.argv[3] == "false":
             value = WDL.Value.Null()
+    elif isinstance(declaration.type, WDL.Type.Float):
+        value = WDL.Value.Float(1.0)
     elif isinstance(declaration.type, WDL.Type.Int):
         value = WDL.Value.Int(1)
     else:
@@ -558,7 +572,7 @@ print(task.command.eval(environment, stdlib).value)
 '''
     rendered = subprocess.run(
         [*_miniwdl_python(), "-c", script, str(WORKFLOW), json.dumps(mapping),
-         "true" if with_covariates else "false"],
+         "true" if with_covariates else "false", ome_name],
         text=True, capture_output=True, check=False,
     )
     assert rendered.returncode == 0, rendered.stderr
@@ -582,3 +596,18 @@ print(task.command.eval(environment, stdlib).value)
     assert rows[0].split("\t") == ["gene_id", "S1", "S2", "S3", "S4", "S5"] + (
         [] if with_covariates else ["S6"]
     )
+
+    haplo_path = tmp_path / "selected_pc_haplo_calls.tsv.gz"
+    summary = json.loads((tmp_path / "selected_pc_z_scores.summary.json").read_text())
+    if ome_name != "expression":
+        assert not haplo_path.exists()
+        assert "haplo" not in summary
+        assert "--haplo-matrix-output" not in rendered.stdout
+        return
+    assert "haplo" in summary
+    with gzip.open(haplo_path, "rt") as handle:
+        haplo_rows = handle.read().splitlines()
+    assert haplo_rows[0] == rows[0]
+    assert len(haplo_rows) == len(rows)
+    expected_haplo = ["1", "0", "0", "0", "0"] if with_covariates else ["1", "1", "0", "0", "0", "0"]
+    assert haplo_rows[1].split("\t")[1:] == expected_haplo

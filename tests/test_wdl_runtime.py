@@ -93,6 +93,7 @@ def test_wdl_runs_the_four_input_lof_pc_fixture_with_known_cells(tmp_path: Path)
         "RareVariantEnrichment.analysis_qc_json",
         "RareVariantEnrichment.pc_selection_json",
         "RareVariantEnrichment.selected_pc_z_scores_tsv_gz",
+        "RareVariantEnrichment.selected_pc_haplo_calls_tsv_gz",
         "RareVariantEnrichment.selected_pc_z_scores_gene_qc_tsv_gz",
         "RareVariantEnrichment.selected_pc_z_scores_summary_json",
         "RareVariantEnrichment.enrichment_plot_svg",
@@ -131,6 +132,7 @@ def test_wdl_runs_optional_covariate_fixture_and_reports_intersection(
         "RareVariantEnrichment.principal_components_tsv": str(
             (FIXTURES / "principal_components.tsv").resolve()
         ),
+        "RareVariantEnrichment.ome_name": "expression",
         "RareVariantEnrichment.additional_covariates_tsv": str(
             (FIXTURES / "genetic_pcs.tsv").resolve()
         ),
@@ -184,10 +186,10 @@ def test_wdl_runs_optional_covariate_fixture_and_reports_intersection(
     assert analysis_qc["additional_covariate_count"] == 2
     assert analysis_qc["additional_covariate_sample_count"] == 5
     assert analysis_qc["shared_bed_pc_covariate_sample_count"] == 5
-    _check_selected_matrix(outputs, ["S1", "S2", "S3", "S4", "S5"])
+    _check_selected_matrix(outputs, ["S1", "S2", "S3", "S4", "S5"], expect_haplo=True)
 
 
-def _check_selected_matrix(outputs, samples):
+def _check_selected_matrix(outputs, samples, expect_haplo=False):
     selection = json.loads(Path(outputs["RareVariantEnrichment.pc_selection_json"]).read_text())
     summary = json.loads(Path(outputs["RareVariantEnrichment.selected_pc_z_scores_summary_json"]).read_text())
     assert summary["selected_pc_count"] == selection["selection"]["selected_pc_count"]
@@ -198,3 +200,13 @@ def _check_selected_matrix(outputs, samples):
     assert rows[0] == ["gene_id", *samples]
     assert [row[0] for row in rows[1:]] == ["ENSG1", "ENSG2", "ENSG3"]
     assert Path(outputs["RareVariantEnrichment.selected_pc_z_scores_gene_qc_tsv_gz"]).read_bytes()[:2] == b"\x1f\x8b"
+
+    if not expect_haplo:
+        assert outputs["RareVariantEnrichment.selected_pc_haplo_calls_tsv_gz"] is None
+        assert "haplo" not in summary
+        return
+    with gzip.open(outputs["RareVariantEnrichment.selected_pc_haplo_calls_tsv_gz"], "rt") as handle:
+        haplo = list(csv.reader(handle, delimiter="\t"))
+    assert haplo[0] == ["gene_id", *samples]
+    assert len(haplo) == 4
+    assert summary["haplo"]["selected_pc_count"] == selection["selection"]["selected_pc_count"]
