@@ -219,3 +219,46 @@ Use an image built from this revision before running the updated WDL. The existi
 ## Interpretation
 
 Each test pools repeated samples and repeated genes, so Fisher p-values and globally adjusted FDR values are screening statistics, not confirmatory person-level inference. Use the raw cells, PC-specific QC, and appropriate dependence-aware models, permutations, or gene-level meta-analysis for confirmation. The workflow exports one Z-score matrix at the selected PC count.
+
+## Multiple matrices and multi-omics outliers
+
+Use `workflows/multiomics_outliers.wdl` to run `RareVariantEnrichment` separately for each ome. Set `ome_manifest` to the TSV manifest file. See `examples/omics_manifest.tsv` and `examples/multiomics_outliers.inputs.json`. Supply one shared LoF carrier table and gene annotation. Each ome selects its own PC count and exports all BED genes as a Z-score matrix.
+
+| Manifest column | Contents |
+|---|---|
+| `ome_name` | Unique ome name, such as `expression`, `protein`, or `splicing`. |
+| `phenotype_bed` | Path to the phenotype BED for this ome. |
+| `principal_components_tsv` | Path to the PC table for this ome. |
+| `additional_covariates_tsv` | Optional path to all fixed covariates for this ome. Use a blank cell or `.` to omit it. The column can also be omitted. |
+
+There is no separate ome-covariate field. Each row can use a different additional-covariate file, or several rows can use the same file. All supplied fixed covariates stay in the model while the workflow varies the PC count. Without that file, the model uses an intercept and the selected PCs.
+
+Use `gs://` object paths for Terra. Absolute local paths are also accepted for tests; relative paths are rejected because localization changes the manifest directory. The manifest task checks the names, fields, and thresholds. It returns the paths as metadata. The workflow then declares each path as a `File` before it passes the value to an analysis task. The optional covariate path is declared only when supplied.
+
+The final task creates a gene-by-sample indicator matrix for every dataset combination of size two or greater, at every `intersection_z_thresholds` value. The default thresholds are `-2, -3, -4, -5, -6`. These thresholds are separate from the enrichment and PC-selection thresholds. Each combination uses the same threshold in all participating datasets and tests the lower tail (`Z <= threshold`).
+
+For expression, protein, and splicing, the combinations are expression–protein, expression–splicing, protein–splicing, and expression–protein–splicing. A protein–splicing cell is `1` when both values meet the threshold, regardless of expression. The three-way cell is `1` only when all three values meet it. Pairwise and three-way outputs can therefore overlap.
+
+| Cell | Meaning |
+|---|---|
+| `1` | All participating Z scores are finite and at or below the threshold. |
+| `0` | All participating Z scores are finite, and at least one exceeds the threshold. |
+| `NA` | At least one participating Z score is missing. |
+
+Each combination uses its own shared genes and sample IDs. Row and column order follows the first dataset in that combination. Alignment uses IDs, not row or column position. A dataset outside the combination does not affect its sample set or calls. Empty overlap produces an empty matrix and zero observation counts in the output index. Missing data are not classified as non-outliers.
+
+The workflow outputs are:
+
+- `matrix_results`: one `OmicsResult` per input dataset, in input order. It contains the dataset name, original input files, selected-PC Z-score matrix, PC selection, enrichment results, plots, and QC files.
+- `dataset_ids` and `z_score_matrices`: corresponding arrays in input order for direct downstream use.
+- `intersection_matrices`: gzip-compressed TSV indicator matrices. The first column is `gene_id`.
+- `intersection_manifest_tsv`: maps each output basename to its datasets and threshold; gives gene, sample, outlier, non-outlier, and missing-cell counts. Use this index to identify files rather than relying on array order.
+- `intersection_summary_json`: dataset dimensions, thresholds, calculation rules, and the same per-intersection counts.
+
+For `N` datasets and `T` thresholds, the output count is `T * (2^N - N - 1)`. Three datasets at five thresholds produce 20 matrices. Output size grows quickly as datasets are added. The intersection task stores input gene vectors in a temporary SQLite database and processes one combination at a time. Its disk allocation has a 1,000 GB default floor, with a size-based increase; increase `intersection_disk_gb` for large input sets or many outputs. The other intersection resource inputs are `intersection_cpu` and `intersection_memory_gb`.
+
+Dataset names must be unique, start with a letter, and contain only letters, digits, or underscores, up to 64 characters. At least two datasets are required. The workflow validates names and intersection thresholds before it starts the per-dataset analyses. A failed per-dataset analysis stops intersection generation; it does not silently omit that dataset.
+
+After the manifest is read, all analysis input paths remain typed WDL `File` values until command rendering. The intersection task creates its newline-delimited list of local matrix paths at that point. The list contains no unresolved cloud URIs. The CLI rejects unreadable paths, duplicate IDs, invalid values, and inconsistent row widths. The single-matrix workflow remains available on its own.
+
+The existing GitHub Actions Python test job includes a two-dataset workflow smoke test. Local checks cover ID alignment, missing values, threshold equality, pairwise and three-way calls, file localization, shell quoting, and WDL syntax. The complete multi-matrix workflow has not been tested on Terra. Build an updated image before running it. No cloud jobs are submitted by these tests.

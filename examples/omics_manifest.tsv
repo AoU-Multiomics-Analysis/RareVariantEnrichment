@@ -1,0 +1,4 @@
+ome_name	phenotype_bed	principal_components_tsv	additional_covariates_tsv
+expression	gs://your-bucket/expression.bed.gz	gs://your-bucket/expression.pcs.tsv	gs://your-bucket/genetic_pcs.tsv
+protein	gs://your-bucket/protein.bed.gz	gs://your-bucket/protein.pcs.tsv	gs://your-bucket/protein_covariates.tsv
+splicing	gs://your-bucket/splicing.bed.gz	gs://your-bucket/splicing.pcs.tsv	.

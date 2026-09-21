@@ -10,6 +10,9 @@ from rare_variant_enrichment.carrier_extraction import (
     prepare_carrier_inputs,
 )
 from rare_variant_enrichment.io import read_nonempty_lines, write_json
+from rare_variant_enrichment.multiomics import (
+    build_outlier_intersections, read_list_file, validate_multiomics_inputs,
+)
 from rare_variant_enrichment.lof_pc import (
     build_pc_chunks,
     calculate_lof_pc_enrichment,
@@ -22,6 +25,7 @@ from rare_variant_enrichment.pc_selection import (
     DEFAULT_SELECTION_Z_THRESHOLDS,
     analyze_lof_pc_enrichment,
 )
+from rare_variant_enrichment.omics_manifest import prepare_omics_manifest
 from rare_variant_enrichment.phenotypes import prepare_phenotypes
 from rare_variant_enrichment.statistics import calculate_enrichment
 from rare_variant_enrichment.vat import prepare_vat
@@ -41,6 +45,9 @@ COMMANDS = (
     "analyze-lof-pc-enrichment",
     "pc-chunks",
     "export-zscore-matrix",
+    "validate-multiomics-inputs",
+    "multiomics-intersections",
+    "prepare-omics-manifest",
     "prepare-carrier-inputs",
     "extract-gene-carriers",
     "gather-gene-carriers",
@@ -90,6 +97,21 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_lof_pc_parser.add_argument(
         "--plateau-fraction", type=float, default=DEFAULT_PLATEAU_FRACTION
     )
+    manifest_parser = subparsers.add_parser("prepare-omics-manifest")
+    manifest_parser.add_argument("--manifest", required=True, type=Path)
+    manifest_parser.add_argument("--threshold-list", required=True, type=Path)
+    manifest_parser.add_argument("--output", required=True, type=Path)
+    for name in ("validate-multiomics-inputs", "multiomics-intersections"):
+        multiomics_parser = subparsers.add_parser(name)
+        multiomics_parser.add_argument("--dataset-id-list", required=True, type=Path)
+        multiomics_parser.add_argument("--threshold-list", required=True, type=Path)
+        if name == "validate-multiomics-inputs":
+            multiomics_parser.add_argument("--output", required=True, type=Path)
+        else:
+            multiomics_parser.add_argument("--matrix-file-list", required=True, type=Path)
+            multiomics_parser.add_argument("--output-directory", required=True, type=Path)
+            multiomics_parser.add_argument("--manifest-output", required=True, type=Path)
+            multiomics_parser.add_argument("--summary-output", required=True, type=Path)
     matrix_parser = subparsers.add_parser("export-zscore-matrix")
     matrix_parser.add_argument("--phenotype-bed", required=True, type=Path)
     matrix_parser.add_argument("--principal-components", required=True, type=Path)
@@ -247,6 +269,19 @@ def main() -> int:
         if args.additional_covariates is not None:
             calculate_options["additional_covariates_path"] = args.additional_covariates
         calculate_lof_pc_enrichment(*calculate_arguments, **calculate_options)
+    elif args.command == "prepare-omics-manifest":
+        prepare_omics_manifest(args.manifest, read_list_file(args.threshold_list), args.output)
+    elif args.command in {"validate-multiomics-inputs", "multiomics-intersections"}:
+        names = read_list_file(args.dataset_id_list)
+        thresholds = validate_multiomics_inputs(names, read_list_file(args.threshold_list))
+        if args.command == "validate-multiomics-inputs":
+            args.output.write_text("\n".join(names) + "\n")
+        else:
+            build_outlier_intersections(
+                [Path(value) for value in read_list_file(args.matrix_file_list)],
+                names, thresholds, args.output_directory,
+                args.manifest_output, args.summary_output,
+            )
     elif args.command == "export-zscore-matrix":
         export_zscore_matrix(
             args.phenotype_bed,

@@ -53,7 +53,6 @@ task CalculateLofPcEnrichment {
 
     File negative_z_thresholds_file = write_lines(negative_z_thresholds)
     File pc_counts_file = write_lines(pc_counts)
-    String additional_covariates_argument = if defined(additional_covariates_tsv) then "--additional-covariates \"~{select_first([additional_covariates_tsv])}\"" else ""
 
     command <<<
         set -euo pipefail
@@ -79,11 +78,12 @@ task CalculateLofPcEnrichment {
         negative_z_thresholds_csv="$(join_by_comma "${negative_z_threshold_values[@]}")"
         pc_counts_csv="$(join_by_comma "${pc_count_values[@]}")"
 
+        echo "Starting LoF enrichment for the requested PC counts" >&2
         rare-variant-enrichment lof-pc-enrichment \
             --phenotype-bed "~{phenotype_bed}" \
             --lof-carriers "~{lof_carrier_table}" \
             --principal-components "~{principal_components_tsv}" \
-            ~{additional_covariates_argument} \
+            ~{if defined(additional_covariates_tsv) then "--additional-covariates '" + sub(select_first([additional_covariates_tsv]), "'", "'\"'\"'") + "'" else ""} \
             --protein-coding-genes "~{protein_coding_genes}" \
             --negative-z-thresholds="$negative_z_thresholds_csv" \
             --pc-counts "$pc_counts_csv" \
@@ -92,6 +92,7 @@ task CalculateLofPcEnrichment {
             --summary-output "lof_pc_enrichment.summary.json" \
             --gene-pc-qc-output "lof_pc_enrichment.gene_pc_qc.tsv.gz" \
             --analysis-qc-output "lof_pc_enrichment.analysis_qc.json"
+        echo "Completed LoF enrichment for the requested PC counts" >&2
     >>>
 
     output {
