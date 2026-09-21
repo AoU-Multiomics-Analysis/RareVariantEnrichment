@@ -59,7 +59,12 @@ def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path):
             haplo = list(csv.reader(handle, delimiter='\t'))
         assert haplo[1] == ['ENSG1', '1', '1', '0', '0', '0', '0']
         assert summary['haplo']['logcpm_drop'] == 1.0
-    assert outputs['MultiOmicsOutliers.haplo_matrices'] == [entry['selected_pc_haplo_calls_tsv_gz'] for entry in matrices]
+    haplo_paths = outputs['MultiOmicsOutliers.haplo_matrices']
+    assert len(haplo_paths) == len(matrices)
+    # miniwdl places each output alias under its own output-field directory.
+    for path, entry in zip(haplo_paths, matrices):
+        with gzip.open(path, 'rt') as array_handle, gzip.open(entry['selected_pc_haplo_calls_tsv_gz'], 'rt') as result_handle:
+            assert array_handle.read() == result_handle.read()
     manifest = list(csv.DictReader(Path(outputs['MultiOmicsOutliers.intersection_manifest_tsv']).open(), delimiter='\t'))
     assert [float(row['z_threshold']) for row in manifest] == [-0.8, -1.4]
     assert [int(row['outlier_count']) for row in manifest] == [6, 3]

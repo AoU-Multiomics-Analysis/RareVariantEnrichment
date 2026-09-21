@@ -51,3 +51,5 @@ The user requested this output in PR #26 and confirmed that the phenotype BED co
 The first GitHub smoke run found miniwdl's local manifest file-access restriction. Enable that access only in the trusted local fixture test; task File localization in the production WDL remains unchanged. Verify the fix in GitHub Actions without a local Docker build or cloud submission.
 
 Haplo verification: 358 passed, 10 skipped locally; WDL and example input checks passed. Independent review found and resolved a constant-decimal rounding edge at drop=0, with a failing-then-passing regression. Review found no remaining material defects.
+
+GitHub ran all workflow tasks successfully, including haplo value checks. The remaining test failure compared output alias paths, which miniwdl materializes in separate directories. The test now compares decompressed matrix contents in manifest order.
