@@ -7,10 +7,13 @@ import os
 from pathlib import Path
 import subprocess
 
+import pytest
+
 from test_wdl_runtime import FIXTURES, TEST_IMAGE, _require_wdl_runtime
 
 
-def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path):
+@pytest.mark.parametrize("ome_names", [("expression", "protein"), ("protein", "splicing")])
+def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path, ome_names):
     miniwdl = _require_wdl_runtime()
     dataset = {
         'phenotype_bed': str((FIXTURES / 'lof_pc_phenotypes.bed').resolve()),
@@ -19,7 +22,7 @@ def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path):
     ome_manifest = tmp_path / 'omes.tsv'
     ome_manifest.write_text('ome_name\tphenotype_bed\tprincipal_components_tsv\n' + ''.join(
         name + '\t' + dataset['phenotype_bed'] + '\t' + dataset['principal_components_tsv'] + '\n'
-        for name in ('expression', 'protein')
+        for name in ome_names
     ))
     inputs = {
         'ome_manifest': str(ome_manifest),
@@ -48,13 +51,17 @@ def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path):
     assert result.returncode == 0, result.stderr
     outputs = json.loads(output_path.read_text())['outputs']
     matrices = outputs['MultiOmicsOutliers.matrix_results']
-    assert [entry['name'] for entry in matrices] == ['expression', 'protein']
+    assert [entry['name'] for entry in matrices] == list(ome_names)
     for entry in matrices:
         selection = json.loads(Path(entry['pc_selection_json']).read_text())
         summary = json.loads(Path(entry['selected_pc_z_scores_summary_json']).read_text())
         assert selection['selection']['selected_pc_count'] == summary['selected_pc_count'] == 0
         assert summary['gene_count'] == 3
         assert Path(entry['phenotype_bed']).is_file()
+        if entry['name'] != 'expression':
+            assert entry['selected_pc_haplo_calls_tsv_gz'] is None
+            assert 'haplo' not in summary
+            continue
         with gzip.open(entry['selected_pc_haplo_calls_tsv_gz'], 'rt') as handle:
             haplo = list(csv.reader(handle, delimiter='\t'))
         assert haplo[1] == ['ENSG1', '1', '1', '0', '0', '0', '0']
@@ -63,12 +70,15 @@ def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path):
     assert len(haplo_paths) == len(matrices)
     # miniwdl places each output alias under its own output-field directory.
     for path, entry in zip(haplo_paths, matrices):
+        if entry['name'] != 'expression':
+            assert path is None
+            continue
         with gzip.open(path, 'rt') as array_handle, gzip.open(entry['selected_pc_haplo_calls_tsv_gz'], 'rt') as result_handle:
             assert array_handle.read() == result_handle.read()
     manifest = list(csv.DictReader(Path(outputs['MultiOmicsOutliers.intersection_manifest_tsv']).open(), delimiter='\t'))
     assert [float(row['z_threshold']) for row in manifest] == [-0.8, -1.4]
     assert [int(row['outlier_count']) for row in manifest] == [6, 3]
-    assert all(row['datasets'] == 'expression,protein' for row in manifest)
+    assert all(row['datasets'] == ','.join(ome_names) for row in manifest)
     files = {Path(path).name: path for path in outputs['MultiOmicsOutliers.intersection_matrices']}
     assert len(files) == 2
     for row in manifest:

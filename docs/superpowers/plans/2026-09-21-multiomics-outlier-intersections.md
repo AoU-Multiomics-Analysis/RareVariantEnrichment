@@ -53,3 +53,9 @@ The first GitHub smoke run found miniwdl's local manifest file-access restrictio
 Haplo verification: 358 passed, 10 skipped locally; WDL and example input checks passed. Independent review found and resolved a constant-decimal rounding edge at drop=0, with a failing-then-passing regression. Review found no remaining material defects.
 
 GitHub ran all workflow tasks successfully, including haplo value checks. The remaining test failure compared output alias paths, which miniwdl materializes in separate directories. The test now compares decompressed matrix contents in manifest order.
+
+## Expression-only haplo export
+
+The user restricted haplo output to jobs labelled expression. Forward each manifest ome_name to the child workflow and emit haplo only for an exact expression match. The standalone workflow defaults ome_name to an empty string and skips haplo unless explicitly labelled expression. Keep File? haplo outputs and Array[File?] wrapper outputs so null entries preserve manifest order. Other jobs continue to export Z scores without a haplo file or summary. Test label matching, optional outputs, a mixed-ome workflow, and a workflow with no expression row.
+
+Expression-only local verification: 366 passed, 11 skipped. WDL and both example input types passed. Independent review found no actionable defects.

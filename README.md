@@ -171,14 +171,14 @@ Legacy Python CLI commands remain available for compatibility, but are not part 
 
 ## Outputs
 
-The workflow emits fourteen files:
+The workflow emits thirteen files, plus a haplo matrix when `ome_name` is `expression`:
 
 - `results_tsv`: one row per PC count × negative threshold × carrier definition, merged across analysis shards.
 - `summary_json`: selected grid/settings, global FDR scope, residualization description, provenance, and the screening limitation.
 - `gene_pc_qc_tsv_gz`: compressed per-normalized-gene/per-PC QC with usable samples, rank, residual mean/SD, status, and exclusion reason.
 - `analysis_qc_json`: BED/PC/covariate overlap counts, covariate names and input sample count when supplied, pre-join carrier-pair counts, LoF input QC, and per-PC eligibility, actual carrier-observation, and structured exclusion counters.
 - `pc_selection_json`: median-logOR plateau summaries, excluded/included z thresholds, and the minimum common PC count selected by the 95% plateau rule.
-- `selected_pc_haplo_calls_tsv_gz`: compressed gene-by-sample haplo indicator matrix (`1`, `0`, or `NA`) at the selected PC count. Requires BED values on the log2-CPM scale; see the haplo rule below.
+- `selected_pc_haplo_calls_tsv_gz`: optional file, present only when `ome_name` is exactly `expression`; otherwise null. A compressed gene-by-sample haplo indicator matrix (`1`, `0`, or `NA`) at the selected PC count. Requires BED values on the log2-CPM scale; see the haplo rule below.
 - `selected_pc_z_scores_tsv_gz`: compressed gene-by-sample matrix of signed residual Z scores at the selected PC count. Includes all genes in the phenotype BED.
 - `selected_pc_z_scores_gene_qc_tsv_gz`: per-gene sample count, model rank, residual mean/SD, status, and exclusion reason for the matrix.
 - `selected_pc_z_scores_summary_json`: selected PC count, matrix dimensions, covariate names, exclusion counts, and calculation rules.
@@ -223,7 +223,9 @@ Each test pools repeated samples and repeated genes, so Fisher p-values and glob
 
 ### Haplo matrix at the selected PC count
 
-When the phenotype BED contains log2-CPM values, `selected_pc_haplo_calls_tsv_gz` identifies gene–sample pairs with a large expression drop. It has the same genes, sample IDs, and order as the Z-score matrix. The workflow includes all BED genes and uses the same sample intersection and duplicate-feature collapse as the Z-score export.
+Set `RareVariantEnrichment.ome_name` to `expression` to enable haplo export from a log2-CPM BED. This optional input defaults to an empty string, which disables haplo export. Matching is case-sensitive: only the exact label `expression` enables it. In the multi-omics workflow, the manifest `ome_name` supplies this label automatically.
+
+For expression jobs, `selected_pc_haplo_calls_tsv_gz` identifies gene–sample pairs with a large expression drop. It has the same genes, sample IDs, and order as the Z-score matrix. The workflow includes all BED genes and uses the same sample intersection and duplicate-feature collapse as the Z-score export.
 
 The haplo calculation fits an intercept and the selected phenotype PCs. It follows the UnderlierPrevelance adjustment rule: additional fixed covariates are not fitted for haplo calls. Those covariates still determine the shared export samples and remain in the Z-score model. Subtracting a gene's mean from its PC-adjusted log2-CPM gives the residual from the intercept-plus-PC fit. The haplo calculation uses that residual in log2-CPM units; it does not divide by the residual SD.
 
@@ -231,7 +233,7 @@ The haplo calculation fits an intercept and the selected phenotype PCs. It follo
 - `0`: the fit is valid and the value does not meet that rule, including exact equality.
 - `NA`: the observation is missing or the fit is invalid. The fit requires a full-rank design and at least one residual degree of freedom.
 
-`haplo_logcpm_drop` defaults to `1.0` and must be finite and non-negative. At zero selected PCs, the rule compares the original log2-CPM to the gene mean. Constant genes have no drop and receive `0` when the fit is valid, even when their Z scores cannot be calculated. Gene means use the finite observations in the aligned export cohort. The existing export summary contains a `haplo` section with the threshold, adjustment rule, exclusion counts, and cell counts.
+`haplo_logcpm_drop` defaults to `1.0` and must be finite and non-negative. At zero selected PCs, the rule compares the original log2-CPM to the gene mean. Constant genes have no drop and receive `0` when the fit is valid, even when their Z scores cannot be calculated. Gene means use the finite observations in the aligned export cohort. For expression jobs, the existing export summary contains a `haplo` section with the threshold, adjustment rule, exclusion counts, and cell counts.
 
 This interpretation requires log2-CPM input. Applying a one-unit cutoff to Z scores, rank-normalized values, or splicing ratios does not give the same criterion. The workflow does not convert raw counts to log2-CPM. For the standalone export CLI, add `--haplo-matrix-output haplo.tsv.gz`; use `--haplo-logcpm-drop` to change the default drop. The existing PC-selection and Z-score intersection rules are unchanged.
 
@@ -264,8 +266,8 @@ Each combination uses its own shared genes and sample IDs. Row and column order 
 
 The workflow outputs are:
 
-- `matrix_results`: one `OmicsResult` per input dataset, in input order. It contains the dataset name, original input files, selected-PC Z-score and haplo matrices, PC selection, enrichment results, plots, and QC files.
-- `dataset_ids`, `z_score_matrices`, and `haplo_matrices`: corresponding arrays in manifest order for direct downstream use. `haplo_logcpm_drop` applies to every ome. The intersection task continues to use the Z scores.
+- `matrix_results`: one `OmicsResult` per input dataset, in input order. It contains the dataset name, original input files, selected-PC Z-score matrix, optional expression haplo matrix, PC selection, enrichment results, plots, and QC files.
+- `dataset_ids`, `z_score_matrices`, and `haplo_matrices`: corresponding arrays in manifest order for direct downstream use. `haplo_matrices` is an `Array[File?]`: only the `expression` entry has a file, and every other entry is null. If there is no expression row, all entries are null. `haplo_logcpm_drop` applies only to expression. Protein, splicing, and other labels produce no haplo file or haplo summary. The intersection task continues to use the Z scores.
 - `intersection_matrices`: gzip-compressed TSV indicator matrices. The first column is `gene_id`.
 - `intersection_manifest_tsv`: maps each output basename to its datasets and threshold; gives gene, sample, outlier, non-outlier, and missing-cell counts. Use this index to identify files rather than relying on array order.
 - `intersection_summary_json`: dataset dimensions, thresholds, calculation rules, and the same per-intersection counts.
@@ -276,4 +278,4 @@ Dataset names must be unique, start with a letter, and contain only letters, dig
 
 After the manifest is read, all analysis input paths remain typed WDL `File` values until command rendering. The intersection task creates its newline-delimited list of local matrix paths at that point. The list contains no unresolved cloud URIs. The CLI rejects unreadable paths, duplicate IDs, invalid values, and inconsistent row widths. The single-matrix workflow remains available on its own.
 
-The existing GitHub Actions Python test job includes a two-dataset workflow smoke test. That local fixture test enables miniwdl manifest file access (`MINIWDL__FILE_IO__ALLOW_ANY_INPUT=true`) because the local BED and PC paths originate in a trusted manifest. This test-only setting does not change Terra localization. Local checks cover ID alignment, missing values, threshold equality, pairwise and three-way calls, file localization, shell quoting, and WDL syntax. The complete multi-matrix workflow has not been tested on Terra. Build an updated image before running it. No cloud jobs are submitted by these tests.
+The existing GitHub Actions Python test job includes workflow smoke tests for expression plus protein, and protein plus splicing without an expression row. That local fixture test enables miniwdl manifest file access (`MINIWDL__FILE_IO__ALLOW_ANY_INPUT=true`) because the local BED and PC paths originate in a trusted manifest. This test-only setting does not change Terra localization. Local checks cover ID alignment, missing values, threshold equality, pairwise and three-way calls, file localization, shell quoting, and WDL syntax. The complete multi-matrix workflow has not been tested on Terra. Build an updated image before running it. No cloud jobs are submitted by these tests.

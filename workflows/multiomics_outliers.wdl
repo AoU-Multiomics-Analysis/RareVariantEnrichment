@@ -8,7 +8,7 @@ struct OmicsResult {
     File principal_components_tsv
     File? additional_covariates_tsv
     File selected_pc_z_scores_tsv_gz
-    File selected_pc_haplo_calls_tsv_gz
+    File? selected_pc_haplo_calls_tsv_gz
     File selected_pc_z_scores_gene_qc_tsv_gz
     File selected_pc_z_scores_summary_json
     File results_tsv
@@ -147,6 +147,7 @@ workflow MultiOmicsOutliers {
                 lof_carrier_table = lof_carrier_table,
                 gene_annotation_gtf = gene_annotation_gtf,
                 haplo_logcpm_drop = haplo_logcpm_drop,
+                ome_name = dataset_name,
                 negative_z_thresholds = negative_z_thresholds,
                 selection_z_thresholds = selection_z_thresholds,
                 plateau_fraction = plateau_fraction,
@@ -204,7 +205,7 @@ workflow MultiOmicsOutliers {
         Array[OmicsResult] matrix_results = result
         Array[String] dataset_ids = dataset_name
         Array[File] z_score_matrices = RunMatrix.selected_pc_z_scores_tsv_gz
-        Array[File] haplo_matrices = RunMatrix.selected_pc_haplo_calls_tsv_gz
+        Array[File?] haplo_matrices = RunMatrix.selected_pc_haplo_calls_tsv_gz
         Array[File] intersection_matrices = IntersectMultiOmicsOutliers.matrices
         File intersection_manifest_tsv = IntersectMultiOmicsOutliers.manifest_tsv
         File intersection_summary_json = IntersectMultiOmicsOutliers.summary_json

@@ -57,7 +57,10 @@ def test_wrapper_calls_existing_workflow_and_preserves_file_types():
     outputs = {item.name: str(item.type) for item in workflow.outputs}
     assert outputs['matrix_results'] == 'Array[OmicsResult]'
     assert outputs['z_score_matrices'] == 'Array[File]'
-    assert outputs['haplo_matrices'] == 'Array[File]'
+    assert outputs['haplo_matrices'] == 'Array[File?]'
+    assert str(call.inputs['ome_name']) == 'dataset_name'
+    result = next(item for item in scatter.body if isinstance(item, WDL.Tree.Decl) and item.name == 'result')
+    assert str(result.type.members['selected_pc_haplo_calls_tsv_gz']) == 'File?'
     assert str(call.inputs['haplo_logcpm_drop']) == 'haplo_logcpm_drop'
     assert outputs['intersection_matrices'] == 'Array[File]'
     for node in [*workflow.inputs, *workflow.body, *workflow.outputs]:
