@@ -43,3 +43,11 @@ Implemented in an isolated checkout from origin/main. No cloud jobs were submitt
 PR preparation found that the existing PC-sweep task converted the optional covariate File to a String before localization. A cloud-path regression failed with an unresolved GCS URI. Move optional argument construction to command rendering, with safe quoting, as in the selected-PC export task. The regression covers both present and absent covariates and executes the rendered command. The regression design remains unchanged.
 
 Final PR checks after the covariate path fix: 346 passed, 10 skipped. WDL validation passed with expected manifest String-to-File warnings. The complete workflow has not run on Terra.
+
+## Haplo matrix extension
+
+The user requested this output in PR #26 and confirmed that the phenotype BED contains log2-CPM. Export one haplo matrix per ome at its selected PC count, with the same aligned genes and samples as its Z-score matrix. Match UnderlierPrevelance: fit phenotype PCs only, compare adjusted values to the gene mean with a strict configurable drop (default 1), and retain missing values as NA. Fixed covariates still apply to Z scores and cohort alignment. Include haplo counts and rules in the export summary. Test threshold equality, constant genes, missing values, selected PCs, fixed-covariate separation, and an independent least-squares reference.
+
+The first GitHub smoke run found miniwdl's local manifest file-access restriction. Enable that access only in the trusted local fixture test; task File localization in the production WDL remains unchanged. Verify the fix in GitHub Actions without a local Docker build or cloud submission.
+
+Haplo verification: 358 passed, 10 skipped locally; WDL and example input checks passed. Independent review found and resolved a constant-decimal rounding edge at drop=0, with a failing-then-passing regression. Review found no remaining material defects.

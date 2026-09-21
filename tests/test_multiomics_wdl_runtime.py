@@ -3,6 +3,7 @@
 import csv
 import gzip
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -38,7 +39,12 @@ def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path):
     result = subprocess.run([
         miniwdl, 'run', str(Path('workflows/multiomics_outliers.wdl').resolve()),
         '-i', str(inputs_path), '-d', str(tmp_path / 'run'), '-o', str(output_path), '--no-cache',
-    ], text=True, capture_output=True, timeout=180)
+    ], text=True, capture_output=True, timeout=180, env={
+        **os.environ,
+        # Local fixture paths are introduced by the trusted manifest, not by
+        # top-level File inputs. Permit miniwdl to read those local fixtures.
+        'MINIWDL__FILE_IO__ALLOW_ANY_INPUT': 'true',
+    })
     assert result.returncode == 0, result.stderr
     outputs = json.loads(output_path.read_text())['outputs']
     matrices = outputs['MultiOmicsOutliers.matrix_results']
@@ -49,6 +55,11 @@ def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path):
         assert selection['selection']['selected_pc_count'] == summary['selected_pc_count'] == 0
         assert summary['gene_count'] == 3
         assert Path(entry['phenotype_bed']).is_file()
+        with gzip.open(entry['selected_pc_haplo_calls_tsv_gz'], 'rt') as handle:
+            haplo = list(csv.reader(handle, delimiter='\t'))
+        assert haplo[1] == ['ENSG1', '1', '1', '0', '0', '0', '0']
+        assert summary['haplo']['logcpm_drop'] == 1.0
+    assert outputs['MultiOmicsOutliers.haplo_matrices'] == [entry['selected_pc_haplo_calls_tsv_gz'] for entry in matrices]
     manifest = list(csv.DictReader(Path(outputs['MultiOmicsOutliers.intersection_manifest_tsv']).open(), delimiter='\t'))
     assert [float(row['z_threshold']) for row in manifest] == [-0.8, -1.4]
     assert [int(row['outlier_count']) for row in manifest] == [6, 3]

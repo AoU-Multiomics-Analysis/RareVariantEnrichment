@@ -118,6 +118,8 @@ def build_parser() -> argparse.ArgumentParser:
     matrix_parser.add_argument("--additional-covariates", type=Path)
     matrix_parser.add_argument("--selection-input", required=True, type=Path)
     matrix_parser.add_argument("--matrix-output", required=True, type=Path)
+    matrix_parser.add_argument("--haplo-matrix-output", type=Path)
+    matrix_parser.add_argument("--haplo-logcpm-drop", type=float, default=1.0)
     matrix_parser.add_argument("--gene-qc-output", required=True, type=Path)
     matrix_parser.add_argument("--summary-output", required=True, type=Path)
     pc_chunks_parser = subparsers.add_parser("pc-chunks")
@@ -291,6 +293,8 @@ def main() -> int:
             args.gene_qc_output,
             args.summary_output,
             additional_covariates_path=args.additional_covariates,
+            haplo_matrix_output=args.haplo_matrix_output,
+            haplo_logcpm_drop=args.haplo_logcpm_drop,
         )
     elif args.command == "pc-chunks":
         available_pc_count = read_principal_component_header(args.principal_components)

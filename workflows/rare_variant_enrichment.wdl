@@ -267,6 +267,7 @@ task ExportSelectedPcZScores {
         File principal_components_tsv
         File? additional_covariates_tsv
         File selection_json
+        Float haplo_logcpm_drop
         String docker_image
         Int cpu
         Int memory_gb
@@ -285,6 +286,8 @@ task ExportSelectedPcZScores {
             ~{if defined(additional_covariates_tsv) then "--additional-covariates '" + sub(select_first([additional_covariates_tsv]), "'", "'\"'\"'") + "'" else ""} \
             --selection-input '~{sub(selection_json, "'", "'\"'\"'")}' \
             --matrix-output "selected_pc_z_scores.tsv.gz" \
+            --haplo-matrix-output "selected_pc_haplo_calls.tsv.gz" \
+            --haplo-logcpm-drop "~{haplo_logcpm_drop}" \
             --gene-qc-output "selected_pc_z_scores.gene_qc.tsv.gz" \
             --summary-output "selected_pc_z_scores.summary.json"
         echo "Finished Z-score matrix export" >&2
@@ -292,6 +295,7 @@ task ExportSelectedPcZScores {
 
     output {
         File matrix_tsv_gz = "selected_pc_z_scores.tsv.gz"
+        File haplo_matrix_tsv_gz = "selected_pc_haplo_calls.tsv.gz"
         File gene_qc_tsv_gz = "selected_pc_z_scores.gene_qc.tsv.gz"
         File summary_json = "selected_pc_z_scores.summary.json"
     }
@@ -313,6 +317,7 @@ workflow RareVariantEnrichment {
         File principal_components_tsv
         File? additional_covariates_tsv
         File gene_annotation_gtf
+        Float haplo_logcpm_drop = 1.0
         Array[Float] negative_z_thresholds = [-2.0, -3.0, -4.0, -5.0, -6.0]
         Array[Float] selection_z_thresholds = [-3.0, -4.0, -5.0, -6.0]
         Float plateau_fraction = 0.95
@@ -415,6 +420,7 @@ workflow RareVariantEnrichment {
             principal_components_tsv = principal_components_tsv,
             additional_covariates_tsv = additional_covariates_tsv,
             selection_json = AnalyzeLofPcEnrichment.selection_json,
+            haplo_logcpm_drop = haplo_logcpm_drop,
             docker_image = docker_image,
             cpu = analysis_cpu,
             memory_gb = analysis_memory_gb,
@@ -425,6 +431,7 @@ workflow RareVariantEnrichment {
 
     output {
         File selected_pc_z_scores_tsv_gz = ExportSelectedPcZScores.matrix_tsv_gz
+        File selected_pc_haplo_calls_tsv_gz = ExportSelectedPcZScores.haplo_matrix_tsv_gz
         File selected_pc_z_scores_gene_qc_tsv_gz = ExportSelectedPcZScores.gene_qc_tsv_gz
         File selected_pc_z_scores_summary_json = ExportSelectedPcZScores.summary_json
         File results_tsv = MergeLofPcEnrichment.results_tsv

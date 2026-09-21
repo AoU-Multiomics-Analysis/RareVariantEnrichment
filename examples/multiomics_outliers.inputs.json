@@ -10,5 +10,6 @@
     -6.0
   ],
   "MultiOmicsOutliers.pc_counts": [],
-  "MultiOmicsOutliers.docker_image": "ghcr.io/aou-multiomics-analysis/rarevariantenrichment:main"
+  "MultiOmicsOutliers.docker_image": "ghcr.io/aou-multiomics-analysis/rarevariantenrichment:main",
+  "MultiOmicsOutliers.haplo_logcpm_drop": 1.0
 }

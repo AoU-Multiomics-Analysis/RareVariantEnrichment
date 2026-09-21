@@ -10,6 +10,7 @@ import re
 
 import numpy as np
 
+from rare_variant_enrichment.haplo_matrix import export_haplo_matrix, validate_haplo_drop
 from rare_variant_enrichment.io import write_json
 from rare_variant_enrichment.lof_pc import (
     EXCLUSION_REASONS,
@@ -36,7 +37,11 @@ def export_zscore_matrix(
     summary_output: Path,
     *,
     additional_covariates_path: Path | None = None,
+    haplo_matrix_output: Path | None = None,
+    haplo_logcpm_drop: float = 1.0,
 ) -> None:
+    if haplo_matrix_output is not None:
+        validate_haplo_drop(haplo_logcpm_drop)
     inputs = [phenotype_bed, principal_components_path, selection_input]
     if additional_covariates_path is not None:
         inputs.append(additional_covariates_path)
@@ -104,7 +109,14 @@ def export_zscore_matrix(
             if index % PROGRESS_INTERVAL_GENES == 0:
                 LOGGER.info("Wrote Z scores for %d genes", index)
 
+    haplo_summary = {}
+    if haplo_matrix_output is not None:
+        haplo_summary["haplo"] = export_haplo_matrix(
+            aligned.expression, aligned.pc_values, pc_count, aligned.shared_samples,
+            haplo_matrix_output, haplo_logcpm_drop,
+        )
     write_json(summary_output, {
+        **haplo_summary,
         "selected_pc_count": pc_count,
         "gene_count": len(aligned.expression),
         "included_gene_count": included,

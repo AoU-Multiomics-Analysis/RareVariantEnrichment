@@ -93,6 +93,7 @@ def test_wdl_runs_the_four_input_lof_pc_fixture_with_known_cells(tmp_path: Path)
         "RareVariantEnrichment.analysis_qc_json",
         "RareVariantEnrichment.pc_selection_json",
         "RareVariantEnrichment.selected_pc_z_scores_tsv_gz",
+        "RareVariantEnrichment.selected_pc_haplo_calls_tsv_gz",
         "RareVariantEnrichment.selected_pc_z_scores_gene_qc_tsv_gz",
         "RareVariantEnrichment.selected_pc_z_scores_summary_json",
         "RareVariantEnrichment.enrichment_plot_svg",
@@ -198,3 +199,9 @@ def _check_selected_matrix(outputs, samples):
     assert rows[0] == ["gene_id", *samples]
     assert [row[0] for row in rows[1:]] == ["ENSG1", "ENSG2", "ENSG3"]
     assert Path(outputs["RareVariantEnrichment.selected_pc_z_scores_gene_qc_tsv_gz"]).read_bytes()[:2] == b"\x1f\x8b"
+
+    with gzip.open(outputs["RareVariantEnrichment.selected_pc_haplo_calls_tsv_gz"], "rt") as handle:
+        haplo = list(csv.reader(handle, delimiter="\t"))
+    assert haplo[0] == ["gene_id", *samples]
+    assert len(haplo) == 4
+    assert summary["haplo"]["selected_pc_count"] == selection["selection"]["selected_pc_count"]

@@ -8,6 +8,7 @@ struct OmicsResult {
     File principal_components_tsv
     File? additional_covariates_tsv
     File selected_pc_z_scores_tsv_gz
+    File selected_pc_haplo_calls_tsv_gz
     File selected_pc_z_scores_gene_qc_tsv_gz
     File selected_pc_z_scores_summary_json
     File results_tsv
@@ -99,6 +100,7 @@ workflow MultiOmicsOutliers {
         File ome_manifest
         File lof_carrier_table
         File gene_annotation_gtf
+        Float haplo_logcpm_drop = 1.0
         Array[Float] intersection_z_thresholds = [-2.0, -3.0, -4.0, -5.0, -6.0]
         Array[Float] negative_z_thresholds = [-2.0, -3.0, -4.0, -5.0, -6.0]
         Array[Float] selection_z_thresholds = [-3.0, -4.0, -5.0, -6.0]
@@ -144,6 +146,7 @@ workflow MultiOmicsOutliers {
                 additional_covariates_tsv = additional_covariates_tsv,
                 lof_carrier_table = lof_carrier_table,
                 gene_annotation_gtf = gene_annotation_gtf,
+                haplo_logcpm_drop = haplo_logcpm_drop,
                 negative_z_thresholds = negative_z_thresholds,
                 selection_z_thresholds = selection_z_thresholds,
                 plateau_fraction = plateau_fraction,
@@ -166,6 +169,7 @@ workflow MultiOmicsOutliers {
             principal_components_tsv: principal_components_tsv,
             additional_covariates_tsv: additional_covariates_tsv,
             selected_pc_z_scores_tsv_gz: RunMatrix.selected_pc_z_scores_tsv_gz,
+            selected_pc_haplo_calls_tsv_gz: RunMatrix.selected_pc_haplo_calls_tsv_gz,
             selected_pc_z_scores_gene_qc_tsv_gz: RunMatrix.selected_pc_z_scores_gene_qc_tsv_gz,
             selected_pc_z_scores_summary_json: RunMatrix.selected_pc_z_scores_summary_json,
             results_tsv: RunMatrix.results_tsv,
@@ -200,6 +204,7 @@ workflow MultiOmicsOutliers {
         Array[OmicsResult] matrix_results = result
         Array[String] dataset_ids = dataset_name
         Array[File] z_score_matrices = RunMatrix.selected_pc_z_scores_tsv_gz
+        Array[File] haplo_matrices = RunMatrix.selected_pc_haplo_calls_tsv_gz
         Array[File] intersection_matrices = IntersectMultiOmicsOutliers.matrices
         File intersection_manifest_tsv = IntersectMultiOmicsOutliers.manifest_tsv
         File intersection_summary_json = IntersectMultiOmicsOutliers.summary_json
