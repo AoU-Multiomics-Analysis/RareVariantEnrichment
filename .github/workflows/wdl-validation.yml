@@ -6,11 +6,13 @@ on:
     branches: [ "main" ]
     paths:
       - ".github/workflows/wdl-validation.yml"
+      - ".dockstore.yml"
       - "workflows/**/*.wdl"
   pull_request:
     branches: [ "main" ]
     paths:
       - ".github/workflows/wdl-validation.yml"
+      - ".dockstore.yml"
       - "workflows/**/*.wdl"
 
 jobs:
@@ -23,6 +25,22 @@ jobs:
 
       - name: Install miniwdl
         run: pipx install miniwdl
+
+      - name: Check Dockstore workflow names
+        run: |
+          "$(pipx environment --value PIPX_LOCAL_VENVS)/miniwdl/bin/python" - <<'PYTHON'
+          from pathlib import Path
+          from ruamel.yaml import YAML
+
+          config = YAML(typ="safe").load(Path(".dockstore.yml").read_text())
+          entries = config.get("workflows", []) + config.get("tools", [])
+          names = [entry.get("name") for entry in entries]
+          if not all(isinstance(name, str) and name.strip() for name in names):
+              raise SystemExit("Every Dockstore workflow/tool must have a non-empty name")
+          if len(names) != len(set(names)):
+              raise SystemExit("Dockstore workflow/tool names must be unique")
+          print(f"Validated {len(names)} unique Dockstore names: {', '.join(names)}")
+          PYTHON
 
       - name: Check WDLs
         run: |
