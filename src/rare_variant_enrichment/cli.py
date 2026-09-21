@@ -109,6 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
             multiomics_parser.add_argument("--output", required=True, type=Path)
         else:
             multiomics_parser.add_argument("--matrix-file-list", required=True, type=Path)
+            multiomics_parser.add_argument("--expression-haplo-file-list", type=Path)
             multiomics_parser.add_argument("--output-directory", required=True, type=Path)
             multiomics_parser.add_argument("--manifest-output", required=True, type=Path)
             multiomics_parser.add_argument("--summary-output", required=True, type=Path)
@@ -279,10 +280,14 @@ def main() -> int:
         if args.command == "validate-multiomics-inputs":
             args.output.write_text("\n".join(names) + "\n")
         else:
+            haplo_paths = read_list_file(args.expression_haplo_file_list) if args.expression_haplo_file_list else []
+            if len(haplo_paths) > 1:
+                raise ValueError("Expected at most one expression haplo matrix")
             build_outlier_intersections(
                 [Path(value) for value in read_list_file(args.matrix_file_list)],
                 names, thresholds, args.output_directory,
                 args.manifest_output, args.summary_output,
+                expression_haplo_path=Path(haplo_paths[0]) if haplo_paths else None,
             )
     elif args.command == "export-zscore-matrix":
         export_zscore_matrix(

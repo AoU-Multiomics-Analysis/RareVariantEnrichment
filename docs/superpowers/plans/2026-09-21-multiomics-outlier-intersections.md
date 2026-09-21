@@ -59,3 +59,9 @@ GitHub ran all workflow tasks successfully, including haplo value checks. The re
 The user restricted haplo output to jobs labelled expression. Forward each manifest ome_name to the child workflow and emit haplo only for an exact expression match. The standalone workflow defaults ome_name to an empty string and skips haplo unless explicitly labelled expression. Keep File? haplo outputs and Array[File?] wrapper outputs so null entries preserve manifest order. Other jobs continue to export Z scores without a haplo file or summary. Test label matching, optional outputs, a mixed-ome workflow, and a workflow with no expression row.
 
 Expression-only local verification: 366 passed, 11 skipped. WDL and both example input types passed. Independent review found no actionable defects.
+
+## Haplo requirement in expression intersections
+
+The user requested that expression intersections use the haplo criterion as well as the common Z threshold. Add the typed expression haplo File array to the intersection task and a command-time file list. Validate exactly one file for expression and none without expression. Store and align binary/NA haplo calls by ID in SQLite; require matching expression gene and sample sets. Combine haplo = 1 with Z thresholds only for expression-containing groups and propagate missing evidence to NA. Record the requirement per output in the manifest and summary. Add tests for reordered IDs, expression in a non-first position, three-way calls, unchanged protein/splicing pairs, missing evidence, invalid inputs, and cloud localization. Use a stricter haplo drop in the runtime fixture so the intersection count tests detect a missing haplo filter.
+
+Combined-criterion local verification: 378 passed, 11 skipped; WDL check passed. Independent review found no actionable defects and confirmed the stricter-haplo fixture counts [3, 3] by direct execution.

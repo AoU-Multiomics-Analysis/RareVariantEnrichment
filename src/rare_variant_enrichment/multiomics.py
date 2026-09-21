@@ -22,7 +22,7 @@ from rare_variant_enrichment.lof_pc import validate_negative_z_thresholds
 LOGGER = logging.getLogger(__name__)
 MANIFEST_COLUMNS = (
     "matrix_file", "datasets", "z_threshold", "gene_count", "sample_count",
-    "outlier_count", "nonoutlier_count", "missing_count",
+    "outlier_count", "nonoutlier_count", "missing_count", "expression_haplo_required",
 )
 
 
@@ -54,7 +54,7 @@ def validate_multiomics_inputs(
     return validate_negative_z_thresholds(thresholds)
 
 
-def _store_matrix(connection: sqlite3.Connection, index: int, path: Path) -> tuple[list[str], int]:
+def _store_matrix(connection: sqlite3.Connection, index: int, path: Path, *, binary: bool = False) -> tuple[list[str], int]:
     # Table names come only from enumerated input positions, never file contents.
     table = f"matrix_{index}"
     connection.execute(f"CREATE TABLE {table} (gene TEXT UNIQUE NOT NULL, position INTEGER PRIMARY KEY, scores BLOB)")
@@ -86,6 +86,8 @@ def _store_matrix(connection: sqlite3.Connection, index: int, path: Path) -> tup
                     raise ValueError(f"Matrix {path} line {line} has a nonnumeric Z score") from error
                 if not math.isfinite(value):
                     raise ValueError(f"Matrix {path} line {line} requires finite Z scores or NA")
+                if binary and value not in (0.0, 1.0):
+                    raise ValueError(f"Haplo matrix {path} line {line} requires 0, 1, or NA")
                 values[column] = value
             try:
                 connection.execute(f"INSERT INTO {table} VALUES (?, ?, ?)", (gene, count, values.tobytes()))
@@ -101,12 +103,20 @@ def _store_matrix(connection: sqlite3.Connection, index: int, path: Path) -> tup
 def build_outlier_intersections(
     matrix_paths: Sequence[Path], names: Sequence[str], thresholds: Sequence[float],
     output_directory: Path, manifest_output: Path, summary_output: Path,
+    *, expression_haplo_path: Path | None = None,
 ) -> None:
     thresholds = validate_multiomics_inputs(names, thresholds)
     if len(matrix_paths) != len(names):
         raise ValueError("Matrix file count must match dataset name count")
+    expression_index = names.index("expression") if "expression" in names else None
+    if expression_index is not None and expression_haplo_path is None:
+        raise ValueError("An expression dataset requires an expression haplo matrix")
+    if expression_index is None and expression_haplo_path is not None:
+        raise ValueError("Cannot supply an expression haplo matrix without an expression dataset")
     for path in matrix_paths:
         require_local_file(path)
+    if expression_haplo_path is not None:
+        require_local_file(expression_haplo_path)
     if output_directory.exists() and any(output_directory.iterdir()):
         raise ValueError("Intersection output directory must be empty")
     output_directory.mkdir(parents=True, exist_ok=True)
@@ -121,6 +131,20 @@ def build_outlier_intersections(
                 samples, genes = _store_matrix(connection, index, path)
                 sample_lists.append(samples)
                 dataset_qc.append({"name": names[index], "gene_count": genes, "sample_count": len(samples)})
+            haplo_table = f"matrix_{len(names)}"
+            haplo_sample_indexes = {}
+            if expression_haplo_path is not None:
+                haplo_samples, haplo_genes = _store_matrix(connection, len(names), expression_haplo_path, binary=True)
+                if set(haplo_samples) != set(sample_lists[expression_index]):
+                    raise ValueError("Expression haplo sample IDs must match expression Z-score sample IDs")
+                expression_table = f"matrix_{expression_index}"
+                missing_gene = connection.execute(
+                    f"SELECT 1 FROM {expression_table} e WHERE NOT EXISTS "
+                    f"(SELECT 1 FROM {haplo_table} h WHERE h.gene = e.gene) LIMIT 1"
+                ).fetchone()
+                if haplo_genes != dataset_qc[expression_index]["gene_count"] or missing_gene is not None:
+                    raise ValueError("Expression haplo gene IDs must match expression Z-score gene IDs")
+                haplo_sample_indexes = {sample: index for index, sample in enumerate(haplo_samples)}
             sample_indexes = [{name: index for index, name in enumerate(samples)} for samples in sample_lists]
             group_number = 0
             for group_size in range(2, len(names) + 1):
@@ -129,7 +153,11 @@ def build_outlier_intersections(
                     first = group[0]
                     samples = [sample for sample in sample_lists[first] if all(sample in sample_indexes[index] for index in group[1:])]
                     columns = [np.asarray([sample_indexes[index][sample] for sample in samples], dtype=int) for index in group]
+                    haplo_required = expression_index in group
+                    haplo_columns = np.asarray([haplo_sample_indexes[sample] for sample in samples], dtype=int) if haplo_required else None
                     tables = [f"matrix_{index}" for index in group]
+                    if haplo_required:
+                        tables.append(haplo_table)
                     query = "SELECT " + tables[0] + ".gene, " + ", ".join(table + ".scores" for table in tables)
                     query += " FROM " + tables[0] + " " + " ".join("INNER JOIN " + table + " USING (gene)" for table in tables[1:])
                     query += " ORDER BY " + tables[0] + ".position"
@@ -142,13 +170,18 @@ def build_outlier_intersections(
                             writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
                             writer.writerow(["gene_id", *samples])
                             writers.append(writer)
-                            group_entries.append(dict(zip(MANIFEST_COLUMNS, [filename, ",".join(names[index] for index in group), threshold, 0, len(samples), 0, 0, 0])))
+                            group_entries.append(dict(zip(MANIFEST_COLUMNS, [filename, ",".join(names[index] for index in group), threshold, 0, len(samples), 0, 0, 0, haplo_required])))
                         for row in connection.execute(query):
-                            values = np.stack([np.frombuffer(blob, dtype=np.float64)[indexes] for blob, indexes in zip(row[1:], columns)])
+                            values = np.stack([np.frombuffer(blob, dtype=np.float64)[indexes] for blob, indexes in zip(row[1:1 + len(group)], columns)])
                             complete = np.all(np.isfinite(values), axis=0)
                             maximum = np.max(values, axis=0)
+                            haplo_pass = np.ones(len(samples), dtype=bool)
+                            if haplo_required:
+                                haplo = np.frombuffer(row[-1], dtype=np.float64)[haplo_columns]
+                                complete &= np.isfinite(haplo)
+                                haplo_pass = haplo == 1
                             for threshold, writer, entry in zip(thresholds, writers, group_entries):
-                                outlier = complete & (maximum <= threshold)
+                                outlier = complete & (maximum <= threshold) & haplo_pass
                                 writer.writerow([row[0], *np.where(complete, np.where(outlier, "1", "0"), "NA")])
                                 entry["gene_count"] += 1
                                 entry["outlier_count"] += int(np.count_nonzero(outlier))
@@ -162,9 +195,9 @@ def build_outlier_intersections(
         writer.writerows(entries)
     write_json(summary_output, {
         "datasets": dataset_qc, "thresholds": thresholds, "matrix_count": len(entries),
-        "outlier_rule": "all participating datasets have finite Z <= threshold",
+        "outlier_rule": "all participating datasets have finite Z <= threshold; when expression participates, its haplo call must be 1",
         "intersection_type": "inclusive; datasets outside each combination are ignored",
-        "missing_rule": "NA when any participating Z score is missing",
+        "missing_rule": "NA when any participating Z score or required expression haplo call is missing",
         "alignment": "shared gene and sample IDs per combination; first participating dataset order",
         "intersections": entries,
     })

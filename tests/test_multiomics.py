@@ -8,7 +8,7 @@ import sys
 import pytest
 
 
-def run_intersections(tmp_path, matrices, thresholds='-2\n-3\n', names=None):
+def run_intersections(tmp_path, matrices, thresholds='-2\n-3\n', names=None, haplo=None):
     paths = []
     for index, text in enumerate(matrices):
         path = tmp_path / f'matrix_{index}.tsv.gz'
@@ -18,6 +18,11 @@ def run_intersections(tmp_path, matrices, thresholds='-2\n-3\n', names=None):
     (tmp_path / 'paths.txt').write_text('\n'.join(paths) + '\n')
     (tmp_path / 'names.txt').write_text('\n'.join(names or ['rna', 'protein', 'splicing'][:len(paths)]) + '\n')
     (tmp_path / 'thresholds.txt').write_text(thresholds)
+    haplo_args = []
+    if haplo is not None:
+        (tmp_path / 'haplo.tsv').write_text(haplo)
+        (tmp_path / 'haplo_paths.txt').write_text(str(tmp_path / 'haplo.tsv') + '\n')
+        haplo_args = ['--expression-haplo-file-list', str(tmp_path / 'haplo_paths.txt')]
     return subprocess.run([
         sys.executable, '-m', 'rare_variant_enrichment.cli', 'multiomics-intersections',
         '--matrix-file-list', str(tmp_path / 'paths.txt'),
@@ -26,6 +31,7 @@ def run_intersections(tmp_path, matrices, thresholds='-2\n-3\n', names=None):
         '--output-directory', str(tmp_path / 'intersections'),
         '--manifest-output', str(tmp_path / 'manifest.tsv'),
         '--summary-output', str(tmp_path / 'summary.json'),
+        *haplo_args,
     ], text=True, capture_output=True)
 
 
@@ -191,3 +197,71 @@ def test_intersections_stream_gene_order_without_sorting_full_vectors(tmp_path, 
     multiomics.build_outlier_intersections(paths, ['rna', 'protein', 'splicing'], [-3], tmp_path / 'out', tmp_path / 'index.tsv', tmp_path / 'summary.json')
     assert plans
     assert not any('TEMP B-TREE' in step for step in plans), plans
+
+
+def test_expression_intersections_require_haplo_and_z_but_other_pairs_ignore_it(tmp_path):
+    result = run_intersections(tmp_path, [
+        'gene_id\tS1\tS2\tS3\tS4\nG1\t-4\t-4\t-4\t-4\nG2\t-4\t-4\t-4\t-4\n',
+        'gene_id\tS4\tS2\tS1\tS3\nG2\t-4\t-4\t-4\t-4\nG1\t-1\t-4\t-4\t-4\n',
+        'gene_id\tS1\tS2\tS3\tS4\nG1\t-4\t-4\t-4\t-4\nG2\t-4\t-4\t-4\t-4\n',
+    ], names=['protein', 'expression', 'splicing'], haplo=
+        'gene_id\tS3\tS1\tS4\tS2\nG1\tNA\t1\t1\t0\nG2\t1\t0\t0\t1\n')
+    assert result.returncode == 0, result.stderr
+    manifest, outputs = read_outputs(tmp_path)
+    for threshold in (-2, -3):
+        assert outputs['protein,expression', threshold] == [
+            ['gene_id', 'S1', 'S2', 'S3', 'S4'], ['G1', '1', '0', 'NA', '0'], ['G2', '0', '1', '1', '0']]
+        assert outputs['protein,expression,splicing', threshold] == outputs['protein,expression', threshold]
+        assert outputs['expression,splicing', threshold] == [
+            ['gene_id', 'S4', 'S2', 'S1', 'S3'], ['G2', '0', '1', '0', '1'], ['G1', '0', '0', '1', 'NA']]
+        assert outputs['protein,splicing', threshold] == [
+            ['gene_id', 'S1', 'S2', 'S3', 'S4'], ['G1', '1', '1', '1', '1'], ['G2', '1', '1', '1', '1']]
+    for row in manifest:
+        assert row['expression_haplo_required'].lower() == str('expression' in row['datasets'].split(',')).lower()
+    summary = json.loads((tmp_path / 'summary.json').read_text())
+    assert 'haplo' in summary['outlier_rule']
+    assert 'haplo' in summary['missing_rule']
+
+
+def test_expression_requires_haplo_input(tmp_path):
+    result = run_intersections(tmp_path, ['gene_id\tS1\nG1\t-3\n'] * 2, names=['expression', 'protein'])
+    assert result.returncode != 0
+    assert 'requires' in result.stderr and 'haplo' in result.stderr
+
+
+@pytest.mark.parametrize('haplo,error', [
+    ('gene_id\tS1\nG1\t2\n', '0, 1, or NA'),
+    ('gene_id\tS1\nG1\t-1\n', '0, 1, or NA'),
+    ('gene_id\tS2\nG1\t1\n', 'sample IDs'),
+    ('gene_id\tS1\nG2\t1\n', 'gene IDs'),
+])
+def test_expression_haplo_must_match_expression_ids_and_be_binary(tmp_path, haplo, error):
+    result = run_intersections(tmp_path, ['gene_id\tS1\nG1\t-3\n'] * 2, names=['expression', 'protein'], haplo=haplo)
+    assert result.returncode != 0
+    assert error in result.stderr
+
+
+def test_haplo_input_without_expression_is_rejected(tmp_path):
+    result = run_intersections(tmp_path, ['gene_id\tS1\nG1\t-3\n'] * 2, names=['protein', 'splicing'], haplo='gene_id\tS1\nG1\t1\n')
+    assert result.returncode != 0
+    assert 'Cannot supply an expression haplo matrix without an expression dataset' in result.stderr
+
+
+@pytest.mark.parametrize('expression_z,haplo_value', [('4', 'NA'), ('NA', '0')])
+def test_missing_required_expression_evidence_remains_na_even_when_other_condition_fails(tmp_path, expression_z, haplo_value):
+    result = run_intersections(tmp_path, [
+        f'gene_id\tS1\nG1\t{expression_z}\n', 'gene_id\tS1\nG1\t-3\n',
+    ], names=['expression', 'protein'], haplo=f'gene_id\tS1\nG1\t{haplo_value}\n')
+    assert result.returncode == 0, result.stderr
+    assert read_outputs(tmp_path)[1]['expression,protein', -2] == [['gene_id', 'S1'], ['G1', 'NA']]
+
+
+def test_expression_haplo_rejects_unlocalized_cloud_path(tmp_path):
+    from rare_variant_enrichment.multiomics import build_outlier_intersections
+    matrix = tmp_path / 'z.tsv'
+    matrix.write_text('gene_id\tS1\nG1\t-3\n')
+    with pytest.raises(ValueError, match='Input localization error: unresolved cloud URI'):
+        build_outlier_intersections([matrix, matrix], ['expression', 'protein'], [-3],
+                                    tmp_path / 'out', tmp_path / 'manifest', tmp_path / 'summary',
+                                    expression_haplo_path=Path('gs://bucket/haplo.tsv.gz'))
+    assert not (tmp_path / 'out').exists()

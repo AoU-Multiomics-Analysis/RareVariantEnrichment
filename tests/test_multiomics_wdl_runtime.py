@@ -30,6 +30,7 @@ def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path, o
         'gene_annotation_gtf': str((FIXTURES / 'gene_annotation.gtf').resolve()),
         'negative_z_thresholds': [-0.8], 'selection_z_thresholds': [-0.8],
         'intersection_z_thresholds': [-0.8, -1.4], 'pc_counts': [0],
+        'haplo_logcpm_drop': 2.0,
         'docker_image': TEST_IMAGE, 'pc_counts_per_job': 1,
         'prepare_cpu': 1, 'prepare_memory_gb': 1, 'prepare_disk_gb': 1,
         'analysis_cpu': 1, 'analysis_memory_gb': 1, 'analysis_disk_gb': 1,
@@ -64,8 +65,8 @@ def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path, o
             continue
         with gzip.open(entry['selected_pc_haplo_calls_tsv_gz'], 'rt') as handle:
             haplo = list(csv.reader(handle, delimiter='\t'))
-        assert haplo[1] == ['ENSG1', '1', '1', '0', '0', '0', '0']
-        assert summary['haplo']['logcpm_drop'] == 1.0
+        assert haplo[1] == ['ENSG1', '1', '0', '0', '0', '0', '0']
+        assert summary['haplo']['logcpm_drop'] == 2.0
     haplo_paths = outputs['MultiOmicsOutliers.haplo_matrices']
     assert len(haplo_paths) == len(matrices)
     # miniwdl places each output alias under its own output-field directory.
@@ -77,7 +78,9 @@ def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path, o
             assert array_handle.read() == result_handle.read()
     manifest = list(csv.DictReader(Path(outputs['MultiOmicsOutliers.intersection_manifest_tsv']).open(), delimiter='\t'))
     assert [float(row['z_threshold']) for row in manifest] == [-0.8, -1.4]
-    assert [int(row['outlier_count']) for row in manifest] == [6, 3]
+    expected_counts = [3, 3] if 'expression' in ome_names else [6, 3]
+    assert [int(row['outlier_count']) for row in manifest] == expected_counts
+    assert all(row['expression_haplo_required'].lower() == str('expression' in ome_names).lower() for row in manifest)
     assert all(row['datasets'] == ','.join(ome_names) for row in manifest)
     files = {Path(path).name: path for path in outputs['MultiOmicsOutliers.intersection_matrices']}
     assert len(files) == 2

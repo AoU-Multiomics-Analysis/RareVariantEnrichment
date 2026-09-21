@@ -63,12 +63,19 @@ def test_wrapper_calls_existing_workflow_and_preserves_file_types():
     assert str(result.type.members['selected_pc_haplo_calls_tsv_gz']) == 'File?'
     assert str(call.inputs['haplo_logcpm_drop']) == 'haplo_logcpm_drop'
     assert outputs['intersection_matrices'] == 'Array[File]'
+    intersection = next(item for item in workflow.body if isinstance(item, WDL.Tree.Call) and item.name == 'IntersectMultiOmicsOutliers')
+    assert str(intersection.inputs['expression_haplo_matrices']) == 'expression_haplo_matrices'
+    haplo_files = next(item for item in workflow.body if isinstance(item, WDL.Tree.Decl) and item.name == 'expression_haplo_matrices')
+    assert str(haplo_files.type) == 'Array[File]'
+    assert str(haplo_files.expr) == 'select_all(RunMatrix.selected_pc_haplo_calls_tsv_gz)'
+
     for node in [*workflow.inputs, *workflow.body, *workflow.outputs]:
         walk_workflow(node)
 
 
+@pytest.mark.parametrize('with_expression', [False, True])
 @pytest.mark.parametrize('task_name', ['PrepareOmicsManifest', 'IntersectMultiOmicsOutliers'])
-def test_new_tasks_localize_files_before_list_creation_and_run_safely(tmp_path, task_name):
+def test_new_tasks_localize_files_before_list_creation_and_run_safely(tmp_path, task_name, with_expression):
     document = WDL.load(str(WORKFLOW))
     task = next(task for task in document.tasks if task.name == task_name)
     local = tmp_path / "local ' \" $(touch INJECTION) `touch INJECTION` $HOME"
@@ -85,9 +92,13 @@ def test_new_tasks_localize_files_before_list_creation_and_run_safely(tmp_path, 
         'protein\tgs://bucket/protein.bed\tgs://bucket/protein.pc\n')
     matrix_uris = list(mapping)
     mapping['gs://bucket/omes.tsv'] = str(manifest_path)
+    haplo_path = local / 'expression_haplo.tsv'
+    haplo_path.write_text('gene_id\tS2\tS1\nG1\t1\t0\n')
+    mapping['gs://bucket/expression_haplo.tsv'] = str(haplo_path)
     values = {
+        'expression_haplo_matrices': ['gs://bucket/expression_haplo.tsv'] if with_expression else [],
         'ome_manifest': 'gs://bucket/omes.tsv',
-        'dataset_ids': ['rna', 'protein'], 'thresholds': [-2, -3],
+        'dataset_ids': ['expression' if with_expression else 'rna', 'protein'], 'thresholds': [-2, -3],
         'z_score_matrices': matrix_uris, 'docker_image': 'unused',
         'cpu': 1, 'memory_gb': 1, 'disk_gb': 1, 'max_retries': 0,
     }
@@ -121,5 +132,5 @@ def test_new_tasks_localize_files_before_list_creation_and_run_safely(tmp_path, 
         assert len(manifest) == 2
         for entry in manifest:
             with gzip.open(tmp_path / 'intersections' / entry['matrix_file'], 'rt') as handle:
-                assert handle.read().splitlines() == ['gene_id\tS1\tS2', 'G1\t1\t0']
+                assert handle.read().splitlines() == ['gene_id\tS1\tS2', 'G1\t0\t0' if with_expression else 'G1\t1\t0']
         assert json.loads((tmp_path / 'intersection_summary.json').read_text())['matrix_count'] == 2

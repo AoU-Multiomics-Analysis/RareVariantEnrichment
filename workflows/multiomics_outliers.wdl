@@ -57,6 +57,7 @@ task PrepareOmicsManifest {
 task IntersectMultiOmicsOutliers {
     input {
         Array[File] z_score_matrices
+        Array[File] expression_haplo_matrices
         Array[String] dataset_ids
         Array[Float] thresholds
         String docker_image
@@ -72,6 +73,7 @@ task IntersectMultiOmicsOutliers {
         # Build the file list here, after the matrix files have been localized.
         rare-variant-enrichment multiomics-intersections \
             --matrix-file-list '~{sub(write_lines(z_score_matrices), "'", "'\"'\"'")}' \
+            --expression-haplo-file-list '~{sub(write_lines(expression_haplo_matrices), "'", "'\"'\"'")}' \
             --dataset-id-list '~{sub(write_lines(dataset_ids), "'", "'\"'\"'")}' \
             --threshold-list '~{sub(write_lines(thresholds), "'", "'\"'\"'")}' \
             --output-directory "intersections" \
@@ -186,12 +188,14 @@ workflow MultiOmicsOutliers {
         }
     }
 
-    Int calculated_intersection_disk_gb = ceil(size(RunMatrix.selected_pc_z_scores_tsv_gz, "GiB") * 8.0 + 20.0)
+    Array[File] expression_haplo_matrices = select_all(RunMatrix.selected_pc_haplo_calls_tsv_gz)
+    Int calculated_intersection_disk_gb = ceil((size(RunMatrix.selected_pc_z_scores_tsv_gz, "GiB") + size(expression_haplo_matrices, "GiB")) * 8.0 + 20.0)
     Int dynamic_intersection_disk_gb = if calculated_intersection_disk_gb > intersection_disk_gb then calculated_intersection_disk_gb else intersection_disk_gb
 
     call IntersectMultiOmicsOutliers {
         input:
             z_score_matrices = RunMatrix.selected_pc_z_scores_tsv_gz,
+            expression_haplo_matrices = expression_haplo_matrices,
             dataset_ids = dataset_name,
             thresholds = intersection_z_thresholds,
             docker_image = docker_image,

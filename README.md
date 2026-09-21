@@ -235,7 +235,7 @@ The haplo calculation fits an intercept and the selected phenotype PCs. It follo
 
 `haplo_logcpm_drop` defaults to `1.0` and must be finite and non-negative. At zero selected PCs, the rule compares the original log2-CPM to the gene mean. Constant genes have no drop and receive `0` when the fit is valid, even when their Z scores cannot be calculated. Gene means use the finite observations in the aligned export cohort. For expression jobs, the existing export summary contains a `haplo` section with the threshold, adjustment rule, exclusion counts, and cell counts.
 
-This interpretation requires log2-CPM input. Applying a one-unit cutoff to Z scores, rank-normalized values, or splicing ratios does not give the same criterion. The workflow does not convert raw counts to log2-CPM. For the standalone export CLI, add `--haplo-matrix-output haplo.tsv.gz`; use `--haplo-logcpm-drop` to change the default drop. The existing PC-selection and Z-score intersection rules are unchanged.
+This interpretation requires log2-CPM input. Applying a one-unit cutoff to Z scores, rank-normalized values, or splicing ratios does not give the same criterion. The workflow does not convert raw counts to log2-CPM. For the standalone export CLI, add `--haplo-matrix-output haplo.tsv.gz`; use `--haplo-logcpm-drop` to change the default drop. PC selection remains unchanged. Intersections that contain expression also require its haplo call to be `1`.
 
 ## Multiple matrices and multi-omics outliers
 
@@ -252,24 +252,24 @@ There is no separate ome-covariate field. Each row can use a different additiona
 
 Use `gs://` object paths for Terra. Absolute local paths are also accepted for tests; relative paths are rejected because localization changes the manifest directory. The manifest task checks the names, fields, and thresholds. It returns the paths as metadata. The workflow then declares each path as a `File` before it passes the value to an analysis task. The optional covariate path is declared only when supplied.
 
-The final task creates a gene-by-sample indicator matrix for every dataset combination of size two or greater, at every `intersection_z_thresholds` value. The default thresholds are `-2, -3, -4, -5, -6`. These thresholds are separate from the enrichment and PC-selection thresholds. Each combination uses the same threshold in all participating datasets and tests the lower tail (`Z <= threshold`).
+The final task creates a gene-by-sample indicator matrix for every dataset combination of size two or greater, at every `intersection_z_thresholds` value. The default thresholds are `-2, -3, -4, -5, -6`. These thresholds are separate from the enrichment and PC-selection thresholds. Each combination uses the same threshold in all participating datasets and tests the lower tail (`Z <= threshold`). If the exact label `expression` participates, its haplo call must also be `1`.
 
-For expression, protein, and splicing, the combinations are expression–protein, expression–splicing, protein–splicing, and expression–protein–splicing. A protein–splicing cell is `1` when both values meet the threshold, regardless of expression. The three-way cell is `1` only when all three values meet it. Pairwise and three-way outputs can therefore overlap.
+For expression, protein, and splicing, the combinations are expression–protein, expression–splicing, protein–splicing, and expression–protein–splicing. A protein–splicing cell is `1` when both values meet the threshold, regardless of expression. The three-way cell is `1` only when all three Z scores meet the threshold and expression also meets the haplo criterion. Expression–protein and expression–splicing pairs require that same expression haplo call. Pairwise and three-way outputs can therefore overlap.
 
 | Cell | Meaning |
 |---|---|
-| `1` | All participating Z scores are finite and at or below the threshold. |
-| `0` | All participating Z scores are finite, and at least one exceeds the threshold. |
-| `NA` | At least one participating Z score is missing. |
+| `1` | All participating Z scores are finite and at or below the threshold, and expression has haplo = `1` when it participates. |
+| `0` | All required values are present, but at least one Z score exceeds the threshold or the participating expression haplo call is `0`. |
+| `NA` | A participating Z score or required expression haplo call is missing, even if another condition fails. |
 
-Each combination uses its own shared genes and sample IDs. Row and column order follows the first dataset in that combination. Alignment uses IDs, not row or column position. A dataset outside the combination does not affect its sample set or calls. Empty overlap produces an empty matrix and zero observation counts in the output index. Missing data are not classified as non-outliers.
+Each combination uses its own shared genes and sample IDs. Row and column order follows the first dataset in that combination. Alignment uses IDs, not row or column position. A dataset outside the combination does not affect its sample set or calls. The expression haplo file must have the same gene and sample ID sets as the expression Z-score matrix; order can differ. A missing file or mismatched IDs fails validation instead of silently dropping pairs. For direct CLI use with an `expression` dataset, supply `--expression-haplo-file-list` containing exactly one localized haplo path. Omit it or supply an empty list when there is no expression dataset. Empty overlap produces an empty matrix and zero observation counts in the output index. Missing data are not classified as non-outliers.
 
 The workflow outputs are:
 
 - `matrix_results`: one `OmicsResult` per input dataset, in input order. It contains the dataset name, original input files, selected-PC Z-score matrix, optional expression haplo matrix, PC selection, enrichment results, plots, and QC files.
-- `dataset_ids`, `z_score_matrices`, and `haplo_matrices`: corresponding arrays in manifest order for direct downstream use. `haplo_matrices` is an `Array[File?]`: only the `expression` entry has a file, and every other entry is null. If there is no expression row, all entries are null. `haplo_logcpm_drop` applies only to expression. Protein, splicing, and other labels produce no haplo file or haplo summary. The intersection task continues to use the Z scores.
+- `dataset_ids`, `z_score_matrices`, and `haplo_matrices`: corresponding arrays in manifest order for direct downstream use. `haplo_matrices` is an `Array[File?]`: only the `expression` entry has a file, and every other entry is null. If there is no expression row, all entries are null. `haplo_logcpm_drop` applies only to expression. Protein, splicing, and other labels produce no haplo file or haplo summary. The intersection task uses all participating Z scores and requires the haplo criterion only for combinations containing expression.
 - `intersection_matrices`: gzip-compressed TSV indicator matrices. The first column is `gene_id`.
-- `intersection_manifest_tsv`: maps each output basename to its datasets and threshold; gives gene, sample, outlier, non-outlier, and missing-cell counts. Use this index to identify files rather than relying on array order.
+- `intersection_manifest_tsv`: maps each output basename to its datasets and threshold; gives gene, sample, outlier, non-outlier, and missing-cell counts. The `expression_haplo_required` column identifies combinations that use the haplo criterion. Use this index to identify files rather than relying on array order.
 - `intersection_summary_json`: dataset dimensions, thresholds, calculation rules, and the same per-intersection counts.
 
 For `N` datasets and `T` thresholds, the output count is `T * (2^N - N - 1)`. Three datasets at five thresholds produce 20 matrices. Output size grows quickly as datasets are added. The intersection task stores input gene vectors in a temporary SQLite database and processes one combination at a time. Its disk allocation has a 1,000 GB default floor, with a size-based increase; increase `intersection_disk_gb` for large input sets or many outputs. The other intersection resource inputs are `intersection_cpu` and `intersection_memory_gb`.

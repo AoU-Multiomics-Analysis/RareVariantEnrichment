@@ -29,3 +29,7 @@ Return typed per-dataset results, the Z-score file array, intersection file arra
 ## Verification and limits
 
 Test exact threshold equality, mixed signs, missing data, reordered identifiers, pairwise-specific overlap, three-way membership, empty overlap, duplicate identifiers, malformed rows, invalid thresholds, unreadable files, and cloud URI rejection. Test WDL file localization with simulated cloud-to-local substitution, safe shell quoting, and static workflow-scope file-writing checks. Extend the existing GitHub Actions fixture smoke test. Do not build a local Docker image or submit cloud jobs. Do not claim Terra validation without an actual Terra run.
+
+## Expression haplo requirement
+
+Intersections containing the exact ome label expression require both expression Z <= the common threshold and expression haplo = 1. Other members require their Z threshold only. Combinations without expression ignore haplo. Missing required haplo evidence gives NA under the existing missing-data rule. The haplo file is a typed task input, validated as binary/NA, and aligned by gene and sample IDs; its ID sets must equal the expression Z matrix.
