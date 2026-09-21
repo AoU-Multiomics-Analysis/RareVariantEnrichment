@@ -277,6 +277,8 @@ task ExportSelectedPcZScores {
         Int preemptible
     }
 
+    Boolean emit_haplo_matrix = ome_name == "expression"
+
     command <<<
         set -euo pipefail
 
@@ -287,7 +289,7 @@ task ExportSelectedPcZScores {
             ~{if defined(additional_covariates_tsv) then "--additional-covariates '" + sub(select_first([additional_covariates_tsv]), "'", "'\"'\"'") + "'" else ""} \
             --selection-input '~{sub(selection_json, "'", "'\"'\"'")}' \
             --matrix-output "selected_pc_z_scores.tsv.gz" \
-            ~{if (ome_name == "expression") then "--haplo-matrix-output selected_pc_haplo_calls.tsv.gz" else ""} \
+            ~{if emit_haplo_matrix then "--haplo-matrix-output selected_pc_haplo_calls.tsv.gz" else ""} \
             --haplo-logcpm-drop "~{haplo_logcpm_drop}" \
             --gene-qc-output "selected_pc_z_scores.gene_qc.tsv.gz" \
             --summary-output "selected_pc_z_scores.summary.json"
