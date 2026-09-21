@@ -56,3 +56,30 @@ jobs:
             echo "Checking ${wdl}"
             miniwdl check "${wdl}"
           done
+
+  womtool-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Download WOMtool
+        run: |
+          curl --fail --location --retry 3 \
+            --output "${RUNNER_TEMP}/womtool.jar" \
+            https://github.com/broadinstitute/cromwell/releases/download/91/womtool-91.jar
+
+      - name: Validate WDLs with Cromwell parser
+        run: |
+          shopt -s globstar nullglob
+          for wdl in workflows/**/*.wdl; do
+            echo "Validating ${wdl} with WOMtool 91"
+            java -jar "${RUNNER_TEMP}/womtool.jar" validate "${wdl}"
+          done
