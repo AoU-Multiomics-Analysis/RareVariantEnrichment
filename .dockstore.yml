@@ -1,8 +1,11 @@
 version: 1.2
 workflows:
-  - subclass: WDL
+  - name: rare-variant-enrichment
+    subclass: WDL
     primaryDescriptorPath: /workflows/rare_variant_enrichment.wdl
-  - subclass: WDL
+  - name: extract-variant-carriers
+    subclass: WDL
     primaryDescriptorPath: /workflows/extract_variant_carriers.wdl
-  - subclass: WDL
+  - name: multiomics-outliers
+    subclass: WDL
     primaryDescriptorPath: /workflows/multiomics_outliers.wdl
