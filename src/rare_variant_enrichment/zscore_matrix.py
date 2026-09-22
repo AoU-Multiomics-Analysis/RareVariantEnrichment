@@ -114,6 +114,7 @@ def export_zscore_matrix(
         haplo_summary["haplo"] = export_haplo_matrix(
             aligned.expression, aligned.pc_values, pc_count, aligned.shared_samples,
             haplo_matrix_output, haplo_logcpm_drop,
+            additional_covariates=aligned.covariate_values,
         )
     write_json(summary_output, {
         **haplo_summary,

@@ -605,6 +605,8 @@ print(task.command.eval(environment, stdlib).value)
         assert "--haplo-matrix-output" not in rendered.stdout
         return
     assert "haplo" in summary
+    assert summary["haplo"]["additional_covariates_used"] == with_covariates
+    assert summary["haplo"]["additional_covariate_count"] == (2 if with_covariates else 0)
     with gzip.open(haplo_path, "rt") as handle:
         haplo_rows = handle.read().splitlines()
     assert haplo_rows[0] == rows[0]

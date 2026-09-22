@@ -210,3 +210,5 @@ def _check_selected_matrix(outputs, samples, expect_haplo=False):
     assert haplo[0] == ["gene_id", *samples]
     assert len(haplo) == 4
     assert summary["haplo"]["selected_pc_count"] == selection["selection"]["selected_pc_count"]
+    assert summary["haplo"]["additional_covariates_used"] is True
+    assert summary["haplo"]["additional_covariate_count"] == 2
