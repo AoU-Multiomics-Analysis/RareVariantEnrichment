@@ -76,9 +76,12 @@ def test_wrapper_calls_existing_workflow_and_preserves_file_types():
         walk_workflow(node)
 
 
+@pytest.mark.parametrize('generated_files_in_cloud', [False, True])
 @pytest.mark.parametrize('with_expression', [False, True])
 @pytest.mark.parametrize('task_name', ['PrepareOmicsManifest', 'IntersectMultiOmicsOutliers'])
-def test_new_tasks_localize_files_before_list_creation_and_run_safely(tmp_path, task_name, with_expression):
+def test_new_tasks_localize_files_before_list_creation_and_run_safely(
+    tmp_path, task_name, with_expression, generated_files_in_cloud,
+):
     document = WDL.load(str(WORKFLOW))
     task = next(task for task in document.tasks if task.name == task_name)
     local = tmp_path / "local ' \" $(touch INJECTION) `touch INJECTION` $HOME"
@@ -107,9 +110,13 @@ def test_new_tasks_localize_files_before_list_creation_and_run_safely(tmp_path, 
     }
     class StdLib(WDL.StdLib.Base):
         def _virtualize_filename(self, filename):
+            if generated_files_in_cloud:
+                uri = 'gs://generated-files/' + Path(filename).name
+                mapping[uri] = filename
+                return uri
             return filename
         def _devirtualize_filename(self, filename):
-            return filename
+            return mapping.get(filename, filename)
     stdlib = StdLib('1.0', write_dir=str(tmp_path))
     environment = WDL.Env.Bindings()
     for declaration in task.inputs:
@@ -119,7 +126,24 @@ def test_new_tasks_localize_files_before_list_creation_and_run_safely(tmp_path, 
     environment = environment.map(lambda item: WDL.Env.Binding(
         item.name, WDL.Value.rewrite_paths(item.value, lambda file: mapping.get(file.value, file.value))
     ))
-    command = task.command.eval(environment, stdlib).value
+    if generated_files_in_cloud:
+        # Cromwell maps File results after evaluating each command placeholder.
+        # A write_lines result wrapped in sub becomes String, so this final
+        # localization cannot replace its GCS URI. Model that boundary here.
+        parts = []
+        for part in task.command.parts:
+            if isinstance(part, str):
+                parts.append(part)
+            else:
+                assert not part.options  # These tasks use only scalar placeholders.
+                value = part.expr.eval(environment, stdlib)
+                localized = WDL.Value.rewrite_paths(
+                    value, lambda file: mapping.get(file.value, file.value)
+                )
+                parts.append(localized.coerce(WDL.Type.String()).value)
+        command = ''.join(parts)
+    else:
+        command = task.command.eval(environment, stdlib).value
     assert 'gs://' not in command
     command = 'rare-variant-enrichment() { ' + shlex.quote(sys.executable) + ' -m rare_variant_enrichment.cli "$@"; }\n' + command
     result = subprocess.run(['bash', '-c', command], cwd=tmp_path, env={**os.environ, 'PYTHONPATH': str(Path('src').resolve())}, text=True, capture_output=True)

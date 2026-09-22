@@ -35,9 +35,10 @@ task PrepareOmicsManifest {
     command <<<
         set -euo pipefail
         echo "Starting multi-omics input validation" >&2
+        # Keep the generated list as File so Cromwell can localize its path.
         rare-variant-enrichment prepare-omics-manifest \
             --manifest '~{sub(ome_manifest, "'", "'\"'\"'")}' \
-            --threshold-list '~{sub(write_lines(thresholds), "'", "'\"'\"'")}' \
+            --threshold-list '~{write_lines(thresholds)}' \
             --output "normalized_omics.tsv"
         echo "Completed multi-omics input validation" >&2
     >>>
@@ -71,12 +72,13 @@ task IntersectMultiOmicsOutliers {
     command <<<
         set -euo pipefail
         echo "Starting multi-omics outlier intersections" >&2
-        # Build the file list here, after the matrix files have been localized.
+        # Write lists after input localization and keep their results as File.
+        # Wrapping write_lines in sub converts the result to an unlocalized String.
         rare-variant-enrichment multiomics-intersections \
-            --matrix-file-list '~{sub(write_lines(z_score_matrices), "'", "'\"'\"'")}' \
-            --expression-haplo-file-list '~{sub(write_lines(expression_haplo_matrices), "'", "'\"'\"'")}' \
-            --dataset-id-list '~{sub(write_lines(dataset_ids), "'", "'\"'\"'")}' \
-            --threshold-list '~{sub(write_lines(thresholds), "'", "'\"'\"'")}' \
+            --matrix-file-list '~{write_lines(z_score_matrices)}' \
+            --expression-haplo-file-list '~{write_lines(expression_haplo_matrices)}' \
+            --dataset-id-list '~{write_lines(dataset_ids)}' \
+            --threshold-list '~{write_lines(thresholds)}' \
             --output-directory "intersections" \
             --manifest-output "intersection_manifest.tsv" \
             --summary-output "intersection_summary.json"
