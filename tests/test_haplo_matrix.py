@@ -44,11 +44,17 @@ def test_haplo_uses_strict_drop_in_logcpm_units_and_keeps_all_genes(tmp_path):
     assert summary['additional_covariates_used'] is False
 
 
-def test_haplo_uses_selected_phenotype_pcs_but_not_fixed_covariates(tmp_path):
-    # Expression = 10 + 4*PC1 + batch. PC-only adjustment leaves batch deviations.
-    values = [('ENSG1', [4, 8, 9.5, 10.5, 14, 14])]
-    rows = export(tmp_path, values, selected=1, covariates=True)
-    assert rows[1] == ['ENSG1', '1', '0', '0', '0', '0', '0']
+@pytest.mark.parametrize('selected,values', [
+    (0, [8, 12, 9.5, 10.5, 10, 10]),
+    (1, [4, 8, 9.5, 10.5, 14, 14]),
+])
+def test_haplo_adjusts_for_fixed_covariates_at_selected_pc_count(tmp_path, selected, values):
+    # Expression = 10 + batch (+ 4*PC1). Adjustment removes the batch drop.
+    rows = export(tmp_path, [('ENSG1', values)], selected=selected, covariates=True)
+    assert rows[1] == ['ENSG1'] + ['0'] * 6
+    summary = json.loads((tmp_path / 'summary.json').read_text())['haplo']
+    assert summary['additional_covariates_used'] is True
+    assert summary['additional_covariate_count'] == 1
     with gzip.open(tmp_path / 'z.tsv.gz', 'rt') as handle:
         assert list(csv.reader(handle, delimiter='\t'))[1][1:] == ['NA'] * 6
 
@@ -92,24 +98,31 @@ def test_haplo_cli_emits_matrix(tmp_path):
     assert rows[1] == ['ENSG1', '1', '1', '0', '0', '0', '0']
 
 
-def test_haplo_matches_adjusted_logcpm_mean_reference_with_missing_values(tmp_path):
+@pytest.mark.parametrize('with_covariates', [False, True])
+def test_haplo_matches_adjusted_logcpm_mean_reference_with_missing_values(tmp_path, with_covariates):
     from rare_variant_enrichment.haplo_matrix import export_haplo_matrix
 
     rng = np.random.default_rng(32)
     pcs = rng.normal(size=(24, 3))
+    covariates = rng.normal(size=(24, 2)) if with_covariates else np.empty((24, 0))
     y = 20 + pcs @ [4, -2, 1] + rng.normal(size=24) * 2
+    if with_covariates:
+        y += covariates @ [5, -3]
+        covariates[10, 0] = np.nan
     incomplete = y.copy()
     incomplete[[2, 7]] = np.nan
     genes = [('ENSG1', y), ('ENSG2', incomplete), ('ENSG3', y + 100)]
     output = tmp_path / 'haplo.tsv.gz'
-    export_haplo_matrix(genes, pcs, 2, [str(i) for i in range(24)], output, 1)
+    export_haplo_matrix(genes, pcs, 2, [str(i) for i in range(24)], output, 1,
+                        additional_covariates=covariates if with_covariates else None)
     with gzip.open(output, 'rt') as handle:
         rows = list(csv.reader(handle, delimiter='\t'))[1:]
     for row, (_, expression) in zip(rows, genes):
-        usable = np.isfinite(expression)
-        design = np.column_stack([np.ones(usable.sum()), pcs[usable, :2]])
+        usable = np.isfinite(expression) & np.all(np.isfinite(covariates), axis=1)
+        predictors = np.column_stack([covariates[usable], pcs[usable, :2]])
+        design = np.column_stack([np.ones(usable.sum()), predictors])
         beta = np.linalg.lstsq(design, expression[usable], rcond=None)[0]
-        adjusted = expression[usable] - pcs[usable, :2] @ beta[1:]
+        adjusted = expression[usable] - predictors @ beta[1:]
         expected = np.full(24, 'NA', dtype=object)
         expected[usable] = np.where(adjusted < adjusted.mean() - 1, '1', '0')
         assert row[1:] == expected.tolist()
@@ -138,3 +151,30 @@ def test_haplo_zero_drop_does_not_call_constant_decimal_gene(tmp_path):
                         2, [f'S{i}' for i in range(6)], output, 0)
     with gzip.open(output, 'rt') as handle:
         assert list(csv.reader(handle, delimiter='\t'))[1] == ['ENSG1'] + ['0'] * 6
+
+
+@pytest.mark.parametrize('reason,pc_count,covariates', [
+    ('rank_deficiency', 1, np.arange(6.0).reshape(-1, 1)),
+    ('insufficient_dof', 0, np.eye(6)[:, :5]),
+])
+def test_haplo_checks_full_covariate_design(tmp_path, reason, pc_count, covariates):
+    from rare_variant_enrichment.haplo_matrix import export_haplo_matrix
+
+    output = tmp_path / 'haplo.tsv.gz'
+    summary = export_haplo_matrix(
+        [('ENSG1', np.arange(6.0))], np.arange(6.0).reshape(-1, 1), pc_count,
+        [f'S{i}' for i in range(6)], output, 1, additional_covariates=covariates,
+    )
+    with gzip.open(output, 'rt') as handle:
+        assert list(csv.reader(handle, delimiter='\t'))[1] == ['ENSG1'] + ['NA'] * 6
+    assert summary['exclusion_counts'][reason] == 1
+
+
+@pytest.mark.parametrize('covariates', [np.zeros(6), np.zeros((5, 1))])
+def test_haplo_rejects_incompatible_covariate_shapes(tmp_path, covariates):
+    from rare_variant_enrichment.haplo_matrix import export_haplo_matrix
+
+    with pytest.raises(ValueError, match='covariates.*incompatible shapes'):
+        export_haplo_matrix([('ENSG1', np.arange(6.0))], np.zeros((6, 0)), 0,
+                            [f'S{i}' for i in range(6)], tmp_path / 'haplo.tsv.gz', 1,
+                            additional_covariates=covariates)
