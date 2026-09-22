@@ -1,4 +1,4 @@
-ome_name	phenotype_bed	principal_components_tsv	additional_covariates_tsv
-expression	gs://your-bucket/expression.bed.gz	gs://your-bucket/expression.pcs.tsv	gs://your-bucket/genetic_pcs.tsv
-protein	gs://your-bucket/protein.bed.gz	gs://your-bucket/protein.pcs.tsv	gs://your-bucket/protein_covariates.tsv
-splicing	gs://your-bucket/splicing.bed.gz	gs://your-bucket/splicing.pcs.tsv	.
+ome_name	phenotype_bed	principal_components_tsv	lof_carrier_table	additional_covariates_tsv
+expression	gs://your-bucket/expression.bed.gz	gs://your-bucket/expression.pcs.tsv	gs://your-bucket/expression.lof_carriers.tsv.gz	gs://your-bucket/genetic_pcs.tsv
+protein	gs://your-bucket/protein.bed.gz	gs://your-bucket/protein.pcs.tsv	gs://your-bucket/protein.lof_carriers.tsv.gz	gs://your-bucket/protein_covariates.tsv
+splicing	gs://your-bucket/splicing.bed.gz	gs://your-bucket/splicing.pcs.tsv	gs://your-bucket/splicing.lof_carriers.tsv.gz	.

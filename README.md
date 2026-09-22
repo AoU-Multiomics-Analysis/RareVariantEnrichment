@@ -239,14 +239,17 @@ This interpretation requires log2-CPM input. Applying a one-unit cutoff to Z sco
 
 ## Multiple matrices and multi-omics outliers
 
-Use `workflows/multiomics_outliers.wdl` to run `RareVariantEnrichment` separately for each ome. Set `ome_manifest` to the TSV manifest file. See `examples/omics_manifest.tsv` and `examples/multiomics_outliers.inputs.json`. Supply one shared LoF carrier table and gene annotation. Each ome selects its own PC count and exports all BED genes as a Z-score matrix.
+Use `workflows/multiomics_outliers.wdl` to run `RareVariantEnrichment` separately for each ome. Set `ome_manifest` to the TSV manifest file. See `examples/omics_manifest.tsv` and `examples/multiomics_outliers.inputs.json`. Supply the LoF carrier table for each ome in the manifest and one shared gene annotation. Each ome selects its own PC count and exports all BED genes as a Z-score matrix.
 
 | Manifest column | Contents |
 |---|---|
 | `ome_name` | Unique ome name, such as `expression`, `protein`, or `splicing`. |
 | `phenotype_bed` | Path to the phenotype BED for this ome. |
 | `principal_components_tsv` | Path to the PC table for this ome. |
+| `lof_carrier_table` | Required path to the LoF carrier table for this ome. |
 | `additional_covariates_tsv` | Optional path to all fixed covariates for this ome. Use a blank cell or `.` to omit it. The column can also be omitted. |
+
+Each row must supply `lof_carrier_table`. Repeat the same path when several omes share a table. This column replaces the top-level `MultiOmicsOutliers.lof_carrier_table` input; move that path into each row when updating an existing run. Each `matrix_results` record includes the carrier file used for that ome.
 
 There is no separate ome-covariate field. Each row can use a different additional-covariate file, or several rows can use the same file. All supplied fixed covariates stay in the model while the workflow varies the PC count. Without that file, the model uses an intercept and the selected PCs.
 

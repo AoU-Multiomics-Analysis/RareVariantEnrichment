@@ -444,7 +444,7 @@ print(json.dumps(rendered, sort_keys=True))
     rendered = json.loads(result.stdout)
     analysis = rendered["CalculateLofPcEnrichment"]
     assert '"/tmp/phenotype matrix.bed.gz"' in analysis["command"]
-    assert '"/tmp/lof carriers.tsv"' in analysis["command"]
+    assert "/tmp/lof carriers.tsv" in shlex.split(analysis["command"])
     assert '"/tmp/principal components.tsv"' in analysis["command"]
     assert "'/tmp/genetic pcs.tsv'" in analysis["command"]
     assert '"/tmp/protein coding.tsv"' in analysis["command"]

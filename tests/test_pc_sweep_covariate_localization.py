@@ -25,8 +25,8 @@ def test_pc_sweep_localizes_optional_covariates_before_command_rendering(tmp_pat
         'protein_coding_genes': 'protein_coding_genes.tsv',
         'additional_covariates_tsv': 'genetic_pcs.tsv',
     }.items():
-        # Check literal quotes and shell syntax in the optional covariate path.
-        directory = tmp_path / ("covariates ' \" $(touch INJECTION) `touch INJECTION` $HOME" if name == 'additional_covariates_tsv' else 'data')
+        # Check literal quotes and shell syntax in carrier and covariate paths.
+        directory = tmp_path / ("covariates ' \" $(touch INJECTION) `touch INJECTION` $HOME" if name in ('additional_covariates_tsv', 'lof_carrier_table') else 'data')
         directory.mkdir(exist_ok=True)
         local = directory / source
         if name == 'protein_coding_genes':
