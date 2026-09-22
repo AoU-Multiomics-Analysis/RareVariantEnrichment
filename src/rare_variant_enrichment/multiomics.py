@@ -145,10 +145,9 @@ def build_outlier_intersections(
                     raise ValueError("Expression haplo gene IDs must match expression Z-score gene IDs")
                 haplo_sample_indexes = {sample: index for index, sample in enumerate(haplo_samples)}
             sample_indexes = [{name: index for index, name in enumerate(samples)} for samples in sample_lists]
-            group_number = 0
             for group_size in range(2, len(names) + 1):
                 for group in combinations(range(len(names)), group_size):
-                    group_number += 1
+                    group_name = "-".join(names[index] for index in group)
                     first = group[0]
                     samples = [sample for sample in sample_lists[first] if all(sample in sample_indexes[index] for index in group[1:])]
                     columns = [np.asarray([sample_indexes[index][sample] for sample in samples], dtype=int) for index in group]
@@ -166,7 +165,7 @@ def build_outlier_intersections(
                         modes = [False, True] if has_expression else [False]
                         for haplo_required in modes:
                             rule = "z_le_minus3.expression_haplo" if haplo_required else "z_le_minus3"
-                            filename = f"intersection_{group_number:04d}.{rule}.tsv.gz"
+                            filename = f"{group_name}.{rule}.tsv.gz"
                             handle = stack.enter_context(gzip.open(output_directory / filename, "wt", encoding="utf-8", newline=""))
                             writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
                             writer.writerow(["gene_id", *samples])

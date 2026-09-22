@@ -38,6 +38,8 @@ def read_outputs(tmp_path):
         manifest = list(csv.DictReader(handle, delimiter='\t'))
     outputs = {}
     for entry in manifest:
+        rule = 'z_le_minus3.expression_haplo' if entry['expression_haplo_required'] == 'True' else 'z_le_minus3'
+        assert entry['matrix_file'] == entry['datasets'].replace(',', '-') + '.' + rule + '.tsv.gz'
         with gzip.open(tmp_path / 'intersections' / entry['matrix_file'], 'rt') as handle:
             outputs[(entry['datasets'], entry['expression_haplo_required'] == 'True')] = list(csv.reader(handle, delimiter='\t'))
     return manifest, outputs

@@ -272,6 +272,8 @@ For expression, protein, and splicing, this produces seven matrices: two each fo
 | `0` | All required values are available, but at least one condition fails. |
 | `NA` | A participating Z score is missing, or the expression haplo call is missing in a matrix that requires it. |
 
+Intersection filenames join the participating ome names with `-`, in manifest order. For example, expression–splicing produces `expression-splicing.z_le_minus3.tsv.gz` and `expression-splicing.z_le_minus3.expression_haplo.tsv.gz`. The three-way names start with `expression-splicing-proteomics` when those are the manifest labels and order. The output index records the exact filenames.
+
 A missing expression haplo call does not affect the Z-only matrix. In the Z-plus-haplo matrix, it gives `NA`, even if another condition fails.
 
 Each combination uses its own shared genes and sample IDs. Row and column order follows the first dataset in that combination. Alignment uses IDs, not row or column position. A dataset outside the combination does not affect its sample set or calls. The expression haplo file must have the same gene and sample ID sets as the expression Z-score matrix; order can differ. A missing file or mismatched IDs fails validation instead of silently dropping pairs. For direct CLI use with an `expression` dataset, supply `--expression-haplo-file-list` containing exactly one localized haplo path. Omit it or supply an empty list when there is no expression dataset. Empty overlap produces an empty matrix and zero observation counts in the output index. Missing data are not classified as non-outliers.
