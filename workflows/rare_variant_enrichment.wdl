@@ -278,6 +278,9 @@ task ExportSelectedPcZScores {
     }
 
     Boolean emit_haplo_matrix = ome_name == "expression"
+    Int selected_pc_count = read_json(selection_json)["selection"]["selected_pc_count"]
+    String safe_ome_name = if ome_name == "" then "phenotype" else sub(ome_name, "[^A-Za-z0-9_]", "_")
+    String matrix_prefix = safe_ome_name + "." + selected_pc_count + "PCs"
 
     command <<<
         set -euo pipefail
@@ -288,19 +291,19 @@ task ExportSelectedPcZScores {
             --principal-components '~{sub(principal_components_tsv, "'", "'\"'\"'")}' \
             ~{if defined(additional_covariates_tsv) then "--additional-covariates '" + sub(select_first([additional_covariates_tsv]), "'", "'\"'\"'") + "'" else ""} \
             --selection-input '~{sub(selection_json, "'", "'\"'\"'")}' \
-            --matrix-output "selected_pc_z_scores.tsv.gz" \
-            ~{if emit_haplo_matrix then "--haplo-matrix-output selected_pc_haplo_calls.tsv.gz" else ""} \
+            --matrix-output "~{matrix_prefix}.z_scores.tsv.gz" \
+            ~{if emit_haplo_matrix then "--haplo-matrix-output " + matrix_prefix + ".haplo_calls.tsv.gz" else ""} \
             --haplo-logcpm-drop "~{haplo_logcpm_drop}" \
-            --gene-qc-output "selected_pc_z_scores.gene_qc.tsv.gz" \
-            --summary-output "selected_pc_z_scores.summary.json"
+            --gene-qc-output "~{matrix_prefix}.z_scores.gene_qc.tsv.gz" \
+            --summary-output "~{matrix_prefix}.z_scores.summary.json"
         echo "Finished Z-score matrix export" >&2
     >>>
 
     output {
-        File matrix_tsv_gz = "selected_pc_z_scores.tsv.gz"
-        File? haplo_matrix_tsv_gz = "selected_pc_haplo_calls.tsv.gz"
-        File gene_qc_tsv_gz = "selected_pc_z_scores.gene_qc.tsv.gz"
-        File summary_json = "selected_pc_z_scores.summary.json"
+        File matrix_tsv_gz = matrix_prefix + ".z_scores.tsv.gz"
+        File? haplo_matrix_tsv_gz = matrix_prefix + ".haplo_calls.tsv.gz"
+        File gene_qc_tsv_gz = matrix_prefix + ".z_scores.gene_qc.tsv.gz"
+        File summary_json = matrix_prefix + ".z_scores.summary.json"
     }
 
     runtime {

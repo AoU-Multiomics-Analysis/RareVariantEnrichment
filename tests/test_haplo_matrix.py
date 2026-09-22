@@ -34,13 +34,13 @@ def test_haplo_uses_strict_drop_in_logcpm_units_and_keeps_all_genes(tmp_path):
     rows = export(tmp_path, [('ENSG1', [8, 12, 9, 11, 10, 10]), ('ENSG2', [7] * 6)])
     assert rows == [
         ['gene_id', 'S1', 'S2', 'S3', 'S4', 'S5', 'S6'],
-        ['ENSG1', '1', '0', '0', '0', '0', '0'],
-        ['ENSG2', '0', '0', '0', '0', '0', '0'],
+        ['ENSG1', '0', '0', '0', '0', '0', '0'],
+        ['ENSG2', 'NA', 'NA', 'NA', 'NA', 'NA', 'NA'],
     ]
     summary = json.loads((tmp_path / 'summary.json').read_text())['haplo']
     assert summary['logcpm_drop'] == 1.0
-    assert summary['positive_cell_count'] == 1
-    assert summary['missing_cell_count'] == 0
+    assert summary['positive_cell_count'] == 0
+    assert summary['missing_cell_count'] == 6
     assert summary['additional_covariates_used'] is False
 
 
@@ -51,7 +51,7 @@ def test_haplo_uses_strict_drop_in_logcpm_units_and_keeps_all_genes(tmp_path):
 def test_haplo_adjusts_for_fixed_covariates_at_selected_pc_count(tmp_path, selected, values):
     # Expression = 10 + batch (+ 4*PC1). Adjustment removes the batch drop.
     rows = export(tmp_path, [('ENSG1', values)], selected=selected, covariates=True)
-    assert rows[1] == ['ENSG1'] + ['0'] * 6
+    assert rows[1] == ['ENSG1'] + ['NA'] * 6
     summary = json.loads((tmp_path / 'summary.json').read_text())['haplo']
     assert summary['additional_covariates_used'] is True
     assert summary['additional_covariate_count'] == 1
@@ -61,7 +61,7 @@ def test_haplo_adjusts_for_fixed_covariates_at_selected_pc_count(tmp_path, selec
 
 def test_haplo_missing_observations_and_unfit_genes_are_na(tmp_path):
     rows = export(tmp_path, [('ENSG1', ['NA', 6, 10, 10, 12, 12]), ('ENSG2', ['NA'] * 5 + [2])])
-    assert rows[1] == ['ENSG1', 'NA', '1', '0', '0', '0', '0']
+    assert rows[1] == ['ENSG1', 'NA', '0', '0', '0', '0', '0']
     assert rows[2] == ['ENSG2'] + ['NA'] * 6
     summary = json.loads((tmp_path / 'summary.json').read_text())['haplo']
     assert summary['missing_cell_count'] == 7
@@ -70,7 +70,7 @@ def test_haplo_missing_observations_and_unfit_genes_are_na(tmp_path):
 
 def test_haplo_drop_is_configurable(tmp_path):
     rows = export(tmp_path, [('ENSG1', [8, 12, 9, 11, 10, 10])], drop=0.5)
-    assert rows[1] == ['ENSG1', '1', '0', '1', '0', '0', '0']
+    assert rows[1] == ['ENSG1', '0', '0', '0', '0', '0', '0']
 
 
 @pytest.mark.parametrize('drop', [-1, float('nan'), float('inf')])
@@ -95,7 +95,7 @@ def test_haplo_cli_emits_matrix(tmp_path):
     assert result.returncode == 0, result.stderr
     with gzip.open(tmp_path / 'haplo.tsv.gz', 'rt') as handle:
         rows = list(csv.reader(handle, delimiter='\t'))
-    assert rows[1] == ['ENSG1', '1', '1', '0', '0', '0', '0']
+    assert rows[1] == ['ENSG1', '0', '0', '0', '0', '0', '0']
 
 
 @pytest.mark.parametrize('with_covariates', [False, True])
@@ -109,6 +109,7 @@ def test_haplo_matches_adjusted_logcpm_mean_reference_with_missing_values(tmp_pa
     if with_covariates:
         y += covariates @ [5, -3]
         covariates[10, 0] = np.nan
+    y[0] -= 40  # Ensure the reference includes a positive joint call.
     incomplete = y.copy()
     incomplete[[2, 7]] = np.nan
     genes = [('ENSG1', y), ('ENSG2', incomplete), ('ENSG3', y + 100)]
@@ -124,8 +125,10 @@ def test_haplo_matches_adjusted_logcpm_mean_reference_with_missing_values(tmp_pa
         beta = np.linalg.lstsq(design, expression[usable], rcond=None)[0]
         adjusted = expression[usable] - predictors @ beta[1:]
         expected = np.full(24, 'NA', dtype=object)
-        expected[usable] = np.where(adjusted < adjusted.mean() - 1, '1', '0')
+        residuals = adjusted - adjusted.mean()
+        expected[usable] = np.where((residuals / residuals.std(ddof=0) <= -3) & (residuals < -1), '1', '0')
         assert row[1:] == expected.tolist()
+    assert '1' in rows[0][1:]
     assert rows[0][1:] == rows[2][1:]
 
 
@@ -140,7 +143,7 @@ def test_haplo_marks_rank_deficient_design_as_missing(tmp_path):
 
 
 def test_haplo_zero_drop_does_not_call_constant_gene(tmp_path):
-    assert export(tmp_path, [('ENSG1', [7] * 6)], selected=1, drop=0)[1] == ['ENSG1'] + ['0'] * 6
+    assert export(tmp_path, [('ENSG1', [7] * 6)], selected=1, drop=0)[1] == ['ENSG1'] + ['NA'] * 6
 
 
 def test_haplo_zero_drop_does_not_call_constant_decimal_gene(tmp_path):
@@ -150,7 +153,7 @@ def test_haplo_zero_drop_does_not_call_constant_decimal_gene(tmp_path):
     export_haplo_matrix([('ENSG1', np.full(6, 0.1))], np.random.default_rng(12).normal(size=(6, 2)),
                         2, [f'S{i}' for i in range(6)], output, 0)
     with gzip.open(output, 'rt') as handle:
-        assert list(csv.reader(handle, delimiter='\t'))[1] == ['ENSG1'] + ['0'] * 6
+        assert list(csv.reader(handle, delimiter='\t'))[1] == ['ENSG1'] + ['NA'] * 6
 
 
 @pytest.mark.parametrize('reason,pc_count,covariates', [
@@ -178,3 +181,48 @@ def test_haplo_rejects_incompatible_covariate_shapes(tmp_path, covariates):
         export_haplo_matrix([('ENSG1', np.arange(6.0))], np.zeros((6, 0)), 0,
                             [f'S{i}' for i in range(6)], tmp_path / 'haplo.tsv.gz', 1,
                             additional_covariates=covariates)
+
+
+@pytest.mark.parametrize('low,n,expected', [
+    (-12.0, 13, '1'),  # Both criteria pass.
+    (-0.5, 13, '0'),  # Z passes, but the log2-CPM drop does not.
+    (-10.0, 10, '1'),  # Population Z is exactly -3 and must pass.
+    (-8.0, 9, '0'),  # Large drop, but Z is greater than -3.
+])
+def test_haplo_requires_inclusive_z_and_expression_drop(tmp_path, low, n, expected):
+    from rare_variant_enrichment.haplo_matrix import export_haplo_matrix
+    output = tmp_path / 'haplo.tsv.gz'
+    values = np.array([low] + [0.0] * (n - 1))
+    export_haplo_matrix([('G1', values)], np.empty((n, 0)), 0,
+                        [f'S{i}' for i in range(n)], output, 1.0)
+    with gzip.open(output, 'rt') as handle:
+        rows = list(csv.reader(handle, delimiter='\t'))
+    assert rows[1][1] == expected
+    assert rows[1][2:] == ['0'] * (n - 1)
+
+
+def test_haplo_drop_boundary_is_strict_even_when_z_passes(tmp_path):
+    from rare_variant_enrichment.haplo_matrix import export_haplo_matrix
+    values = np.array([-1.0] + [0.125] * 8 + [0.0] * 7)
+    for drop, expected in [(1.0, '0'), (0.5, '1')]:
+        output = tmp_path / f'haplo_{drop}.tsv.gz'
+        export_haplo_matrix([('G1', values)], np.empty((16, 0)), 0,
+                            [f'S{i}' for i in range(16)], output, drop)
+        with gzip.open(output, 'rt') as handle:
+            assert list(csv.reader(handle, delimiter='\t'))[1][1] == expected
+
+
+def test_haplo_does_not_reconstruct_drop_from_rounded_z_and_sd(tmp_path):
+    from rare_variant_enrichment.haplo_matrix import export_haplo_matrix
+    values = np.array([
+        -1.0, 0.08333771931938827, 0.08333146944642067,
+        0.08333371253684163, 0.08334073191508651, 0.08333389251492918,
+        0.08333440078422427, 0.08333442430011928, 0.08333428646437824,
+        0.08333301730453968, 0.08332963730208576, 0.08332469267770648,
+        0.08333201543428004,
+    ])
+    output = tmp_path / 'haplo.tsv.gz'
+    export_haplo_matrix([('G1', values), ('G2', np.arange(13.0))],
+                        np.empty((13, 0)), 0, [f'S{i}' for i in range(13)], output, 1.0)
+    with gzip.open(output, 'rt') as handle:
+        assert list(csv.reader(handle, delimiter='\t'))[1][1] == '0'

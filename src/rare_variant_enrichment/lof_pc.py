@@ -117,6 +117,7 @@ class ResidualFit:
     residual_mean: float | None
     residual_sd: float | None
     exclusion_reason: str | None
+    centered_residuals: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -719,8 +720,10 @@ def residualize_expression(
             residual_sd,
             "invalid_or_zero_residual_sd",
         )
+    full_residuals = np.full(values.shape, np.nan, dtype=float)
+    full_residuals[usable] = residuals
     return ResidualFit(
-        z_scores, usable_count, rank, residual_mean, residual_sd, None
+        z_scores, usable_count, rank, residual_mean, residual_sd, None, full_residuals
     )
 
 
@@ -974,6 +977,7 @@ def iter_gene_residual_fits(
                         residual_mean,
                         residual_sd,
                         exclusion_reason,
+                        residuals[:, gene_index] - residual_mean if exclusion_reason is None else None,
                     )
                 yield gene_id, pc_count, fit
 
