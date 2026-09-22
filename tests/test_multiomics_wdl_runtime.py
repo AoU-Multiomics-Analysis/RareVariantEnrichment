@@ -24,7 +24,8 @@ def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path, o
         path = tmp_path / f'{name} carriers.tsv'
         content = (FIXTURES / 'lof_carriers.tsv').read_text()
         if index == 1:
-            content = content.replace('v1\tHC', 'v1\tLC')
+            # Keep positive odds ratios so both omes can select a PC count.
+            content = content.replace('v2\tLC', 'v2\tHC')
         path.write_text(content)
         carrier_tables[name] = path
     ome_manifest = tmp_path / 'omes.tsv'
@@ -49,7 +50,7 @@ def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path, o
     output_path = tmp_path / 'outputs.json'
     result = subprocess.run([
         miniwdl, 'run', str(Path('workflows/multiomics_outliers.wdl').resolve()),
-        '-i', str(inputs_path), '-d', str(tmp_path / 'run'), '-o', str(output_path), '--no-cache',
+        '-i', str(inputs_path), '-d', str(tmp_path / 'run'), '-o', str(output_path), '--no-cache', '--verbose',
     ], text=True, capture_output=True, timeout=180, env={
         **os.environ,
         # Local fixture paths are introduced by the trusted manifest, not by
@@ -64,7 +65,7 @@ def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path, o
         assert Path(entry['lof_carrier_table']).read_text() == carrier_tables[entry['name']].read_text()
         rows = list(csv.DictReader(Path(entry['results_tsv']).open(), delimiter='\t'))
         hc = next(row for row in rows if row['carrier_definition'] == 'HC')
-        assert int(hc['carrier_observations']) == (2 if index == 0 else 1)
+        assert int(hc['carrier_observations']) == (2 if index == 0 else 3)
         selection = json.loads(Path(entry['pc_selection_json']).read_text())
         summary = json.loads(Path(entry['selected_pc_z_scores_summary_json']).read_text())
         assert selection['selection']['selected_pc_count'] == summary['selected_pc_count'] == 0
