@@ -3,7 +3,6 @@
 import csv
 import logging
 from pathlib import Path
-from typing import Sequence
 from urllib.parse import urlsplit
 
 from rare_variant_enrichment.io import open_text
@@ -31,7 +30,7 @@ def _manifest_path(value: str, column: str, line: int, optional: bool = False) -
     return value
 
 
-def prepare_omics_manifest(manifest: Path, thresholds: Sequence[float], output: Path) -> None:
+def prepare_omics_manifest(manifest: Path, output: Path) -> None:
     require_local_file(manifest)
     rows = []
     with open_text(manifest) as handle:
@@ -57,7 +56,7 @@ def prepare_omics_manifest(manifest: Path, thresholds: Sequence[float], output: 
                 _manifest_path(row['lof_carrier_table'], 'lof_carrier_table', line),
                 _manifest_path(row.get('additional_covariates_tsv', ''), 'additional_covariates_tsv', line, optional=True),
             ])
-    validate_multiomics_inputs([row[0] for row in rows], thresholds)
+    validate_multiomics_inputs([row[0] for row in rows])
     # Metadata only: referenced matrices are localized later as explicit WDL Files.
     with output.open('w', encoding='utf-8', newline='') as handle:
         # WDL read_tsv splits literal tabs; it does not decode CSV quoting.

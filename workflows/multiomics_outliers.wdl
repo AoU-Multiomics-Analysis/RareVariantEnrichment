@@ -27,7 +27,6 @@ struct OmicsResult {
 task PrepareOmicsManifest {
     input {
         File ome_manifest
-        Array[Float] thresholds
         String docker_image
         Int max_retries
     }
@@ -35,10 +34,8 @@ task PrepareOmicsManifest {
     command <<<
         set -euo pipefail
         echo "Starting multi-omics input validation" >&2
-        # Keep the generated list as File so Cromwell can localize its path.
         rare-variant-enrichment prepare-omics-manifest \
             --manifest '~{sub(ome_manifest, "'", "'\"'\"'")}' \
-            --threshold-list '~{write_lines(thresholds)}' \
             --output "normalized_omics.tsv"
         echo "Completed multi-omics input validation" >&2
     >>>
@@ -61,7 +58,6 @@ task IntersectMultiOmicsOutliers {
         Array[File] z_score_matrices
         Array[File] expression_haplo_matrices
         Array[String] dataset_ids
-        Array[Float] thresholds
         String docker_image
         Int cpu
         Int memory_gb
@@ -78,7 +74,6 @@ task IntersectMultiOmicsOutliers {
             --matrix-file-list '~{write_lines(z_score_matrices)}' \
             --expression-haplo-file-list '~{write_lines(expression_haplo_matrices)}' \
             --dataset-id-list '~{write_lines(dataset_ids)}' \
-            --threshold-list '~{write_lines(thresholds)}' \
             --output-directory "intersections" \
             --manifest-output "intersection_manifest.tsv" \
             --summary-output "intersection_summary.json"
@@ -105,7 +100,6 @@ workflow MultiOmicsOutliers {
         File ome_manifest
         File gene_annotation_gtf
         Float haplo_logcpm_drop = 1.0
-        Array[Float] intersection_z_thresholds = [-2.0, -3.0, -4.0, -5.0, -6.0]
         Array[Float] negative_z_thresholds = [-2.0, -3.0, -4.0, -5.0, -6.0]
         Array[Float] selection_z_thresholds = [-3.0, -4.0, -5.0, -6.0]
         Float plateau_fraction = 0.95
@@ -128,7 +122,6 @@ workflow MultiOmicsOutliers {
     call PrepareOmicsManifest {
         input:
             ome_manifest = ome_manifest,
-            thresholds = intersection_z_thresholds,
             docker_image = docker_image,
             max_retries = max_retries
     }
@@ -201,7 +194,6 @@ workflow MultiOmicsOutliers {
             z_score_matrices = RunMatrix.selected_pc_z_scores_tsv_gz,
             expression_haplo_matrices = expression_haplo_matrices,
             dataset_ids = dataset_name,
-            thresholds = intersection_z_thresholds,
             docker_image = docker_image,
             cpu = intersection_cpu,
             memory_gb = intersection_memory_gb,

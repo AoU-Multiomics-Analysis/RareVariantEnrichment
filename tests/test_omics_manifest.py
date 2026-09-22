@@ -11,11 +11,9 @@ HEADER = 'ome_name\tphenotype_bed\tprincipal_components_tsv\tlof_carrier_table\t
 def prepare(tmp_path, text):
     manifest = tmp_path / 'manifest.tsv'
     manifest.write_text(text)
-    thresholds = tmp_path / 'thresholds.txt'
-    thresholds.write_text('-2\n-3\n')
     return subprocess.run([
         sys.executable, '-m', 'rare_variant_enrichment.cli', 'prepare-omics-manifest',
-        '--manifest', str(manifest), '--threshold-list', str(thresholds),
+        '--manifest', str(manifest),
         '--output', str(tmp_path / 'normalized.tsv'),
     ], text=True, capture_output=True)
 

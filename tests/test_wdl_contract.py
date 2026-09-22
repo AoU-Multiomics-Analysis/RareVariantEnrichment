@@ -384,6 +384,8 @@ dangerous_pc = '0; touch PC_INJECTION'
 dangerous_image = 'example.invalid/image"; touch IMAGE_INJECTION; echo "'
 
 class TestStdLib(WDL.StdLib.Base):
+    def _devirtualize_filename(self, filename):
+        return filename
     def _virtualize_filename(self, filename):
         return filename
 
@@ -418,6 +420,9 @@ values = {
 }
 rendered = {}
 with tempfile.TemporaryDirectory() as temporary_directory:
+    selection_file = Path(temporary_directory) / 'selection.json'
+    selection_file.write_text('{"selection": {"selected_pc_count": 20}}')
+    values['selection_json'] = WDL.Value.File(str(selection_file))
     for task in document.tasks:
         environment = WDL.Env.Bindings()
         for declaration in task.inputs:
@@ -442,6 +447,10 @@ print(json.dumps(rendered, sort_keys=True))
     )
     assert result.returncode == 0, result.stderr
     rendered = json.loads(result.stdout)
+    matrix = rendered["ExportSelectedPcZScores"]["command"]
+    for suffix in ("z_scores.tsv.gz", "haplo_calls.tsv.gz", "z_scores.gene_qc.tsv.gz", "z_scores.summary.json"):
+        assert "expression.20PCs." + suffix in matrix
+    assert "selected_pc_" not in matrix
     analysis = rendered["CalculateLofPcEnrichment"]
     assert '"/tmp/phenotype matrix.bed.gz"' in analysis["command"]
     assert "/tmp/lof carriers.tsv" in shlex.split(analysis["command"])
@@ -559,7 +568,10 @@ for declaration in task.inputs:
     else:
         value = WDL.Value.String("test-image")
     environment = environment.bind(declaration.name, value)
-stdlib = WDL.StdLib.Base(document.effective_wdl_version)
+class LocalizedStdLib(WDL.StdLib.Base):
+    def _devirtualize_filename(self, filename):
+        return mapping.get(filename, filename)
+stdlib = LocalizedStdLib(document.effective_wdl_version)
 for declaration in task.postinputs:
     environment = environment.bind(declaration.name, declaration.expr.eval(environment, stdlib))
 # Simulate the runner's localization step after input evaluation.
@@ -590,15 +602,16 @@ print(task.command.eval(environment, stdlib).value)
     )
     assert result.returncode == 0, result.stderr
     assert not (tmp_path / "INJECTION").exists()
-    with gzip.open(tmp_path / "selected_pc_z_scores.tsv.gz", "rt") as handle:
+    prefix = (ome_name or "phenotype") + ".0PCs"
+    with gzip.open(tmp_path / f"{prefix}.z_scores.tsv.gz", "rt") as handle:
         rows = handle.read().splitlines()
     assert len(rows) == 4  # All three genes, including the noncoding gene.
     assert rows[0].split("\t") == ["gene_id", "S1", "S2", "S3", "S4", "S5"] + (
         [] if with_covariates else ["S6"]
     )
 
-    haplo_path = tmp_path / "selected_pc_haplo_calls.tsv.gz"
-    summary = json.loads((tmp_path / "selected_pc_z_scores.summary.json").read_text())
+    haplo_path = tmp_path / f"{prefix}.haplo_calls.tsv.gz"
+    summary = json.loads((tmp_path / f"{prefix}.z_scores.summary.json").read_text())
     if ome_name != "expression":
         assert not haplo_path.exists()
         assert "haplo" not in summary
@@ -611,5 +624,5 @@ print(task.command.eval(environment, stdlib).value)
         haplo_rows = handle.read().splitlines()
     assert haplo_rows[0] == rows[0]
     assert len(haplo_rows) == len(rows)
-    expected_haplo = ["1", "0", "0", "0", "0"] if with_covariates else ["1", "1", "0", "0", "0", "0"]
+    expected_haplo = ["0"] * (5 if with_covariates else 6)
     assert haplo_rows[1].split("\t")[1:] == expected_haplo

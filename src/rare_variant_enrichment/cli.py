@@ -99,12 +99,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     manifest_parser = subparsers.add_parser("prepare-omics-manifest")
     manifest_parser.add_argument("--manifest", required=True, type=Path)
-    manifest_parser.add_argument("--threshold-list", required=True, type=Path)
     manifest_parser.add_argument("--output", required=True, type=Path)
     for name in ("validate-multiomics-inputs", "multiomics-intersections"):
         multiomics_parser = subparsers.add_parser(name)
         multiomics_parser.add_argument("--dataset-id-list", required=True, type=Path)
-        multiomics_parser.add_argument("--threshold-list", required=True, type=Path)
         if name == "validate-multiomics-inputs":
             multiomics_parser.add_argument("--output", required=True, type=Path)
         else:
@@ -273,10 +271,10 @@ def main() -> int:
             calculate_options["additional_covariates_path"] = args.additional_covariates
         calculate_lof_pc_enrichment(*calculate_arguments, **calculate_options)
     elif args.command == "prepare-omics-manifest":
-        prepare_omics_manifest(args.manifest, read_list_file(args.threshold_list), args.output)
+        prepare_omics_manifest(args.manifest, args.output)
     elif args.command in {"validate-multiomics-inputs", "multiomics-intersections"}:
         names = read_list_file(args.dataset_id_list)
-        thresholds = validate_multiomics_inputs(names, read_list_file(args.threshold_list))
+        validate_multiomics_inputs(names)
         if args.command == "validate-multiomics-inputs":
             args.output.write_text("\n".join(names) + "\n")
         else:
@@ -285,7 +283,7 @@ def main() -> int:
                 raise ValueError("Expected at most one expression haplo matrix")
             build_outlier_intersections(
                 [Path(value) for value in read_list_file(args.matrix_file_list)],
-                names, thresholds, args.output_directory,
+                names, args.output_directory,
                 args.manifest_output, args.summary_output,
                 expression_haplo_path=Path(haplo_paths[0]) if haplo_paths else None,
             )

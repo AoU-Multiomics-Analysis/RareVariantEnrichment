@@ -211,6 +211,8 @@ The `pc_sweep_qc_summary_tsv` and `pc_sweep_qc_plot_png` outputs use the same `z
 
 `ExportSelectedPcZScores` runs after PC selection. It reads `selection.selected_pc_count` from `pc_selection_json` and fits each gene with an intercept, all supplied additional covariates, and the first selected number of PCs. It divides residuals by their population standard deviation (`ddof=0`). The task uses the same calculation and exclusion rules as enrichment. It exports all genes in the BED, including noncoding genes and genes without LoF carriers. The enrichment and PC-selection steps still use protein-coding genes.
 
+Final matrix filenames contain the ome label and the number of PCs removed. For example, expression with 20 selected PCs produces `expression.20PCs.z_scores.tsv.gz`, `expression.20PCs.haplo_calls.tsv.gz`, `expression.20PCs.z_scores.gene_qc.tsv.gz`, and `expression.20PCs.z_scores.summary.json`. The count refers to phenotype PCs; additional covariates are also removed. An omitted ome label uses `phenotype`. The workflow output field names (such as `selected_pc_z_scores_tsv_gz`) remain unchanged. Sweep results and plots keep their existing filenames.
+
 The gzip-compressed TSV starts with `gene_id`, followed by sample-ID columns. Genes follow their first occurrence in the BED. Samples follow BED order within the intersection of the BED, PC table, and optional covariate table. Multiple BED rows for one gene are collapsed to the minimum finite value per sample before adjustment. Missing observations have `NA` values. Genes that fail the model checks remain in the matrix with an all-`NA` row; the gene QC file gives the reason. No outlier threshold is applied to matrix values.
 
 The WDL passes each input as `File` or `File?` until command rendering. The export command checks that inputs are readable and reports unresolved cloud paths as localization errors. Local tests cover cloud-to-local path substitution, optional covariates, and shell quoting. These tests do not validate a Terra run. The complete workflow with this export task has not been tested on Terra.
@@ -225,17 +227,17 @@ Each test pools repeated samples and repeated genes, so Fisher p-values and glob
 
 Set `RareVariantEnrichment.ome_name` to `expression` to enable haplo export from a log2-CPM BED. This optional input defaults to an empty string, which disables haplo export. Matching is case-sensitive: only the exact label `expression` enables it. In the multi-omics workflow, the manifest `ome_name` supplies this label automatically.
 
-For expression jobs, `selected_pc_haplo_calls_tsv_gz` identifies gene–sample pairs with a large expression drop. It has the same genes, sample IDs, and order as the Z-score matrix. The workflow includes all BED genes and uses the same sample intersection and duplicate-feature collapse as the Z-score export.
+For expression jobs, `selected_pc_haplo_calls_tsv_gz` is an indicator matrix for gene–sample pairs that have both `Z <= -3` and a large expression drop. It has the same genes, sample IDs, and order as the Z-score matrix. The workflow includes all BED genes and uses the same sample intersection and duplicate-feature collapse as the Z-score export.
 
-The haplo calculation fits an intercept, all supplied additional covariates, and the selected phenotype PCs. It uses the same covariates and aligned samples as the Z-score model. Subtracting a gene's mean from its adjusted log2-CPM gives the residual from this fit. The haplo calculation uses that residual in log2-CPM units; it does not divide by the residual SD.
+The haplo calculation fits an intercept, all supplied additional covariates, and the selected phenotype PCs. It uses the same covariates and aligned samples as the Z-score model. Subtracting a gene's mean from its adjusted log2-CPM gives the residual from this fit. The drop test uses that residual in log2-CPM units. The Z test uses the residual divided by its population SD (`ddof=0`). Both tests use the same fit and exclusion rules as the Z-score export.
 
-- `1`: adjusted log2-CPM is strictly less than the gene mean minus `haplo_logcpm_drop`.
-- `0`: the fit is valid and the value does not meet that rule, including exact equality.
-- `NA`: the observation is missing or the fit is invalid. The fit requires a full-rank design and at least one residual degree of freedom.
+- `1`: `Z <= -3` **and** adjusted log2-CPM is strictly less than the gene mean minus `haplo_logcpm_drop`.
+- `0`: both measures are available, but at least one condition fails. A drop equal to `haplo_logcpm_drop` fails the drop test; Z equal to -3 passes the Z test.
+- `NA`: the observation is missing or the fit is invalid. The fit requires a full-rank design and at least two residual degrees of freedom, as in the Z-score export.
 
-`haplo_logcpm_drop` defaults to `1.0` and must be finite and non-negative. At zero selected PCs, the model still adjusts for all supplied additional covariates. With no additional covariates, it compares the original log2-CPM to the gene mean. Constant genes have no drop and receive `0` when the fit is valid, even when their Z scores cannot be calculated. Gene means use the finite observations in the aligned export cohort. For expression jobs, the existing export summary contains a `haplo` section with the threshold, adjustment rule, additional-covariate count, exclusion counts, and cell counts. Genes with insufficient observations or a rank-deficient full design receive `NA`.
+`haplo_logcpm_drop` defaults to `1.0` and must be finite and non-negative. At zero selected PCs, the model still adjusts for all supplied additional covariates. With no additional covariates, it compares the original log2-CPM to the gene mean. Constant genes receive `NA` because their residual Z scores are undefined. Gene means use the finite observations in the aligned export cohort. For expression jobs, the existing export summary contains a `haplo` section with the Z cutoff, drop threshold, adjustment rule, additional-covariate count, exclusion counts, and cell counts. Genes with insufficient observations or a rank-deficient full design receive `NA`.
 
-This interpretation requires log2-CPM input. Applying a one-unit cutoff to Z scores, rank-normalized values, or splicing ratios does not give the same criterion. The workflow does not convert raw counts to log2-CPM. For the standalone export CLI, add `--haplo-matrix-output haplo.tsv.gz`; use `--haplo-logcpm-drop` to change the default drop. PC selection remains unchanged. Intersections that contain expression also require its haplo call to be `1`.
+This interpretation requires log2-CPM input. Applying a one-unit cutoff to Z scores, rank-normalized values, or splicing ratios does not give the same criterion. The workflow does not convert raw counts to log2-CPM. For the standalone export CLI, add `--haplo-matrix-output haplo.tsv.gz`; use `--haplo-logcpm-drop` to change the default drop. PC selection remains unchanged. Each intersection that contains expression has a Z-only version and a version that also requires its haplo call to be `1`.
 
 ## Multiple matrices and multi-omics outliers
 
@@ -253,31 +255,38 @@ Each row must supply `lof_carrier_table`. Repeat the same path when several omes
 
 There is no separate ome-covariate field. Each row can use a different additional-covariate file, or several rows can use the same file. All supplied fixed covariates stay in the model while the workflow varies the PC count. Without that file, the model uses an intercept and the selected PCs.
 
-Use `gs://` object paths for Terra. Absolute local paths are also accepted for tests; relative paths are rejected because localization changes the manifest directory. The manifest task checks the names, fields, and thresholds. It returns the paths as metadata. The workflow then declares each path as a `File` before it passes the value to an analysis task. The optional covariate path is declared only when supplied.
+Use `gs://` object paths for Terra. Absolute local paths are also accepted for tests; relative paths are rejected because localization changes the manifest directory. The manifest task checks the names and fields. It returns the paths as metadata. The workflow then declares each path as a `File` before it passes the value to an analysis task. The optional covariate path is declared only when supplied.
 
-The final task creates a gene-by-sample indicator matrix for every dataset combination of size two or greater, at every `intersection_z_thresholds` value. The default thresholds are `-2, -3, -4, -5, -6`. These thresholds are separate from the enrichment and PC-selection thresholds. Each combination uses the same threshold in all participating datasets and tests the lower tail (`Z <= threshold`). If the exact label `expression` participates, its haplo call must also be `1`.
+The final task creates a gene-by-sample indicator matrix for every dataset combination of size two or greater. Every participating dataset must have `Z <= -3`. The cutoff includes a Z score of exactly -3. Intersections no longer use a threshold sweep; remove `intersection_z_thresholds` from old input JSON files. The enrichment and PC-selection threshold inputs still control their respective steps.
 
-For expression, protein, and splicing, the combinations are expression–protein, expression–splicing, protein–splicing, and expression–protein–splicing. A protein–splicing cell is `1` when both values meet the threshold, regardless of expression. The three-way cell is `1` only when all three Z scores meet the threshold and expression also meets the haplo criterion. Expression–protein and expression–splicing pairs require that same expression haplo call. Pairwise and three-way outputs can therefore overlap.
+For every combination that contains the exact label `expression`, the task writes two matrices:
 
-| Cell | Meaning |
+- **Z-only:** every participating ome has `Z <= -3`.
+- **Z plus expression haplo:** every participating ome has `Z <= -3`, and expression also has haplo = `1`. No other ome has a haplo requirement.
+
+For expression, protein, and splicing, this produces seven matrices: two each for expression–protein, expression–splicing, and expression–protein–splicing, plus one for protein–splicing. Datasets outside each combination do not affect its calls. Pairwise and three-way outputs can overlap.
+
+| Cell value | Meaning |
 |---|---|
-| `1` | All participating Z scores are finite and at or below the threshold, and expression has haplo = `1` when it participates. |
-| `0` | All required values are present, but at least one Z score exceeds the threshold or the participating expression haplo call is `0`. |
-| `NA` | A participating Z score or required expression haplo call is missing, even if another condition fails. |
+| `1` | All required values are available and meet that matrix's conditions. |
+| `0` | All required values are available, but at least one condition fails. |
+| `NA` | A participating Z score is missing, or the expression haplo call is missing in a matrix that requires it. |
+
+A missing expression haplo call does not affect the Z-only matrix. In the Z-plus-haplo matrix, it gives `NA`, even if another condition fails.
 
 Each combination uses its own shared genes and sample IDs. Row and column order follows the first dataset in that combination. Alignment uses IDs, not row or column position. A dataset outside the combination does not affect its sample set or calls. The expression haplo file must have the same gene and sample ID sets as the expression Z-score matrix; order can differ. A missing file or mismatched IDs fails validation instead of silently dropping pairs. For direct CLI use with an `expression` dataset, supply `--expression-haplo-file-list` containing exactly one localized haplo path. Omit it or supply an empty list when there is no expression dataset. Empty overlap produces an empty matrix and zero observation counts in the output index. Missing data are not classified as non-outliers.
 
 The workflow outputs are:
 
 - `matrix_results`: one `OmicsResult` per input dataset, in input order. It contains the dataset name, original input files, selected-PC Z-score matrix, optional expression haplo matrix, PC selection, enrichment results, plots, and QC files.
-- `dataset_ids`, `z_score_matrices`, and `haplo_matrices`: corresponding arrays in manifest order for direct downstream use. `haplo_matrices` is an `Array[File?]`: only the `expression` entry has a file, and every other entry is null. If there is no expression row, all entries are null. `haplo_logcpm_drop` applies only to expression. Protein, splicing, and other labels produce no haplo file or haplo summary. The intersection task uses all participating Z scores and requires the haplo criterion only for combinations containing expression.
+- `dataset_ids`, `z_score_matrices`, and `haplo_matrices`: corresponding arrays in manifest order for direct downstream use. `haplo_matrices` is an `Array[File?]`: only the `expression` entry has a file, and every other entry is null. If there is no expression row, all entries are null. `haplo_logcpm_drop` applies only to expression. Protein, splicing, and other labels produce no haplo file or haplo summary. The intersection task writes both expression rules when expression participates, and only the Z rule for other combinations.
 - `intersection_matrices`: gzip-compressed TSV indicator matrices. The first column is `gene_id`.
-- `intersection_manifest_tsv`: maps each output basename to its datasets and threshold; gives gene, sample, outlier, non-outlier, and missing-cell counts. The `expression_haplo_required` column identifies combinations that use the haplo criterion. Use this index to identify files rather than relying on array order.
-- `intersection_summary_json`: dataset dimensions, thresholds, calculation rules, and the same per-intersection counts.
+- `intersection_manifest_tsv`: maps each output basename to its datasets, fixed Z cutoff, and expression rule; gives gene, sample, outlier, non-outlier, and missing-cell counts. The `expression_haplo_required` column distinguishes the Z-only (`False`) and Z-plus-expression-haplo (`True`) matrices. Use this index to identify files rather than relying on array order.
+- `intersection_summary_json`: dataset dimensions, fixed Z cutoff, calculation rules, and the same per-intersection counts.
 
-For `N` datasets and `T` thresholds, the output count is `T * (2^N - N - 1)`. Three datasets at five thresholds produce 20 matrices. Output size grows quickly as datasets are added. The intersection task stores input gene vectors in a temporary SQLite database and processes one combination at a time. Its disk allocation has a 1,000 GB default floor, with a size-based increase; increase `intersection_disk_gb` for large input sets or many outputs. The other intersection resource inputs are `intersection_cpu` and `intersection_memory_gb`.
+For `N` datasets, the Z-only output count is `2^N - N - 1`. If expression is present, there are also `2^(N-1) - 1` Z-plus-expression-haplo matrices. Output size grows quickly as datasets are added. The intersection task stores input gene vectors in a temporary SQLite database and processes one combination at a time. Its disk allocation has a 1,000 GB default floor, with a size-based increase; increase `intersection_disk_gb` for large input sets or many outputs. The other intersection resource inputs are `intersection_cpu` and `intersection_memory_gb`.
 
-Dataset names must be unique, start with a letter, and contain only letters, digits, or underscores, up to 64 characters. At least two datasets are required. The workflow validates names and intersection thresholds before it starts the per-dataset analyses. A failed per-dataset analysis stops intersection generation; it does not silently omit that dataset.
+Dataset names must be unique, start with a letter, and contain only letters, digits, or underscores, up to 64 characters. At least two datasets are required. The workflow validates names before it starts the per-dataset analyses. A failed per-dataset analysis stops intersection generation; it does not silently omit that dataset.
 
 After the manifest is read, all analysis input paths remain typed WDL `File` values until command rendering. The intersection task creates its newline-delimited list of local matrix paths at that point. The list contains no unresolved cloud URIs. The CLI rejects unreadable paths, duplicate IDs, invalid values, and inconsistent row widths. The single-matrix workflow remains available on its own.
 

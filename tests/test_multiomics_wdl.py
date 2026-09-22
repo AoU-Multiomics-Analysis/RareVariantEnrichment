@@ -32,6 +32,7 @@ def test_wrapper_calls_existing_workflow_and_preserves_file_types():
     manifest = next(item for item in workflow.inputs if item.name == 'ome_manifest')
     assert str(manifest.type) == 'File'
     assert 'lof_carrier_table' not in {item.name for item in workflow.inputs}
+    assert 'intersection_z_thresholds' not in {item.name for item in workflow.inputs}
     scatter = next(item for item in workflow.body if isinstance(item, WDL.Tree.Scatter))
     assert scatter.variable == 'manifest_row'
     call = next(item for item in scatter.body if isinstance(item, WDL.Tree.Call))
@@ -104,7 +105,7 @@ def test_new_tasks_localize_files_before_list_creation_and_run_safely(
     values = {
         'expression_haplo_matrices': ['gs://bucket/expression_haplo.tsv'] if with_expression else [],
         'ome_manifest': 'gs://bucket/omes.tsv',
-        'dataset_ids': ['expression' if with_expression else 'rna', 'protein'], 'thresholds': [-2, -3],
+        'dataset_ids': ['expression' if with_expression else 'rna', 'protein'],
         'z_score_matrices': matrix_uris, 'docker_image': 'unused',
         'cpu': 1, 'memory_gb': 1, 'disk_gb': 1, 'max_retries': 0,
     }
@@ -156,8 +157,8 @@ def test_new_tasks_localize_files_before_list_creation_and_run_safely(
         ]
     else:
         manifest = list(csv.DictReader((tmp_path / 'intersection_manifest.tsv').open(), delimiter='\t'))
-        assert len(manifest) == 2
+        assert len(manifest) == (2 if with_expression else 1)
         for entry in manifest:
             with gzip.open(tmp_path / 'intersections' / entry['matrix_file'], 'rt') as handle:
-                assert handle.read().splitlines() == ['gene_id\tS1\tS2', 'G1\t0\t0' if with_expression else 'G1\t1\t0']
-        assert json.loads((tmp_path / 'intersection_summary.json').read_text())['matrix_count'] == 2
+                assert handle.read().splitlines() == ['gene_id\tS1\tS2', 'G1\t0\t0' if entry['expression_haplo_required'] == 'True' else 'G1\t1\t0']
+        assert json.loads((tmp_path / 'intersection_summary.json').read_text())['matrix_count'] == len(manifest)

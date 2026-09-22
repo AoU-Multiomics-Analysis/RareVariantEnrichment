@@ -16,7 +16,7 @@ from typing import Sequence
 import numpy as np
 
 from rare_variant_enrichment.io import open_text, write_json
-from rare_variant_enrichment.lof_pc import validate_negative_z_thresholds
+from rare_variant_enrichment.haplo_matrix import OUTLIER_Z_THRESHOLD
 
 
 LOGGER = logging.getLogger(__name__)
@@ -42,16 +42,13 @@ def read_list_file(path: Path) -> list[str]:
     return values
 
 
-def validate_multiomics_inputs(
-    names: Sequence[str], thresholds: Sequence[float],
-) -> list[float]:
+def validate_multiomics_inputs(names: Sequence[str]) -> None:
     if len(names) < 2:
         raise ValueError("At least two datasets are required")
     if len(set(names)) != len(names):
         raise ValueError("Dataset names must be unique")
     if any(not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name) for name in names):
         raise ValueError("Dataset names must start with a letter and contain only letters, digits, or underscores (up to 64 characters)")
-    return validate_negative_z_thresholds(thresholds)
 
 
 def _store_matrix(connection: sqlite3.Connection, index: int, path: Path, *, binary: bool = False) -> tuple[list[str], int]:
@@ -101,11 +98,11 @@ def _store_matrix(connection: sqlite3.Connection, index: int, path: Path, *, bin
 
 
 def build_outlier_intersections(
-    matrix_paths: Sequence[Path], names: Sequence[str], thresholds: Sequence[float],
+    matrix_paths: Sequence[Path], names: Sequence[str],
     output_directory: Path, manifest_output: Path, summary_output: Path,
     *, expression_haplo_path: Path | None = None,
 ) -> None:
-    thresholds = validate_multiomics_inputs(names, thresholds)
+    validate_multiomics_inputs(names)
     if len(matrix_paths) != len(names):
         raise ValueError("Matrix file count must match dataset name count")
     expression_index = names.index("expression") if "expression" in names else None
@@ -120,8 +117,10 @@ def build_outlier_intersections(
     if output_directory.exists() and any(output_directory.iterdir()):
         raise ValueError("Intersection output directory must be empty")
     output_directory.mkdir(parents=True, exist_ok=True)
-    expected_count = (2 ** len(names) - len(names) - 1) * len(thresholds)
-    LOGGER.info("Starting intersections: datasets=%d thresholds=%d output_matrices=%d", len(names), len(thresholds), expected_count)
+    expected_count = 2 ** len(names) - len(names) - 1
+    if expression_index is not None:
+        expected_count += 2 ** (len(names) - 1) - 1
+    LOGGER.info("Starting intersections: datasets=%d Z<=%g output_matrices=%d", len(names), OUTLIER_Z_THRESHOLD, expected_count)
     entries = []
     dataset_qc = []
     with tempfile.TemporaryDirectory(prefix="multiomics-", dir=output_directory.parent) as temporary:
@@ -153,10 +152,10 @@ def build_outlier_intersections(
                     first = group[0]
                     samples = [sample for sample in sample_lists[first] if all(sample in sample_indexes[index] for index in group[1:])]
                     columns = [np.asarray([sample_indexes[index][sample] for sample in samples], dtype=int) for index in group]
-                    haplo_required = expression_index in group
-                    haplo_columns = np.asarray([haplo_sample_indexes[sample] for sample in samples], dtype=int) if haplo_required else None
+                    has_expression = expression_index in group
+                    haplo_columns = np.asarray([haplo_sample_indexes[sample] for sample in samples], dtype=int) if has_expression else None
                     tables = [f"matrix_{index}" for index in group]
-                    if haplo_required:
+                    if has_expression:
                         tables.append(haplo_table)
                     query = "SELECT " + tables[0] + ".gene, " + ", ".join(table + ".scores" for table in tables)
                     query += " FROM " + tables[0] + " " + " ".join("INNER JOIN " + table + " USING (gene)" for table in tables[1:])
@@ -164,24 +163,27 @@ def build_outlier_intersections(
                     group_entries = []
                     with ExitStack() as stack:
                         writers = []
-                        for threshold_number, threshold in enumerate(thresholds, start=1):
-                            filename = f"intersection_{group_number:04d}.threshold_{threshold_number:03d}.tsv.gz"
+                        modes = [False, True] if has_expression else [False]
+                        for haplo_required in modes:
+                            rule = "z_le_minus3.expression_haplo" if haplo_required else "z_le_minus3"
+                            filename = f"intersection_{group_number:04d}.{rule}.tsv.gz"
                             handle = stack.enter_context(gzip.open(output_directory / filename, "wt", encoding="utf-8", newline=""))
                             writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
                             writer.writerow(["gene_id", *samples])
                             writers.append(writer)
-                            group_entries.append(dict(zip(MANIFEST_COLUMNS, [filename, ",".join(names[index] for index in group), threshold, 0, len(samples), 0, 0, 0, haplo_required])))
+                            group_entries.append(dict(zip(MANIFEST_COLUMNS, [filename, ",".join(names[index] for index in group), OUTLIER_Z_THRESHOLD, 0, len(samples), 0, 0, 0, haplo_required])))
                         for row in connection.execute(query):
                             values = np.stack([np.frombuffer(blob, dtype=np.float64)[indexes] for blob, indexes in zip(row[1:1 + len(group)], columns)])
-                            complete = np.all(np.isfinite(values), axis=0)
-                            maximum = np.max(values, axis=0)
-                            haplo_pass = np.ones(len(samples), dtype=bool)
-                            if haplo_required:
-                                haplo = np.frombuffer(row[-1], dtype=np.float64)[haplo_columns]
-                                complete &= np.isfinite(haplo)
-                                haplo_pass = haplo == 1
-                            for threshold, writer, entry in zip(thresholds, writers, group_entries):
-                                outlier = complete & (maximum <= threshold) & haplo_pass
+                            z_complete = np.all(np.isfinite(values), axis=0)
+                            z_pass = np.max(values, axis=0) <= OUTLIER_Z_THRESHOLD
+                            haplo = np.frombuffer(row[-1], dtype=np.float64)[haplo_columns] if has_expression else None
+                            for haplo_required, writer, entry in zip(modes, writers, group_entries):
+                                complete = z_complete.copy()
+                                outlier = z_pass.copy()
+                                if haplo_required:
+                                    complete &= np.isfinite(haplo)
+                                    outlier &= haplo == 1
+                                outlier &= complete
                                 writer.writerow([row[0], *np.where(complete, np.where(outlier, "1", "0"), "NA")])
                                 entry["gene_count"] += 1
                                 entry["outlier_count"] += int(np.count_nonzero(outlier))
@@ -194,8 +196,8 @@ def build_outlier_intersections(
         writer.writeheader()
         writer.writerows(entries)
     write_json(summary_output, {
-        "datasets": dataset_qc, "thresholds": thresholds, "matrix_count": len(entries),
-        "outlier_rule": "all participating datasets have finite Z <= threshold; when expression participates, its haplo call must be 1",
+        "datasets": dataset_qc, "z_threshold": OUTLIER_Z_THRESHOLD, "z_comparison": "<=", "matrix_count": len(entries),
+        "outlier_rule": "all participating datasets have finite Z <= -3; expression combinations have Z-only and Z-plus-haplo versions; only the latter requires expression haplo = 1",
         "intersection_type": "inclusive; datasets outside each combination are ignored",
         "missing_rule": "NA when any participating Z score or required expression haplo call is missing",
         "alignment": "shared gene and sample IDs per combination; first participating dataset order",
