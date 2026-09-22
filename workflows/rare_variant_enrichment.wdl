@@ -81,7 +81,7 @@ task CalculateLofPcEnrichment {
         echo "Starting LoF enrichment for the requested PC counts" >&2
         rare-variant-enrichment lof-pc-enrichment \
             --phenotype-bed "~{phenotype_bed}" \
-            --lof-carriers "~{lof_carrier_table}" \
+            --lof-carriers '~{sub(lof_carrier_table, "'", "'\"'\"'")}' \
             --principal-components "~{principal_components_tsv}" \
             ~{if defined(additional_covariates_tsv) then "--additional-covariates '" + sub(select_first([additional_covariates_tsv]), "'", "'\"'\"'") + "'" else ""} \
             --protein-coding-genes "~{protein_coding_genes}" \

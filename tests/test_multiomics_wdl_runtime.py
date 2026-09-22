@@ -19,14 +19,22 @@ def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path, o
         'phenotype_bed': str((FIXTURES / 'lof_pc_phenotypes.bed').resolve()),
         'principal_components_tsv': str((FIXTURES / 'principal_components.tsv').resolve()),
     }
+    carrier_tables = {}
+    for index, name in enumerate(ome_names):
+        path = tmp_path / f'{name} carriers.tsv'
+        content = (FIXTURES / 'lof_carriers.tsv').read_text()
+        if index == 1:
+            # Keep positive odds ratios so both omes can select a PC count.
+            content = content.replace('v2\tLC', 'v2\tHC')
+        path.write_text(content)
+        carrier_tables[name] = path
     ome_manifest = tmp_path / 'omes.tsv'
-    ome_manifest.write_text('ome_name\tphenotype_bed\tprincipal_components_tsv\n' + ''.join(
-        name + '\t' + dataset['phenotype_bed'] + '\t' + dataset['principal_components_tsv'] + '\n'
+    ome_manifest.write_text('ome_name\tphenotype_bed\tprincipal_components_tsv\tlof_carrier_table\n' + ''.join(
+        name + '\t' + dataset['phenotype_bed'] + '\t' + dataset['principal_components_tsv'] + '\t' + str(carrier_tables[name]) + '\n'
         for name in ome_names
     ))
     inputs = {
         'ome_manifest': str(ome_manifest),
-        'lof_carrier_table': str((FIXTURES / 'lof_carriers.tsv').resolve()),
         'gene_annotation_gtf': str((FIXTURES / 'gene_annotation.gtf').resolve()),
         'negative_z_thresholds': [-0.8], 'selection_z_thresholds': [-0.8],
         'intersection_z_thresholds': [-0.8, -1.4], 'pc_counts': [0],
@@ -42,7 +50,7 @@ def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path, o
     output_path = tmp_path / 'outputs.json'
     result = subprocess.run([
         miniwdl, 'run', str(Path('workflows/multiomics_outliers.wdl').resolve()),
-        '-i', str(inputs_path), '-d', str(tmp_path / 'run'), '-o', str(output_path), '--no-cache',
+        '-i', str(inputs_path), '-d', str(tmp_path / 'run'), '-o', str(output_path), '--no-cache', '--verbose',
     ], text=True, capture_output=True, timeout=180, env={
         **os.environ,
         # Local fixture paths are introduced by the trusted manifest, not by
@@ -53,7 +61,11 @@ def test_multiomics_wrapper_runs_each_matrix_and_emits_intersections(tmp_path, o
     outputs = json.loads(output_path.read_text())['outputs']
     matrices = outputs['MultiOmicsOutliers.matrix_results']
     assert [entry['name'] for entry in matrices] == list(ome_names)
-    for entry in matrices:
+    for index, entry in enumerate(matrices):
+        assert Path(entry['lof_carrier_table']).read_text() == carrier_tables[entry['name']].read_text()
+        rows = list(csv.DictReader(Path(entry['results_tsv']).open(), delimiter='\t'))
+        hc = next(row for row in rows if row['carrier_definition'] == 'HC')
+        assert int(hc['carrier_observations']) == (2 if index == 0 else 3)
         selection = json.loads(Path(entry['pc_selection_json']).read_text())
         summary = json.loads(Path(entry['selected_pc_z_scores_summary_json']).read_text())
         assert selection['selection']['selected_pc_count'] == summary['selected_pc_count'] == 0

@@ -11,7 +11,7 @@ from rare_variant_enrichment.multiomics import require_local_file, validate_mult
 
 
 LOGGER = logging.getLogger(__name__)
-COLUMNS = ('ome_name', 'phenotype_bed', 'principal_components_tsv', 'additional_covariates_tsv')
+COLUMNS = ('ome_name', 'phenotype_bed', 'principal_components_tsv', 'lof_carrier_table', 'additional_covariates_tsv')
 
 
 def _manifest_path(value: str, column: str, line: int, optional: bool = False) -> str:
@@ -39,7 +39,7 @@ def prepare_omics_manifest(manifest: Path, thresholds: Sequence[float], output: 
         header = next(reader, [])
         if len(set(header)) != len(header):
             raise ValueError('Ome manifest has duplicate header names')
-        missing = set(COLUMNS[:3]) - set(header)
+        missing = set(COLUMNS[:4]) - set(header)
         if missing:
             raise ValueError('Ome manifest is missing columns: ' + ', '.join(sorted(missing)))
         unknown = set(header) - set(COLUMNS)
@@ -54,6 +54,7 @@ def prepare_omics_manifest(manifest: Path, thresholds: Sequence[float], output: 
                 name,
                 _manifest_path(row['phenotype_bed'], 'phenotype_bed', line),
                 _manifest_path(row['principal_components_tsv'], 'principal_components_tsv', line),
+                _manifest_path(row['lof_carrier_table'], 'lof_carrier_table', line),
                 _manifest_path(row.get('additional_covariates_tsv', ''), 'additional_covariates_tsv', line, optional=True),
             ])
     validate_multiomics_inputs([row[0] for row in rows], thresholds)

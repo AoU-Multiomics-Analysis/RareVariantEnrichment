@@ -6,6 +6,7 @@ struct OmicsResult {
     String name
     File phenotype_bed
     File principal_components_tsv
+    File lof_carrier_table
     File? additional_covariates_tsv
     File selected_pc_z_scores_tsv_gz
     File? selected_pc_haplo_calls_tsv_gz
@@ -100,7 +101,6 @@ task IntersectMultiOmicsOutliers {
 workflow MultiOmicsOutliers {
     input {
         File ome_manifest
-        File lof_carrier_table
         File gene_annotation_gtf
         Float haplo_logcpm_drop = 1.0
         Array[Float] intersection_z_thresholds = [-2.0, -3.0, -4.0, -5.0, -6.0]
@@ -137,8 +137,9 @@ workflow MultiOmicsOutliers {
         String dataset_name = manifest_row[0]
         File phenotype_bed = manifest_row[1]
         File principal_components_tsv = manifest_row[2]
-        if (manifest_row[3] != ".") {
-            File additional_covariates_tsv = manifest_row[3]
+        File lof_carrier_table = manifest_row[3]
+        if (manifest_row[4] != ".") {
+            File additional_covariates_tsv = manifest_row[4]
         }
 
         call enrichment.RareVariantEnrichment as RunMatrix {
@@ -170,6 +171,7 @@ workflow MultiOmicsOutliers {
             name: dataset_name,
             phenotype_bed: phenotype_bed,
             principal_components_tsv: principal_components_tsv,
+            lof_carrier_table: lof_carrier_table,
             additional_covariates_tsv: additional_covariates_tsv,
             selected_pc_z_scores_tsv_gz: RunMatrix.selected_pc_z_scores_tsv_gz,
             selected_pc_haplo_calls_tsv_gz: RunMatrix.selected_pc_haplo_calls_tsv_gz,

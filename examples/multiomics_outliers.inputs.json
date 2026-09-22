@@ -1,6 +1,5 @@
 {
   "MultiOmicsOutliers.ome_manifest": "gs://your-bucket/omics_manifest.tsv",
-  "MultiOmicsOutliers.lof_carrier_table": "gs://your-bucket/lof_carriers.tsv.gz",
   "MultiOmicsOutliers.gene_annotation_gtf": "gs://your-bucket/genes.gtf.gz",
   "MultiOmicsOutliers.intersection_z_thresholds": [
     -2.0,

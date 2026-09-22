@@ -31,18 +31,19 @@ def test_wrapper_calls_existing_workflow_and_preserves_file_types():
     workflow = document.workflow
     manifest = next(item for item in workflow.inputs if item.name == 'ome_manifest')
     assert str(manifest.type) == 'File'
+    assert 'lof_carrier_table' not in {item.name for item in workflow.inputs}
     scatter = next(item for item in workflow.body if isinstance(item, WDL.Tree.Scatter))
     assert scatter.variable == 'manifest_row'
     call = next(item for item in scatter.body if isinstance(item, WDL.Tree.Call))
     assert isinstance(call.callee, WDL.Tree.Workflow)
     assert call.callee.name == 'RareVariantEnrichment'
-    for field in ('phenotype_bed', 'principal_components_tsv', 'additional_covariates_tsv'):
+    for field in ('phenotype_bed', 'principal_components_tsv', 'lof_carrier_table', 'additional_covariates_tsv'):
         assert str(call.inputs[field]) == field
     files = [item for item in scatter.body if isinstance(item, WDL.Tree.Decl) and isinstance(item.type, WDL.Type.File)]
     conditional = next(item for item in scatter.body if isinstance(item, WDL.Tree.Conditional))
     files.extend(conditional.body)
-    assert [item.name for item in files] == ['phenotype_bed', 'principal_components_tsv', 'additional_covariates_tsv']
-    row = ['rna', 'gs://bucket/rna.bed', 'gs://bucket/rna.pcs', 'gs://bucket/rna.cov']
+    assert [item.name for item in files] == ['phenotype_bed', 'principal_components_tsv', 'lof_carrier_table', 'additional_covariates_tsv']
+    row = ['rna', 'gs://bucket/rna.bed', 'gs://bucket/rna.pcs', 'gs://bucket/rna.lof', 'gs://bucket/rna.cov']
     environment = WDL.Env.Bindings().bind('manifest_row', WDL.Value.from_json(WDL.Type.Array(WDL.Type.String()), row))
     for index, declaration in enumerate(files, start=1):
         value = declaration.expr.eval(environment, WDL.StdLib.Base('1.0')).coerce(declaration.type)
@@ -52,7 +53,7 @@ def test_wrapper_calls_existing_workflow_and_preserves_file_types():
         assert isinstance(localized, WDL.Value.File)
         assert localized.value == '/localized/' + row[index].rsplit('/', 1)[-1]
     assert conditional.expr.eval(environment, WDL.StdLib.Base('1.0')).value
-    absent = environment.bind('manifest_row', WDL.Value.from_json(WDL.Type.Array(WDL.Type.String()), row[:3] + ['.']))
+    absent = environment.bind('manifest_row', WDL.Value.from_json(WDL.Type.Array(WDL.Type.String()), row[:4] + ['.']))
     assert not conditional.expr.eval(absent, WDL.StdLib.Base('1.0')).value
     outputs = {item.name: str(item.type) for item in workflow.outputs}
     assert outputs['matrix_results'] == 'Array[OmicsResult]'
@@ -60,6 +61,8 @@ def test_wrapper_calls_existing_workflow_and_preserves_file_types():
     assert outputs['haplo_matrices'] == 'Array[File?]'
     assert str(call.inputs['ome_name']) == 'dataset_name'
     result = next(item for item in scatter.body if isinstance(item, WDL.Tree.Decl) and item.name == 'result')
+    assert str(result.type.members['lof_carrier_table']) == 'File'
+    assert str(result.expr.members['lof_carrier_table']) == 'lof_carrier_table'
     assert str(result.type.members['selected_pc_haplo_calls_tsv_gz']) == 'File?'
     assert str(call.inputs['haplo_logcpm_drop']) == 'haplo_logcpm_drop'
     assert outputs['intersection_matrices'] == 'Array[File]'
@@ -87,9 +90,9 @@ def test_new_tasks_localize_files_before_list_creation_and_run_safely(tmp_path, 
             handle.write('gene_id\tS1\tS2\nG1\t-3\t1\n')
         mapping[f'gs://bucket/matrix{index}.tsv.gz'] = str(path)
     manifest_path = local / 'omes.tsv'
-    manifest_path.write_text('ome_name\tphenotype_bed\tprincipal_components_tsv\n'
-        'rna\tgs://bucket/rna.bed\tgs://bucket/rna.pc\n'
-        'protein\tgs://bucket/protein.bed\tgs://bucket/protein.pc\n')
+    manifest_path.write_text('ome_name\tphenotype_bed\tprincipal_components_tsv\tlof_carrier_table\n'
+        'rna\tgs://bucket/rna.bed\tgs://bucket/rna.pc\tgs://bucket/rna.lof\n'
+        'protein\tgs://bucket/protein.bed\tgs://bucket/protein.pc\tgs://bucket/protein.lof\n')
     matrix_uris = list(mapping)
     mapping['gs://bucket/omes.tsv'] = str(manifest_path)
     haplo_path = local / 'expression_haplo.tsv'
@@ -124,8 +127,8 @@ def test_new_tasks_localize_files_before_list_creation_and_run_safely(tmp_path, 
     assert not (tmp_path / 'INJECTION').exists()
     if task_name == 'PrepareOmicsManifest':
         assert (tmp_path / 'normalized_omics.tsv').read_text().splitlines() == [
-            'rna\tgs://bucket/rna.bed\tgs://bucket/rna.pc\t.',
-            'protein\tgs://bucket/protein.bed\tgs://bucket/protein.pc\t.',
+            'rna\tgs://bucket/rna.bed\tgs://bucket/rna.pc\tgs://bucket/rna.lof\t.',
+            'protein\tgs://bucket/protein.bed\tgs://bucket/protein.pc\tgs://bucket/protein.lof\t.',
         ]
     else:
         manifest = list(csv.DictReader((tmp_path / 'intersection_manifest.tsv').open(), delimiter='\t'))
