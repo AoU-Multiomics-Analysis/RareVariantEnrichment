@@ -109,7 +109,7 @@ def main() -> None:
     inputs_path.write_text(json.dumps(inputs, indent=2) + "\n")
     command = [runner, "run", str(repo / "workflows/olink_pc_outliers.wdl"),
                "--input", str(inputs_path), "--dir", str(folder / "run"),
-               "--output", str(outputs_path), "--as-me", "--no-cache", "--verbose"]
+               "-o", str(outputs_path), "--as-me", "--no-cache", "--verbose"]
     print(f"[olink-ci] Synthetic workflow files: {folder}", flush=True)
     subprocess.run(command, cwd=repo, check=True)
     result = json.loads(outputs_path.read_text())
