@@ -2,6 +2,8 @@
 
 <!-- workflow-badges:start -->
 [![Docker Image CI](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/docker-image.yml/badge.svg)](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/docker-image.yml)
+[![Olink R and WDL Checks](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/olink-checks.yml/badge.svg)](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/olink-checks.yml)
+[![Olink Image CI](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/olink-image.yml/badge.svg)](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/olink-image.yml)
 [![Python tests](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/python-tests.yml/badge.svg)](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/python-tests.yml)
 [![R lint](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/r-lint.yml/badge.svg)](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/r-lint.yml)
 [![Update README workflow badges](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/update-readme-badges.yml/badge.svg)](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/update-readme-badges.yml)
@@ -9,6 +11,15 @@
 <!-- workflow-badges:end -->
 
 This workflow screens for enrichment of molecular low-expression outliers among pooled loss-of-function (LoF) carrier observations. It directly residualizes every protein-coding gene's expression against an intercept, optional additional covariates, and principal components (PCs), then pools eligible sample–gene observations into Fisher exact 2×2 tables. It does not accept variant call files, annotation tables, genomic index files, or chromosome selections.
+
+## Olink PC outlier workflow
+
+`workflows/olink_pc_outliers.wdl` accepts an Olink NPX file and several PC counts.
+It produces a complete residual Z-score matrix and outlier calls for each count,
+separately for NPX and PCNormalizedNPX. Preparation and exact PCA are shared across
+counts. See the [All of Us Workbench guide](docs/olink_pc_outliers.md) and
+[example inputs](examples/olink_pc_outliers.inputs.json). The workflow uses WDL 1.0
+and a separate pinned micromamba image. It has not been run on All of Us or Terra.
 
 ## Standalone variant carrier extraction
 

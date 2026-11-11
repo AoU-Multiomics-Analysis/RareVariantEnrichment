@@ -1,0 +1,75 @@
+name: Olink R and WDL Checks
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/olink-checks.yml"
+      - "scripts/olink_outliers.R"
+      - "workflows/olink_pc_outliers.wdl"
+      - "envs/olink-environment.yml"
+      - "tests/olink/**"
+      - "tests/test_olink_wdl.py"
+      - "tools/check_workflow_file_writes.py"
+      - "tools/smoke_olink_wdl.py"
+  pull_request:
+    paths:
+      - ".github/workflows/olink-checks.yml"
+      - "scripts/olink_outliers.R"
+      - "workflows/olink_pc_outliers.wdl"
+      - "envs/olink-environment.yml"
+      - "tests/olink/**"
+      - "tests/test_olink_wdl.py"
+      - "tools/check_workflow_file_writes.py"
+      - "tools/smoke_olink_wdl.py"
+
+permissions:
+  contents: read
+
+jobs:
+  r_and_wdl_checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      OLINK_SCRIPT: scripts/olink_outliers.R
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the WDL test tools
+        run: python -m pip install miniwdl==1.14.2 pytest==8.4.2
+
+      - name: Set up the pinned R environment
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: envs/olink-environment.yml
+          environment-name: olink-checks
+          create-args: --strict-channel-priority
+          cache-environment: true
+          cache-environment-key: olink-r-checks
+          init-shell: none
+
+      - name: Run the synthetic R checks
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          echo "[olink-checks] Run synthetic R checks"
+          Rscript tests/olink/smoke_test.R
+
+      - name: Check workflow file creation for Terra
+        run: python tools/check_workflow_file_writes.py workflows/olink_pc_outliers.wdl
+
+      - name: Check WDL structure and file localization
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          echo "[olink-checks] Run WDL checks with R on PATH"
+          "${{ steps.python.outputs.python-path }}" -m pytest -q tests/test_olink_wdl.py
