@@ -4,22 +4,22 @@
 
 ## Inputs
 
-Three workflow inputs are required:
+Two workflow inputs are required:
 
 | Input | Type | Meaning |
 | --- | --- | --- |
 | `npx_file` | `File` | Plain or gzip-compressed TSV containing `Assay`, `SampleID`, `NPX`, and `PCNormalizedNPX`. |
 | `pc_counts` | `Array[Int]` | Nonempty list of distinct, nonnegative PC counts, such as `[0, 10, 20, 50, 3499]`. |
-| `docker_image` | `String` | Tested analysis image that the workspace can pull. Use an immutable tag or digest. |
 
 Use a real `gs://` input URI from the Workbench resource details. The mounted `/home/rstudio/workspace/...` filename in an RStudio session is not a cloud URI for a batch VM. The workflow service account needs read access to the input object and write access to the destination bucket.
 
-An example is provided in `examples/olink_pc_outliers.inputs.json`. Replace both the input URI and the image address before use. The example includes 3,499 PCs to retain the original setting. A count that leaves no residual component stops preparation with an error; it is never reduced automatically.
+An example is provided in `examples/olink_pc_outliers.inputs.json`. Replace the input URI before use. The example uses the default Docker image and includes 3,499 PCs to retain the original setting. A count that leaves no residual component stops preparation with an error; it is never reduced automatically.
 
 Optional inputs include:
 
 | Input | Default | Meaning |
 | --- | --- | --- |
+| `docker_image` | `ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink:main` | Image used by all tasks. Override it with a fixed tag, digest, or workspace-accessible registry address when needed. |
 | `excluded_assays` | `["GBP1", "MAP2K1"]` | Assays excluded before missingness checks. An empty array excludes none. |
 | `strip_sample_suffix` | `true` | Remove the suffix from the first underscore in each sample ID, as in the original R code. |
 | `connectivity_cutoff` | `-3.0` | Remove samples with connectivity Z scores strictly below this value. |
@@ -79,7 +79,7 @@ The dedicated GitHub Actions job publishes the tested Linux AMD64 image as:
 ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink:sha-<full-commit-sha>
 ```
 
-The workflow requires `docker_image` rather than assuming that GHCR is reachable from an All of Us workspace. Use a workspace-accessible Google Artifact Registry copy when needed. The documented All of Us Docker Hub proxy is specific to Docker Hub; do not prepend that proxy to a GHCR address.
+The workflow defaults to `ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink:main`. The `main` tag follows the latest image published by the image workflow. Set the optional `docker_image` input to a fixed tag or digest to retain a specific image version. If the workspace cannot pull from GHCR, set it to a workspace-accessible Google Artifact Registry copy. The documented All of Us Docker Hub proxy is specific to Docker Hub; do not prepend that proxy to a GHCR address.
 
 An administrator with access to the source image and the destination registry can mirror the image without building it again:
 
@@ -98,7 +98,7 @@ The destination repository must exist and the workspace runtime identity must be
 
 ### Current Workbench interface
 
-In the Workflows interface, add `workflows/olink_pc_outliers.wdl` from GitHub or upload this single WDL to a workspace bucket. Create a job, supply the three required inputs, and select a workspace bucket and folder for outputs. Use the actual storage URI for `npx_file`. Review the job settings before starting it. See [Workbench Cromwell instructions](https://support.workbench.verily.com/docs/guides/workflows/cromwell/).
+In the Workflows interface, add `workflows/olink_pc_outliers.wdl` from GitHub or upload this single WDL to a workspace bucket. Create a job, supply the two required inputs, and select a workspace bucket and folder for outputs. Use the actual storage URI for `npx_file`. The image defaults to `:main`; no image entry is required. If you enter an override in the form, use plain text without surrounding quotes. JSON input files require JSON string quotes. Review the job settings before starting it. See [Workbench Cromwell instructions](https://support.workbench.verily.com/docs/guides/workflows/cromwell/).
 
 ### Earlier Cromwell application interface
 

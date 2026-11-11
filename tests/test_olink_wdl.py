@@ -103,7 +103,13 @@ def test_olink_uses_wdl_1_0_and_typed_file_inputs():
     assert document.workflow is not None
     inputs = {declaration.name: declaration for declaration in document.workflow.inputs}
     assert str(inputs["npx_file"].type) == "File"
-    assert inputs["docker_image"].expr is None
+    assert {binding.name for binding in document.workflow.required_inputs} == {
+        "npx_file", "pc_counts"
+    }
+    assert str(inputs["docker_image"].type) == "String"
+    assert inputs["docker_image"].expr.eval(
+        WDL.Env.Bindings(), WDL.StdLib.Base("1.0")
+    ).value == "ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink:main"
     assert str(inputs["pc_counts"].type) == "Array[Int]"
     assert inputs["pc_counts"].expr is None
     tasks = {task.name: task for task in document.tasks}
