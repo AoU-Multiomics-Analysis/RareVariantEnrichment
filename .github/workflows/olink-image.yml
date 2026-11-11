@@ -1,0 +1,103 @@
+name: Olink Image CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "scripts/olink_outliers.R"
+      - "envs/Dockerfile.olink"
+      - "envs/olink-environment.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "scripts/olink_outliers.R"
+      - "envs/Dockerfile.olink"
+      - "envs/olink-environment.yml"
+
+env:
+  IMAGE_NAME: ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink
+  TEST_IMAGE: olink-ci:${{ github.sha }}
+
+jobs:
+  build_test_and_publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build the test image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: envs/Dockerfile.olink
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ env.TEST_IMAGE }}
+          cache-from: type=gha,scope=olink
+          cache-to: type=gha,mode=max,scope=olink
+
+      - name: Test the image without network access
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "[olink-ci] Run synthetic data tests in the built image"
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:rw,exec,size=1g,mode=1777 \
+            --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/repo,readonly" \
+            --workdir /tmp \
+            --env OLINK_SCRIPT=/opt/olink/olink_outliers.R \
+            --env OMP_NUM_THREADS=1 \
+            --env OPENBLAS_NUM_THREADS=1 \
+            "$TEST_IMAGE" Rscript /repo/tests/olink/smoke_test.R
+
+      - name: Set up Python for the WDL smoke test
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the WDL test runner
+        run: python -m pip install miniwdl==1.14.2
+
+      - name: Check workflow file creation for Terra
+        run: python tools/check_workflow_file_writes.py workflows/olink_pc_outliers.wdl
+
+      - name: Test the complete WDL with synthetic data
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "[olink-ci] Start Docker Swarm for miniwdl"
+          if [ "$(docker info --format '{{.Swarm.LocalNodeState}}')" != "active" ]; then
+            docker swarm init --advertise-addr 127.0.0.1
+          fi
+          echo "[olink-ci] Run the complete WDL with the tested image"
+          python tools/smoke_olink_wdl.py --image "$TEST_IMAGE"
+
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the tested image
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "[olink-ci] Publish the same image that passed the tests"
+          for tag in "sha-${GITHUB_SHA}" main; do
+            docker tag "$TEST_IMAGE" "${IMAGE_NAME}:${tag}"
+            docker push "${IMAGE_NAME}:${tag}"
+          done
+          docker image inspect "${IMAGE_NAME}:sha-${GITHUB_SHA}" \
+            --format '{{range .RepoDigests}}{{println .}}{{end}}' >> "$GITHUB_STEP_SUMMARY"

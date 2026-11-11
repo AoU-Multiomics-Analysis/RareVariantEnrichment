@@ -9,3 +9,6 @@ workflows:
   - name: multiomics-outliers
     subclass: WDL
     primaryDescriptorPath: /workflows/multiomics_outliers.wdl
+  - name: olink-pc-outliers
+    subclass: WDL
+    primaryDescriptorPath: /workflows/olink_pc_outliers.wdl

@@ -8,12 +8,14 @@ on:
       - ".github/workflows/wdl-validation.yml"
       - ".dockstore.yml"
       - "workflows/**/*.wdl"
+      - "tools/check_workflow_file_writes.py"
   pull_request:
     branches: [ "main" ]
     paths:
       - ".github/workflows/wdl-validation.yml"
       - ".dockstore.yml"
       - "workflows/**/*.wdl"
+      - "tools/check_workflow_file_writes.py"
 
 jobs:
   miniwdl-check:
@@ -56,6 +58,11 @@ jobs:
             echo "Checking ${wdl}"
             miniwdl check "${wdl}"
           done
+
+      - name: Check Olink workflow file creation for Terra
+        run: |
+          "$(pipx environment --value PIPX_LOCAL_VENVS)/miniwdl/bin/python" \
+            tools/check_workflow_file_writes.py workflows/olink_pc_outliers.wdl
 
   womtool-check:
     runs-on: ubuntu-latest
