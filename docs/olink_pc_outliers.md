@@ -19,7 +19,7 @@ Optional inputs include:
 
 | Input | Default | Meaning |
 | --- | --- | --- |
-| `docker_image` | `ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink:main` | Image used by all tasks. Override it with a fixed tag, digest, or workspace-accessible registry address when needed. |
+| `docker_image` | `us-central1-docker.pkg.dev/wb-perky-tomato-1843/olink-images/rarevariantenrichment-olink:main` | Image used by all tasks. Copy the tested image into this repository before use. Override the address for another workspace or image version. |
 | `excluded_assays` | `["GBP1", "MAP2K1"]` | Assays excluded before missingness checks. An empty array excludes none. |
 | `strip_sample_suffix` | `true` | Remove the suffix from the first underscore in each sample ID, as in the original R code. |
 | `connectivity_cutoff` | `-3.0` | Remove samples with connectivity Z scores strictly below this value. |
@@ -79,28 +79,38 @@ The dedicated GitHub Actions job publishes the tested Linux AMD64 image as:
 ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink:sha-<full-commit-sha>
 ```
 
-The workflow defaults to `ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink:main`. The `main` tag follows the latest image published by the image workflow. Set the optional `docker_image` input to a fixed tag or digest to retain a specific image version. If the workspace cannot pull from GHCR, set it to a workspace-accessible Google Artifact Registry copy. The documented All of Us Docker Hub proxy is specific to Docker Hub; do not prepend that proxy to a GHCR address.
+The workflow defaults to `us-central1-docker.pkg.dev/wb-perky-tomato-1843/olink-images/rarevariantenrichment-olink:main`. This address is specific to that workspace project. Copy the tested image into this standard Docker repository before running the workflow. For another workspace, set the optional `docker_image` input to an approved image address. A fixed tag or digest selects a specific image version. The documented All of Us Docker Hub proxy is specific to Docker Hub; do not prepend that proxy to a GHCR address.
 
 If the workspace has a Network policy, Batch VMs cannot contact GHCR directly. Use an approved Google Artifact Registry address for `docker_image`. Interactive apps and GitHub Actions have different network access, so a successful image pull there does not prove that a Batch VM can pull it. See [Workbench network policy and container access](https://support.workbench.verily.com/docs/guides/governance/network_policy/).
 
-An administrator with access to the source image and the destination registry can mirror the image without building it again:
+Run the following from an interactive environment that can reach both registries and has a working Docker daemon. The destination repository must already exist. The source digest selects the image that passed the published-image startup check. No image is built:
 
 ```bash
-# Run only in an environment authorized to access both registries.
-source_image='ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink:sha-REPLACE_WITH_COMMIT'
-target_image='us-central1-docker.pkg.dev/YOUR_PROJECT/YOUR_REPOSITORY/olink-outliers:sha-REPLACE_WITH_COMMIT'
+(
+  set -euo pipefail
+  olink_source='ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink@sha256:c682dc2ffb47da00a024580b4f1346368ed12fcda6b46663c520d69a9fb37a6a'
+  olink_target='us-central1-docker.pkg.dev/wb-perky-tomato-1843/olink-images/rarevariantenrichment-olink:main'
 
-gcloud auth configure-docker us-central1-docker.pkg.dev
-docker pull "$source_image"
-docker tag "$source_image" "$target_image"
-docker push "$target_image"
+  docker info >/dev/null
+  gcloud artifacts repositories describe olink-images \
+    --project=wb-perky-tomato-1843 --location=us-central1
+  gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+  docker pull --platform linux/amd64 "$olink_source"
+  docker tag "$olink_source" "$olink_target"
+  docker push "$olink_target"
+
+  gcloud artifacts docker images describe "$olink_target" \
+    --project=wb-perky-tomato-1843 \
+    --format='value(image_summary.digest)'
+)
 ```
 
-The destination repository must exist and the workspace runtime identity must be able to read it. Record the resulting digest and set `docker_image` to that address. These commands transfer the software image only. They do not require access to NPX files or results. No registry transfer or All of Us job is submitted by the repository tests.
+The account that copies the image needs write access to the repository. The workflow runtime identity needs read access. A permission error must be resolved before retrying the copy. These commands transfer the software image only; they do not access NPX files or results. No registry transfer or All of Us job is submitted by the repository tests. A future GHCR image update does not update this GAR copy automatically; repeat the copy with the new tested source digest.
 
 ### Current Workbench interface
 
-In the Workflows interface, add `workflows/olink_pc_outliers.wdl` from GitHub or upload this single WDL to a workspace bucket. Create a job, supply the two required inputs, and select a workspace bucket and folder for outputs. Use the actual storage URI for `npx_file`. The image defaults to `:main`; no image entry is required. If you enter an override in the form, use plain text without surrounding quotes. JSON input files require JSON string quotes. Review the job settings before starting it. See [Workbench Cromwell instructions](https://support.workbench.verily.com/docs/guides/workflows/cromwell/).
+In the Workflows interface, add `workflows/olink_pc_outliers.wdl` from GitHub or upload this single WDL to a workspace bucket. Create a job, supply the two required inputs, and select a workspace bucket and folder for outputs. Use the actual storage URI for `npx_file`. The image defaults to the GAR `:main` address above; no image entry is required after that image has been copied. Remove any saved GHCR override to use this default. If you enter an override in the form, use plain text without surrounding quotes. JSON input files require JSON string quotes. Review the job settings before starting it. See [Workbench Cromwell instructions](https://support.workbench.verily.com/docs/guides/workflows/cromwell/).
 
 ### Earlier Cromwell application interface
 

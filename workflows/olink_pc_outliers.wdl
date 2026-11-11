@@ -15,7 +15,7 @@ workflow OlinkPcOutliers {
         File npx_file
         Array[Int] pc_counts
         # Override when the workspace needs a different image registry or tag.
-        String docker_image = "ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink:main"
+        String docker_image = "us-central1-docker.pkg.dev/wb-perky-tomato-1843/olink-images/rarevariantenrichment-olink:main"
         Array[String] excluded_assays = ["GBP1", "MAP2K1"]
         Boolean strip_sample_suffix = true
         Float connectivity_cutoff = -3.0
