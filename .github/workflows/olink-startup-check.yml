@@ -1,0 +1,60 @@
+name: Olink Published Image Startup
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: Published Olink image to check
+        required: true
+        default: ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink:main
+        type: string
+  push:
+    paths:
+      - ".github/workflows/olink-startup-check.yml"
+  pull_request:
+    paths:
+      - ".github/workflows/olink-startup-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate_published_image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OLINK_IMAGE: ${{ inputs.image_ref || 'ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink:main' }}
+    steps:
+      - name: Pull the published image without rebuilding it
+        run: |
+          set -euo pipefail
+          echo "[startup] Pull the published Olink image"
+          docker pull "$OLINK_IMAGE"
+          docker image inspect "$OLINK_IMAGE" \
+            --format 'User={{.Config.User}} ImageBytes={{.Size}} Digests={{json .RepoDigests}}'
+
+      - name: Check validation with a shell entrypoint and a 2 GB container limit
+        run: |
+          set -euo pipefail
+          task_directory=$(mktemp -d "${RUNNER_TEMP}/olink-startup.XXXXXX")
+          chmod 1777 "$task_directory"
+          echo "[startup] Run validation with the image user, one CPU, and 2 GB RAM"
+          docker run --rm --network none --memory 2000000000 --memory-swap 2000000000 --cpus 1 \
+            --entrypoint /bin/bash \
+            --mount "type=bind,src=${task_directory},dst=/mnt/disks/cromwell_root" \
+            --workdir /mnt/disks/cromwell_root \
+            "$OLINK_IMAGE" -c '
+              set -euo pipefail
+              echo "[startup] Container identity and R executable"
+              id
+              command -v Rscript
+              Rscript --version
+              echo "[validate] Starting Olink PC-grid validation"
+              Rscript /opt/olink/olink_outliers.R validate \
+                --pc-counts 100,500,1000 \
+                --output-dir validation
+              test "$(cat validation/max_pcs.txt)" = 1000
+              test -s validation/pc_plan.tsv
+              cat validation/pc_plan.tsv
+              echo "[validate] Completed Olink PC-grid validation"
+            '

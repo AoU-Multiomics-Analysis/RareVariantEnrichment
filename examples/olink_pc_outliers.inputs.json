@@ -1,7 +1,6 @@
 {
   "OlinkPcOutliers.npx_file": "gs://YOUR_ACCESSIBLE_BUCKET/path/Olink_10k_aou_v9_reps_removed.tsv.gz",
   "OlinkPcOutliers.pc_counts": [0, 10, 20, 50, 100, 3499],
-  "OlinkPcOutliers.docker_image": "us-central1-docker.pkg.dev/YOUR_PROJECT/YOUR_REPOSITORY/olink-outliers:YOUR_TESTED_IMAGE_TAG",
   "OlinkPcOutliers.excluded_assays": ["GBP1", "MAP2K1"],
   "OlinkPcOutliers.strip_sample_suffix": true,
   "OlinkPcOutliers.connectivity_cutoff": -3.0,
