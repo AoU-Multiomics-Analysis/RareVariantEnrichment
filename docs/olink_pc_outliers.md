@@ -81,6 +81,8 @@ ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink:sha-<full-commit-sha
 
 The workflow defaults to `ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink:main`. The `main` tag follows the latest image published by the image workflow. Set the optional `docker_image` input to a fixed tag or digest to retain a specific image version. If the workspace cannot pull from GHCR, set it to a workspace-accessible Google Artifact Registry copy. The documented All of Us Docker Hub proxy is specific to Docker Hub; do not prepend that proxy to a GHCR address.
 
+If the workspace has a Network policy, Batch VMs cannot contact GHCR directly. Use an approved Google Artifact Registry address for `docker_image`. Interactive apps and GitHub Actions have different network access, so a successful image pull there does not prove that a Batch VM can pull it. See [Workbench network policy and container access](https://support.workbench.verily.com/docs/guides/governance/network_policy/).
+
 An administrator with access to the source image and the destination registry can mirror the image without building it again:
 
 ```bash
@@ -118,6 +120,8 @@ The WDL tests begin with cloud File values, replace them with localized paths, a
 
 GitHub Actions builds the micromamba image, runs the R tests without network access, and runs the complete WDL on synthetic data for both NPX types at PCs 0 and 2. It publishes that tested image on `main`. Image rebuilds are triggered by the bundled R script or its build definitions; documentation, WDL, and test edits do not rebuild the image automatically.
 
+The separate `Olink Published Image Startup` workflow checks an existing image without rebuilding it. It runs `validate` with a `/bin/bash` entrypoint, the image's default user, a writable task directory, one CPU, and a hard 2 GB memory limit without extra swap. It checks both validation output files. This test does not reproduce the Workbench network policy or the complete Batch VM.
+
 Local checks:
 
 ```bash
@@ -127,4 +131,4 @@ miniwdl check workflows/olink_pc_outliers.wdl
 python tools/check_workflow_file_writes.py workflows/olink_pc_outliers.wdl
 ```
 
-No local Docker build is required. Neither a local test nor a GitHub Actions synthetic run establishes All of Us or Terra validation. The complete workflow has not been run on All of Us Workbench or Terra, and it has not been run on the controlled NPX dataset.
+No local Docker build is required. Neither a local test nor a GitHub Actions synthetic run establishes All of Us or Terra validation. No successful complete workflow run on All of Us Workbench or Terra has been recorded, including on the controlled NPX dataset.
