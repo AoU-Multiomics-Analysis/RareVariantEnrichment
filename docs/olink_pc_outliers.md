@@ -73,15 +73,30 @@ The workflow also returns per-type sample QC, assay exclusions, preparation summ
 
 All of Us uses Google Batch for batch execution. Its documentation describes restricted internet access from batch VMs and registry-specific image access. This image contains the R script and packages, so tasks do not install software or fetch code from GitHub. See [batch processing](https://support.researchallofus.org/hc/en-us/articles/4692418691732-Overview-of-Batch-Processing) and [Docker images in Workbench](https://support.researchallofus.org/hc/en-us/articles/21179878475028-Using-Docker-Images-on-the-Workbench).
 
-The dedicated GitHub Actions job publishes the tested Linux AMD64 image as:
+The dedicated GitHub Actions job publishes the tested Linux AMD64 image to both registries:
 
 ```text
 ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink:sha-<full-commit-sha>
+docker.io/epadhi/rarevariantenrichment-olink:sha-<full-commit-sha>
 ```
 
-The workflow defaults to `us-central1-docker.pkg.dev/wb-perky-tomato-1843/olink-images/rarevariantenrichment-olink:main`. This address is specific to that workspace project. Copy the tested image into this standard Docker repository before running the workflow. For another workspace, set the optional `docker_image` input to an approved image address. A fixed tag or digest selects a specific image version. The documented All of Us Docker Hub proxy is specific to Docker Hub; do not prepend that proxy to a GHCR address.
+Both registries also receive the `main` tag after the tests pass. See the Docker Hub setup below before the first publication.
 
-If the workspace has a Network policy, Batch VMs cannot contact GHCR directly. Use an approved Google Artifact Registry address for `docker_image`. Interactive apps and GitHub Actions have different network access, so a successful image pull there does not prove that a Batch VM can pull it. See [Workbench network policy and container access](https://support.workbench.verily.com/docs/guides/governance/network_policy/).
+The WDL defaults to `us-central1-docker.pkg.dev/wb-perky-tomato-1843/olink-images/rarevariantenrichment-olink:main`. This address is specific to that workspace project. Copy the tested image into that repository before using the default. Alternatively, after Docker Hub publication succeeds, set the optional `docker_image` input to `docker.io/epadhi/rarevariantenrichment-olink:main`. A fixed tag or digest selects a specific image version. The All of Us Docker guide documents Docker Hub and Google Artifact Registry image access. It does not require all WDL images to be copied into a workspace GAR repository.
+
+A Workbench Network policy restricts Batch VM internet access. Image access also depends on the registry route used by the workflow service. A generic task failure does not prove that a registry pull failed. Interactive apps and GitHub Actions have different network access, so a successful image pull there does not prove that a Batch VM can pull it. See [Workbench network policy and container access](https://support.workbench.verily.com/docs/guides/governance/network_policy/).
+
+### Docker Hub publication
+
+1. Create a public Docker Hub repository named `epadhi/rarevariantenrichment-olink`.
+2. Create a Docker personal access token with **Read & Write** permission. See [Docker access tokens](https://docs.docker.com/security/access-tokens/).
+3. In this GitHub repository, open **Settings → Secrets and variables → Actions**. Add two repository secrets: `DOCKERHUB_USERNAME` with value `epadhi`, and `DOCKERHUB_TOKEN` with the token value. See [GitHub repository secrets](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets#creating-secrets-for-a-repository). Do not commit the token to a file or paste it into an issue.
+4. After these workflow changes reach `main`, open **Actions → Olink Docker Hub Publish → Run workflow**. Select `main`. Keep the default `source_sha` to copy the existing tested image, or enter the full commit SHA of another tested Olink image in GHCR.
+5. Check that the run succeeds. It copies the selected image with `main` and `sha-<source_sha>` tags and checks that the published image ID matches the source. It does not build an image or start an All of Us job.
+
+Future Olink image builds publish the same tested image to GHCR and Docker Hub. Changes to documentation, WDL files, tests, or publishing configuration do not trigger an image rebuild. Use the manual copy workflow to retry Docker Hub publication if GHCR publication succeeded but Docker Hub publication failed.
+
+### Optional copy into Google Artifact Registry
 
 Run the following from an interactive environment that can reach both registries and has a working Docker daemon. The destination repository must already exist. The source digest selects the image that passed the published-image startup check. No image is built:
 
