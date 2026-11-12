@@ -109,7 +109,7 @@ def test_olink_uses_wdl_1_0_and_typed_file_inputs():
     assert str(inputs["docker_image"].type) == "String"
     assert inputs["docker_image"].expr.eval(
         WDL.Env.Bindings(), WDL.StdLib.Base("1.0")
-    ).value == "us-central1-docker.pkg.dev/wb-perky-tomato-1843/olink-images/rarevariantenrichment-olink:main"
+    ).value == "docker.io/epadhi/rarevariantenrichment-olink:root-no-entrypoint"
     assert str(inputs["pc_counts"].type) == "Array[Int]"
     assert inputs["pc_counts"].expr is None
     tasks = {task.name: task for task in document.tasks}

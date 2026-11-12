@@ -19,7 +19,7 @@ Optional inputs include:
 
 | Input | Default | Meaning |
 | --- | --- | --- |
-| `docker_image` | `us-central1-docker.pkg.dev/wb-perky-tomato-1843/olink-images/rarevariantenrichment-olink:main` | Image used by all tasks. Copy the tested image into this repository before use. Override the address for another workspace or image version. |
+| `docker_image` | `docker.io/epadhi/rarevariantenrichment-olink:root-no-entrypoint` | Image used by all tasks. This is the image that passed the user's minimal Workbench workflow. Override the address to select another image version or registry. |
 | `excluded_assays` | `["GBP1", "MAP2K1"]` | Assays excluded before missingness checks. An empty array excludes none. |
 | `strip_sample_suffix` | `true` | Remove the suffix from the first underscore in each sample ID, as in the original R code. |
 | `connectivity_cutoff` | `-3.0` | Remove samples with connectivity Z scores strictly below this value. |
@@ -84,7 +84,7 @@ Both registries also receive the `main` tag after the tests pass. See the Docker
 
 The image runs as root and has no runtime entrypoint. `Rscript` is on `PATH`, so tasks can call R directly without an environment activation script. Micromamba installs the pinned R environment during the image build.
 
-The WDL defaults to `us-central1-docker.pkg.dev/wb-perky-tomato-1843/olink-images/rarevariantenrichment-olink:main`. This address is specific to that workspace project. Copy the tested image into that repository before using the default. Alternatively, after Docker Hub publication succeeds, set the optional `docker_image` input to `docker.io/epadhi/rarevariantenrichment-olink:main`. A fixed tag or digest selects a specific image version. The All of Us Docker guide documents Docker Hub and Google Artifact Registry image access. It does not require all WDL images to be copied into a workspace GAR repository.
+The WDL defaults to `docker.io/epadhi/rarevariantenrichment-olink:root-no-entrypoint`. The user reported that a minimal Workbench workflow passed with this image. Its digest is `sha256:bd3a69b1aad32966959fb4eb68f883afe48fd1a6ba64a29530a710ef659e97ef`. All four tasks use this workflow input. Set the optional `docker_image` input to select another image version or registry. The All of Us Docker guide documents Docker Hub and Google Artifact Registry image access. It does not require all WDL images to be copied into a workspace GAR repository.
 
 A Workbench Network policy restricts Batch VM internet access. Image access also depends on the registry route used by the workflow service. A generic task failure does not prove that a registry pull failed. Interactive apps and GitHub Actions have different network access, so a successful image pull there does not prove that a Batch VM can pull it. See [Workbench network policy and container access](https://support.workbench.verily.com/docs/guides/governance/network_policy/).
 
@@ -128,7 +128,7 @@ The account that copies the image needs write access to the repository. The work
 
 ### Current Workbench interface
 
-In the Workflows interface, add `workflows/olink_pc_outliers.wdl` from GitHub or upload this single WDL to a workspace bucket. Create a job, supply the two required inputs, and select a workspace bucket and folder for outputs. Use the actual storage URI for `npx_file`. The image defaults to the GAR `:main` address above; no image entry is required after that image has been copied. Remove any saved GHCR override to use this default. If you enter an override in the form, use plain text without surrounding quotes. JSON input files require JSON string quotes. Review the job settings before starting it. See [Workbench Cromwell instructions](https://support.workbench.verily.com/docs/guides/workflows/cromwell/).
+In the Workflows interface, add `workflows/olink_pc_outliers.wdl` from GitHub or upload this single WDL to a workspace bucket. Create a job, supply the two required inputs, and select a workspace bucket and folder for outputs. Use the actual storage URI for `npx_file`. The image defaults to the Docker Hub `:root-no-entrypoint` tag above. Clear any saved `docker_image` override to use this default, or set it to the same working tag. If you enter an override in the form, use plain text without surrounding quotes. JSON input files require JSON string quotes. Review the job settings before starting it. See [Workbench Cromwell instructions](https://support.workbench.verily.com/docs/guides/workflows/cromwell/).
 
 ### Earlier Cromwell application interface
 
