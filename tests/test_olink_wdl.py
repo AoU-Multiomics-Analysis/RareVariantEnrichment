@@ -117,6 +117,8 @@ def test_olink_uses_wdl_1_0_and_typed_file_inputs():
         ("PrepareOlink", "npx_file", "File"),
         ("AdjustOlink", "prepared_file", "File"),
         ("CollectOlinkSummaries", "summary_files", "Array[File]"),
+        ("CollectOlinkSummaries", "files_to_collect", "Array[File]"),
+        ("CollectOlinkSummaries", "pc_plan_file", "File"),
     ]:
         declarations = {declaration.name: declaration for declaration in tasks[task_name].inputs}
         assert str(declarations[input_name].type) == expected_type
@@ -132,23 +134,84 @@ def test_olink_uses_wdl_1_0_and_typed_file_inputs():
         assert "Completed" in str(task.command)
 
 
-def test_olink_prepares_each_metric_once_then_reuses_it_for_the_pc_grid():
+def test_olink_scatters_are_not_nested():
+    document = WDL.load(str(WORKFLOW))
+
+    def check_body(body, inside_scatter=False):
+        for node in body:
+            if isinstance(node, WDL.Tree.Scatter):
+                assert not inside_scatter, "Olink must not contain a nested scatter"
+                check_body(node.body, inside_scatter=True)
+            elif isinstance(node, WDL.Tree.Conditional):
+                check_body(node.body, inside_scatter=inside_scatter)
+
+    check_body(document.workflow.body)
+
+
+@pytest.mark.parametrize("pc_counts", [[5, 0, 2], [0]])
+def test_olink_prepares_each_metric_once_then_reuses_it_for_the_pc_grid(pc_counts):
     document = WDL.load(str(WORKFLOW))
     workflow = document.workflow
-    metrics = [node for node in workflow.body if isinstance(node, WDL.Tree.Scatter)]
-    assert len(metrics) == 1
-    assert metrics[0].expr.eval(WDL.Env.Bindings(), WDL.StdLib.Base("1.0")).json == [
-        "NPX", "PCNormalizedNPX"
+    scatters = [
+        node for node in workflow.body
+        if isinstance(node, WDL.Tree.Scatter)
+        and any(isinstance(child, WDL.Tree.Call) for child in node.body)
     ]
-    preparation = [node for node in metrics[0].body if isinstance(node, WDL.Tree.Call)]
+    assert len(scatters) == 2
+    preparation_scatter = next(
+        scatter for scatter in scatters
+        if any(isinstance(node, WDL.Tree.Call) and node.callee.name == "PrepareOlink"
+               for node in scatter.body)
+    )
+    adjustment_scatter = next(
+        scatter for scatter in scatters
+        if any(isinstance(node, WDL.Tree.Call) and node.callee.name == "AdjustOlink"
+               for node in scatter.body)
+    )
+    preparation = [node for node in preparation_scatter.body if isinstance(node, WDL.Tree.Call)]
     assert [call.callee.name for call in preparation] == ["PrepareOlink"]
     assert str(preparation[0].inputs["max_pcs"]) == "ValidateOlinkPcGrid.max_pcs"
-    grid = [node for node in metrics[0].body if isinstance(node, WDL.Tree.Scatter)]
-    assert len(grid) == 1
-    assert str(grid[0].expr) == "pc_counts"
-    adjustment = [node for node in grid[0].body if isinstance(node, WDL.Tree.Call)]
+    adjustment = [node for node in adjustment_scatter.body if isinstance(node, WDL.Tree.Call)]
     assert [call.callee.name for call in adjustment] == ["AdjustOlink"]
-    assert str(adjustment[0].inputs["prepared_file"]) == "PrepareOlink.prepared_file"
+
+    stdlib = WDL.StdLib.Base("1.0")
+    environment = WDL.Env.Bindings().bind(
+        "pc_counts", WDL.Value.Array(WDL.Type.Int(), [WDL.Value.Int(n) for n in pc_counts])
+    )
+    for node in workflow.body:
+        if isinstance(node, WDL.Tree.Decl):
+            environment = environment.bind(node.name, node.expr.eval(environment, stdlib))
+    metric_values = preparation_scatter.expr.eval(environment, stdlib)
+    prepared_metrics = [
+        preparation[0].inputs["metric"].eval(
+            environment.bind(preparation_scatter.variable, metric), stdlib
+        ).value
+        for metric in metric_values.value
+    ]
+    assert prepared_metrics == ["NPX", "PCNormalizedNPX"]
+    state_paths = {
+        "NPX": "gs://fixture/npx.rds",
+        "PCNormalizedNPX": "gs://fixture/pcnormalized.rds",
+    }
+    environment = environment.bind(
+        "PrepareOlink.prepared_file",
+        WDL.Value.Array(WDL.Type.File(), [WDL.Value.File(state_paths[m]) for m in prepared_metrics]),
+    )
+    actual = []
+    for setting in adjustment_scatter.expr.eval(environment, stdlib).value:
+        scoped = environment.bind(adjustment_scatter.variable, setting)
+        prepared_file = adjustment[0].inputs["prepared_file"].eval(scoped, stdlib)
+        assert isinstance(prepared_file, WDL.Value.File)
+        actual.append((
+            adjustment[0].inputs["metric"].eval(scoped, stdlib).value,
+            adjustment[0].inputs["n_pcs"].eval(scoped, stdlib).value,
+            prepared_file.value,
+        ))
+    expected = [
+        (metric, count, state_paths[metric])
+        for metric in ["NPX", "PCNormalizedNPX"] for count in pc_counts
+    ]
+    assert actual == expected
     collection = next(
         node for node in workflow.body
         if isinstance(node, WDL.Tree.Call) and node.callee.name == "CollectOlinkSummaries"
@@ -172,6 +235,26 @@ def _render_task(task_name, directory, mapping, *, localize):
         "npx_file": "gs://olink-bucket/npx.tsv",
         "prepared_file": "gs://olink-bucket/prepared.rds",
         "summary_files": ["gs://olink-bucket/summary1.tsv", "gs://olink-bucket/summary2.tsv"],
+        "files_to_collect": (
+            ["gs://olink-bucket/summary1.tsv"] * 5 + ["gs://olink-bucket/summary2.tsv"] * 5
+            + ["gs://olink-bucket/summary1.tsv"] * 4 + ["gs://olink-bucket/summary2.tsv"] * 4
+        ),
+        "adjustment_paths": [
+            [f"{metric}/{stem}.{metric}.PCs0{extension}" for stem, extension in [
+                ("protein_z_scores", ".tsv.gz"), ("protein_outliers", ".tsv.gz"),
+                ("sample_outliers", ".tsv"), ("undefined_residual_assays", ".tsv"),
+                ("summary", ".tsv"),
+            ]]
+            for metric in ["NPX", "PCNormalizedNPX"]
+        ],
+        "preparation_paths": [
+            [f"{metric}/{stem}.{metric}{extension}" for stem, extension in [
+                ("sample_qc", ".tsv"), ("excluded_assays", ".tsv"),
+                ("prepare_summary", ".tsv"), ("sessionInfo", ".txt"),
+            ]]
+            for metric in ["NPX", "PCNormalizedNPX"]
+        ],
+        "pc_plan_file": "gs://olink-bucket/pc_plan.tsv",
         "pc_counts": [0, 1],
         "metric": "NPX",
         "max_pcs": 1,
@@ -224,8 +307,15 @@ import os
 from pathlib import Path
 import sys
 
-script, stage, *arguments = sys.argv[1:]
-assert script == "/opt/olink/olink_outliers.R", script
+arguments = sys.argv[1:]
+if arguments[0] == "--vanilla":
+    arguments = arguments[1:]
+if arguments[0] == "-":
+    stage, arguments = "collect", arguments[1:]
+    sys.stdin.read()
+else:
+    script, stage, *arguments = arguments
+    assert script == "/opt/olink/olink_outliers.R", script
 assert len(arguments) % 2 == 0, arguments
 options = dict(zip(arguments[0::2], arguments[1::2]))
 assert "--config" not in options
@@ -238,15 +328,15 @@ def readable(value):
     with Path(value).open("rb") as handle:
         handle.read(1)
 
-for option in ("--input", "--prepared-file"):
+for option in ("--input", "--prepared-file", "--pc-plan-file"):
     if option in options:
         readable(options[option])
-for option in ("--summary-files", "--excluded-assays-file"):
+for option in ("--summary-files", "--excluded-assays-file", "--files-list", "--relative-paths-list"):
     if option in options:
         readable(options[option])
         lines = Path(options[option]).read_text().splitlines()
         record[option] = lines
-        if option == "--summary-files":
+        if option in ("--summary-files", "--files-list"):
             for line in lines:
                 readable(line)
 if "--output-dir" in options:
@@ -260,7 +350,7 @@ def _cloud_mapping(directory):
     localized = directory / "localized ' \" $(touch INJECTION) `touch INJECTION` $HOME"
     localized.mkdir()
     mapping = {}
-    for filename in ("npx.tsv", "prepared.rds", "summary1.tsv", "summary2.tsv"):
+    for filename in ("npx.tsv", "prepared.rds", "summary1.tsv", "summary2.tsv", "pc_plan.tsv"):
         path = localized / filename
         path.write_text("fixture\n")
         mapping["gs://olink-bucket/" + filename] = str(path)
@@ -330,11 +420,18 @@ def test_olink_task_reports_unresolved_cloud_inputs_before_reading(tmp_path, tas
     command = _render_task(task_name, tmp_path, mapping, localize=False)
     # Replace only the container script path. Run the production CLI with each
     # rendered argument intact, so the error check does not test the probe.
-    command = (
-        "Rscript() { command " + shlex.quote(real_rscript) + " "
-        + shlex.quote(str(ROOT / "scripts" / "olink_outliers.R"))
-        + ' "${@:2}"; }\n' + command
-    )
+    if task_name == "CollectOlinkSummaries":
+        command = command.replace(
+            'source("/opt/olink/olink_outliers.R")',
+            "source(" + json.dumps(str(ROOT / "scripts" / "olink_outliers.R")) + ")",
+        )
+        command = 'Rscript() { command ' + shlex.quote(real_rscript) + ' "$@"; }\n' + command
+    else:
+        command = (
+            "Rscript() { command " + shlex.quote(real_rscript) + " "
+            + shlex.quote(str(ROOT / "scripts" / "olink_outliers.R"))
+            + ' "${@:2}"; }\n' + command
+        )
     result = subprocess.run(
         ["bash", "-c", command],
         cwd=tmp_path,

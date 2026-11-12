@@ -27,6 +27,7 @@ Optional inputs include:
 | `block_size` | `500` | Number of sample profiles in each bicor block. |
 | `prepare_cpu`, `prepare_memory_gb`, `prepare_disk_gb` | `8`, `128`, `500` | Resources for each of the two preparation tasks. |
 | `adjust_cpu`, `adjust_memory_gb`, `adjust_disk_gb` | `8`, `64`, `200` | Resources for each PC-count adjustment task. |
+| `collect_disk_gb` | `20` | Minimum collection disk size. It increases automatically to allow space for the localized final files and copies. |
 | `preemptible`, `max_retries` | `0`, `1` | GCP task settings. Preparation can be long, so preemption is disabled by default. |
 | `zones` | Four `us-central1` zones | GCP zones for task placement. |
 
@@ -50,9 +51,34 @@ The sample QC is shared across PC counts because it occurs before PC removal. Th
 
 For a grid of `k` counts, the workflow runs two preparation tasks and `2k` adjustment tasks, plus grid validation and summary collection. Shared preparation avoids repeated PCA; every adjustment still reads a prepared state and writes a complete matrix. Large grids increase storage and total compute use.
 
+Preparation and adjustment use two separate top-level scatters. The first prepares the two NPX types. The second runs a flat list of NPX type and PC-count combinations. It selects the matching prepared File for each combination. Both preparations finish before the adjustment stage starts. A final flat scatter assembles result records from the collected files; it does not launch a compute task. There are no nested scatters.
+
 ## Outputs
 
 `results` is an array of typed records. Each record contains `npx_type`, `pcs_removed`, and explicit File outputs for its matrix, protein calls, sample calls, undefined assays, and summary. These records link each matrix to the matching calls without relying on array positions.
+
+The collection task gathers all final files under one `collected/` directory. Measurement-specific files are grouped in `NPX/` and `PCNormalizedNPX/`. The existing workflow output fields point to these collected copies. `collected_files` returns the complete file list, including the shared PC plan, combined summary, and manifest.
+
+```text
+collected/
+  manifest.tsv
+  pc_plan.tsv
+  summary.tsv
+  NPX/
+    protein_z_scores.NPX.PCs2000.tsv.gz
+    protein_outliers.NPX.PCs2000.tsv.gz
+    ...
+  PCNormalizedNPX/
+    protein_z_scores.PCNormalizedNPX.PCs2000.tsv.gz
+    protein_outliers.PCNormalizedNPX.PCs2000.tsv.gz
+    ...
+```
+
+`manifest.tsv` contains `Measurement`, `PCs_removed`, `Output_type`, and `Relative_path`. Paths are relative to the directory containing the manifest, for example `NPX/protein_z_scores.NPX.PCs2000.tsv.gz`. Shared preparation files have an empty PC count. The PC plan and combined summary use measurement `shared`. Rows are sorted by measurement, numeric PC count, and output type. The manifest lists every final file except itself. It contains no cloud URIs or absolute paths.
+
+The collection task uses explicit typed File inputs and output paths known before execution. It does not rely on globs or file paths discovered inside JSON. Its disk allowance is at least twice the total final-file size plus 20 GiB. It attempts hard links within the task disk and falls back to copies. Prepared RDS files remain intermediate dependencies and are not included in the final collection.
+
+The combined `summary.tsv` also uses measurement-relative paths in its filename columns. The individual per-PC summaries stay with their matching measurement files.
 
 Examples for 3,499 PCs:
 
@@ -149,6 +175,8 @@ The WDL tests begin with cloud File values, replace them with localized paths, a
 GitHub Actions builds the micromamba image, checks that it runs as root with no entrypoint, and runs validation without an activation script. It then runs the R tests without network access and the complete WDL on synthetic data for both NPX types at PCs 0 and 2. It publishes that tested image on `main`. Image rebuilds are triggered by the bundled R script or its build definitions; documentation, WDL, and test edits do not rebuild the image automatically.
 
 The separate `Olink Published Image Startup` workflow checks an existing image without rebuilding it. It runs `validate` with a `/bin/bash` entrypoint, the image's default user, a writable task directory, one CPU, and a hard 2 GB memory limit without extra swap. It checks both validation output files. This test does not reproduce the Workbench network policy or the complete Batch VM.
+
+The `Olink R and WDL Checks` workflow also runs the complete synthetic WDL with the published `root-no-entrypoint` image. It checks both NPX types, PC counts 0 and 2, output filenames, and the links between result records and flat output arrays. It does not rebuild or publish an image.
 
 Local checks:
 
