@@ -82,6 +82,8 @@ docker.io/epadhi/rarevariantenrichment-olink:sha-<full-commit-sha>
 
 Both registries also receive the `main` tag after the tests pass. See the Docker Hub setup below before the first publication.
 
+The image runs as root and has no runtime entrypoint. `Rscript` is on `PATH`, so tasks can call R directly without an environment activation script. Micromamba installs the pinned R environment during the image build.
+
 The WDL defaults to `us-central1-docker.pkg.dev/wb-perky-tomato-1843/olink-images/rarevariantenrichment-olink:main`. This address is specific to that workspace project. Copy the tested image into that repository before using the default. Alternatively, after Docker Hub publication succeeds, set the optional `docker_image` input to `docker.io/epadhi/rarevariantenrichment-olink:main`. A fixed tag or digest selects a specific image version. The All of Us Docker guide documents Docker Hub and Google Artifact Registry image access. It does not require all WDL images to be copied into a workspace GAR repository.
 
 A Workbench Network policy restricts Batch VM internet access. Image access also depends on the registry route used by the workflow service. A generic task failure does not prove that a registry pull failed. Interactive apps and GitHub Actions have different network access, so a successful image pull there does not prove that a Batch VM can pull it. See [Workbench network policy and container access](https://support.workbench.verily.com/docs/guides/governance/network_policy/).
@@ -91,19 +93,20 @@ A Workbench Network policy restricts Batch VM internet access. Image access also
 1. Create a public Docker Hub repository named `epadhi/rarevariantenrichment-olink`.
 2. Create a Docker personal access token with **Read & Write** permission. See [Docker access tokens](https://docs.docker.com/security/access-tokens/).
 3. In this GitHub repository, open **Settings → Secrets and variables → Actions**. Add two repository secrets: `DOCKERHUB_USERNAME` with value `epadhi`, and `DOCKERHUB_TOKEN` with the token value. See [GitHub repository secrets](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets#creating-secrets-for-a-repository). Do not commit the token to a file or paste it into an issue.
-4. After these workflow changes reach `main`, open **Actions → Olink Docker Hub Publish → Run workflow**. Select `main`. Keep the default `source_sha` to copy the existing tested image, or enter the full commit SHA of another tested Olink image in GHCR.
+4. After these workflow changes reach `main`, open **Actions → Olink Docker Hub Publish → Run workflow**. Select `main`. Enter the full commit SHA of the Olink image that passed Image CI. Use a run that built the current Dockerfile. There is no default SHA, so this step cannot silently select the previous startup configuration.
 5. Check that the run succeeds. It copies the selected image with `main` and `sha-<source_sha>` tags and checks that the published image ID matches the source. It does not build an image or start an All of Us job.
 
 Future Olink image builds publish the same tested image to GHCR and Docker Hub. Changes to documentation, WDL files, tests, or publishing configuration do not trigger an image rebuild. Use the manual copy workflow to retry Docker Hub publication if GHCR publication succeeded but Docker Hub publication failed.
 
 ### Optional copy into Google Artifact Registry
 
-Run the following from an interactive environment that can reach both registries and has a working Docker daemon. The destination repository must already exist. The source digest selects the image that passed the published-image startup check. No image is built:
+Run the following from an interactive environment that can reach both registries and has a working Docker daemon. The destination repository must already exist. First set `OLINK_TESTED_DIGEST` to the `sha256:...` digest from the successful Image CI run that built the current Dockerfile. The earlier image digest uses the previous startup configuration. No image is built by this copy:
 
 ```bash
 (
   set -euo pipefail
-  olink_source='ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink@sha256:c682dc2ffb47da00a024580b4f1346368ed12fcda6b46663c520d69a9fb37a6a'
+  : "${OLINK_TESTED_DIGEST:?Set OLINK_TESTED_DIGEST to the tested image digest from Image CI}"
+  olink_source="ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink@${OLINK_TESTED_DIGEST}"
   olink_target='us-central1-docker.pkg.dev/wb-perky-tomato-1843/olink-images/rarevariantenrichment-olink:main'
 
   docker info >/dev/null
@@ -143,7 +146,7 @@ The R tests compare PCA-prefix residuals with an independent QR regression. They
 
 The WDL tests begin with cloud File values, replace them with localized paths, and execute rendered commands. They include spaces, quotes, and shell characters. Production CLI checks reject unresolved cloud URIs before opening files. An AST check rejects workflow-scope `write_lines`, `write_tsv`, `write_map`, and `write_json`, including nested expressions and imported workflows.
 
-GitHub Actions builds the micromamba image, runs the R tests without network access, and runs the complete WDL on synthetic data for both NPX types at PCs 0 and 2. It publishes that tested image on `main`. Image rebuilds are triggered by the bundled R script or its build definitions; documentation, WDL, and test edits do not rebuild the image automatically.
+GitHub Actions builds the micromamba image, checks that it runs as root with no entrypoint, and runs validation without an activation script. It then runs the R tests without network access and the complete WDL on synthetic data for both NPX types at PCs 0 and 2. It publishes that tested image on `main`. Image rebuilds are triggered by the bundled R script or its build definitions; documentation, WDL, and test edits do not rebuild the image automatically.
 
 The separate `Olink Published Image Startup` workflow checks an existing image without rebuilding it. It runs `validate` with a `/bin/bash` entrypoint, the image's default user, a writable task directory, one CPU, and a hard 2 GB memory limit without extra swap. It checks both validation output files. This test does not reproduce the Workbench network policy or the complete Batch VM.
 

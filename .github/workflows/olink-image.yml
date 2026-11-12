@@ -46,6 +46,33 @@ jobs:
           cache-from: type=gha,scope=olink
           cache-to: type=gha,mode=max,scope=olink
 
+      - name: Check the image defaults and direct Rscript startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "[olink-ci] Check the default user and entrypoint"
+          image_user=$(docker image inspect "$TEST_IMAGE" --format '{{.Config.User}}')
+          image_entrypoint=$(docker image inspect "$TEST_IMAGE" --format '{{json .Config.Entrypoint}}')
+          test "$image_user" = root
+          case "$image_entrypoint" in
+            null|'[]') ;;
+            *) echo "::error::The image must have no entrypoint."; exit 1 ;;
+          esac
+          echo "[olink-ci] Run validation without an entrypoint override or activation script"
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:rw,exec,size=1g,mode=1777 \
+            --workdir /tmp \
+            "$TEST_IMAGE" /bin/bash -c '
+              set -euo pipefail
+              test "$(id -u)" = 0
+              command -v Rscript
+              Rscript --version
+              Rscript /opt/olink/olink_outliers.R validate \
+                --pc-counts 0,2 --output-dir /tmp/olink-startup
+              test "$(cat /tmp/olink-startup/max_pcs.txt)" = 2
+              test -s /tmp/olink-startup/pc_plan.tsv
+            '
+
       - name: Test the image without network access
         shell: bash
         run: |

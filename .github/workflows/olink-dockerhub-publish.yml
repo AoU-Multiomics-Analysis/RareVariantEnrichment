@@ -6,7 +6,6 @@ on:
       source_sha:
         description: Commit SHA of a tested Olink image published to GHCR
         required: true
-        default: fbf2f9a8bc7fab53bca8ac8fb43819c66fac4137
         type: string
 
 permissions:
