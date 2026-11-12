@@ -3,6 +3,7 @@
 <!-- workflow-badges:start -->
 [![Docker Image CI](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/docker-image.yml/badge.svg)](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/docker-image.yml)
 [![Olink R and WDL Checks](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/olink-checks.yml/badge.svg)](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/olink-checks.yml)
+[![Olink Docker Hub Publish](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/olink-dockerhub-publish.yml/badge.svg)](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/olink-dockerhub-publish.yml)
 [![Olink Image CI](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/olink-image.yml/badge.svg)](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/olink-image.yml)
 [![Olink Published Image Startup](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/olink-startup-check.yml/badge.svg)](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/olink-startup-check.yml)
 [![Python tests](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/python-tests.yml/badge.svg)](https://github.com/AoU-Multiomics-Analysis/RareVariantEnrichment/actions/workflows/python-tests.yml)

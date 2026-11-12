@@ -47,6 +47,16 @@ def check_outputs(outputs: dict) -> None:
     assert len(results) == 4, results
     expected = {(metric, count) for metric in ("NPX", "PCNormalizedNPX") for count in (0, 2)}
     assert {(item["npx_type"], item["pcs_removed"]) for item in results} == expected
+    for output, member in {
+        "z_score_matrices": "z_scores",
+        "protein_outlier_files": "protein_outliers",
+        "sample_outlier_files": "sample_outliers",
+        "undefined_residual_assay_files": "undefined_residual_assays",
+        "run_summaries": "summary",
+    }.items():
+        assert [Path(path).resolve() for path in outputs[prefix + output]] == [
+            Path(item[member]).resolve() for item in results
+        ]
     vectors = {}
     for item in results:
         metric, count = item["npx_type"], item["pcs_removed"]
@@ -76,7 +86,36 @@ def check_outputs(outputs: dict) -> None:
         assert vectors[metric, 0] != vectors[metric, 2]
     summary = read_table(outputs[prefix + "summary"])
     assert len(summary) == 4, summary
+    assert {(row["NPX_type"], int(row["PCs_removed"])) for row in summary} == expected
     assert len(outputs[prefix + "sample_qc_files"]) == 2
+    # miniwdl can expose output symlinks in separate per-variable directories.
+    # Resolve the manifest to locate the physical collection directory.
+    manifest_path = Path(outputs[prefix + "manifest"]).resolve()
+    collection_root = manifest_path.parent
+    manifest = read_table(str(manifest_path))
+    relative_paths = [row["Relative_path"] for row in manifest]
+    assert len(relative_paths) == len(set(relative_paths))
+    assert len(manifest) == 30, manifest
+    for relative in relative_paths:
+        path = Path(relative)
+        assert not path.is_absolute() and ".." not in path.parts
+        assert (collection_root / path).is_file(), relative
+    for item in results:
+        for member in ("z_scores", "protein_outliers", "sample_outliers",
+                       "undefined_residual_assays", "summary"):
+            relative = Path(item[member]).resolve().relative_to(collection_root).as_posix()
+            assert relative.startswith(item["npx_type"] + "/")
+            assert relative in relative_paths
+    collected = {
+        Path(path).resolve().relative_to(collection_root).as_posix()
+        for path in outputs[prefix + "collected_files"]
+    }
+    assert collected == set(relative_paths) | {"manifest.tsv"}
+    for row in summary:
+        for name, relative in row.items():
+            if name.endswith("_file"):
+                assert relative.startswith(row["NPX_type"] + "/"), relative
+                assert relative in relative_paths
 
 
 def main() -> None:

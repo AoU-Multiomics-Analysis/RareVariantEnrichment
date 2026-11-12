@@ -17,6 +17,7 @@ on:
 
 env:
   IMAGE_NAME: ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink
+  DOCKERHUB_IMAGE: docker.io/epadhi/rarevariantenrichment-olink
   TEST_IMAGE: olink-ci:${{ github.sha }}
 
 jobs:
@@ -44,6 +45,33 @@ jobs:
           tags: ${{ env.TEST_IMAGE }}
           cache-from: type=gha,scope=olink
           cache-to: type=gha,mode=max,scope=olink
+
+      - name: Check the image defaults and direct Rscript startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "[olink-ci] Check the default user and entrypoint"
+          image_user=$(docker image inspect "$TEST_IMAGE" --format '{{.Config.User}}')
+          image_entrypoint=$(docker image inspect "$TEST_IMAGE" --format '{{json .Config.Entrypoint}}')
+          test "$image_user" = root
+          case "$image_entrypoint" in
+            null|'[]') ;;
+            *) echo "::error::The image must have no entrypoint."; exit 1 ;;
+          esac
+          echo "[olink-ci] Run validation without an entrypoint override or activation script"
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:rw,exec,size=1g,mode=1777 \
+            --workdir /tmp \
+            "$TEST_IMAGE" /bin/bash -c '
+              set -euo pipefail
+              test "$(id -u)" = 0
+              command -v Rscript
+              Rscript --version
+              Rscript /opt/olink/olink_outliers.R validate \
+                --pc-counts 0,2 --output-dir /tmp/olink-startup
+              test "$(cat /tmp/olink-startup/max_pcs.txt)" = 2
+              test -s /tmp/olink-startup/pc_plan.tsv
+            '
 
       - name: Test the image without network access
         shell: bash
@@ -89,7 +117,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish the tested image
+      - name: Publish the tested image to GHCR
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         shell: bash
         run: |
@@ -100,4 +128,36 @@ jobs:
             docker push "${IMAGE_NAME}:${tag}"
           done
           docker image inspect "${IMAGE_NAME}:sha-${GITHUB_SHA}" \
+            --format '{{range .RepoDigests}}{{println .}}{{end}}' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check Docker Hub credentials
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error::Add the DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets."
+            exit 1
+          fi
+
+      - name: Log in to Docker Hub
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Publish the tested image to Docker Hub
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          echo "[olink-ci] Publish the same tested image to Docker Hub"
+          for tag in "sha-${GITHUB_SHA}" main; do
+            docker tag "$TEST_IMAGE" "${DOCKERHUB_IMAGE}:${tag}"
+            docker push "${DOCKERHUB_IMAGE}:${tag}"
+          done
+          docker image inspect "${DOCKERHUB_IMAGE}:sha-${GITHUB_SHA}" \
             --format '{{range .RepoDigests}}{{println .}}{{end}}' >> "$GITHUB_STEP_SUMMARY"

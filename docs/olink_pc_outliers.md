@@ -19,7 +19,7 @@ Optional inputs include:
 
 | Input | Default | Meaning |
 | --- | --- | --- |
-| `docker_image` | `us-central1-docker.pkg.dev/wb-perky-tomato-1843/olink-images/rarevariantenrichment-olink:main` | Image used by all tasks. Copy the tested image into this repository before use. Override the address for another workspace or image version. |
+| `docker_image` | `docker.io/epadhi/rarevariantenrichment-olink:root-no-entrypoint` | Image used by all tasks. This is the image that passed the user's minimal Workbench workflow. Override the address to select another image version or registry. |
 | `excluded_assays` | `["GBP1", "MAP2K1"]` | Assays excluded before missingness checks. An empty array excludes none. |
 | `strip_sample_suffix` | `true` | Remove the suffix from the first underscore in each sample ID, as in the original R code. |
 | `connectivity_cutoff` | `-3.0` | Remove samples with connectivity Z scores strictly below this value. |
@@ -27,6 +27,7 @@ Optional inputs include:
 | `block_size` | `500` | Number of sample profiles in each bicor block. |
 | `prepare_cpu`, `prepare_memory_gb`, `prepare_disk_gb` | `8`, `128`, `500` | Resources for each of the two preparation tasks. |
 | `adjust_cpu`, `adjust_memory_gb`, `adjust_disk_gb` | `8`, `64`, `200` | Resources for each PC-count adjustment task. |
+| `collect_disk_gb` | `20` | Minimum collection disk size. It increases automatically to allow space for the localized final files and copies. |
 | `preemptible`, `max_retries` | `0`, `1` | GCP task settings. Preparation can be long, so preemption is disabled by default. |
 | `zones` | Four `us-central1` zones | GCP zones for task placement. |
 
@@ -50,9 +51,34 @@ The sample QC is shared across PC counts because it occurs before PC removal. Th
 
 For a grid of `k` counts, the workflow runs two preparation tasks and `2k` adjustment tasks, plus grid validation and summary collection. Shared preparation avoids repeated PCA; every adjustment still reads a prepared state and writes a complete matrix. Large grids increase storage and total compute use.
 
+Preparation and adjustment use two separate top-level scatters. The first prepares the two NPX types. The second runs a flat list of NPX type and PC-count combinations. It selects the matching prepared File for each combination. Both preparations finish before the adjustment stage starts. A final flat scatter assembles result records from the collected files; it does not launch a compute task. There are no nested scatters.
+
 ## Outputs
 
 `results` is an array of typed records. Each record contains `npx_type`, `pcs_removed`, and explicit File outputs for its matrix, protein calls, sample calls, undefined assays, and summary. These records link each matrix to the matching calls without relying on array positions.
+
+The collection task gathers all final files under one `collected/` directory. Measurement-specific files are grouped in `NPX/` and `PCNormalizedNPX/`. The existing workflow output fields point to these collected copies. `collected_files` returns the complete file list, including the shared PC plan, combined summary, and manifest.
+
+```text
+collected/
+  manifest.tsv
+  pc_plan.tsv
+  summary.tsv
+  NPX/
+    protein_z_scores.NPX.PCs2000.tsv.gz
+    protein_outliers.NPX.PCs2000.tsv.gz
+    ...
+  PCNormalizedNPX/
+    protein_z_scores.PCNormalizedNPX.PCs2000.tsv.gz
+    protein_outliers.PCNormalizedNPX.PCs2000.tsv.gz
+    ...
+```
+
+`manifest.tsv` contains `Measurement`, `PCs_removed`, `Output_type`, and `Relative_path`. Paths are relative to the directory containing the manifest, for example `NPX/protein_z_scores.NPX.PCs2000.tsv.gz`. Shared preparation files have an empty PC count. The PC plan and combined summary use measurement `shared`. Rows are sorted by measurement, numeric PC count, and output type. The manifest lists every final file except itself. It contains no cloud URIs or absolute paths.
+
+The collection task uses explicit typed File inputs and output paths known before execution. It does not rely on globs or file paths discovered inside JSON. Its disk allowance is at least twice the total final-file size plus 20 GiB. It attempts hard links within the task disk and falls back to copies. Prepared RDS files remain intermediate dependencies and are not included in the final collection.
+
+The combined `summary.tsv` also uses measurement-relative paths in its filename columns. The individual per-PC summaries stay with their matching measurement files.
 
 Examples for 3,499 PCs:
 
@@ -73,22 +99,40 @@ The workflow also returns per-type sample QC, assay exclusions, preparation summ
 
 All of Us uses Google Batch for batch execution. Its documentation describes restricted internet access from batch VMs and registry-specific image access. This image contains the R script and packages, so tasks do not install software or fetch code from GitHub. See [batch processing](https://support.researchallofus.org/hc/en-us/articles/4692418691732-Overview-of-Batch-Processing) and [Docker images in Workbench](https://support.researchallofus.org/hc/en-us/articles/21179878475028-Using-Docker-Images-on-the-Workbench).
 
-The dedicated GitHub Actions job publishes the tested Linux AMD64 image as:
+The dedicated GitHub Actions job publishes the tested Linux AMD64 image to both registries:
 
 ```text
 ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink:sha-<full-commit-sha>
+docker.io/epadhi/rarevariantenrichment-olink:sha-<full-commit-sha>
 ```
 
-The workflow defaults to `us-central1-docker.pkg.dev/wb-perky-tomato-1843/olink-images/rarevariantenrichment-olink:main`. This address is specific to that workspace project. Copy the tested image into this standard Docker repository before running the workflow. For another workspace, set the optional `docker_image` input to an approved image address. A fixed tag or digest selects a specific image version. The documented All of Us Docker Hub proxy is specific to Docker Hub; do not prepend that proxy to a GHCR address.
+Both registries also receive the `main` tag after the tests pass. See the Docker Hub setup below before the first publication.
 
-If the workspace has a Network policy, Batch VMs cannot contact GHCR directly. Use an approved Google Artifact Registry address for `docker_image`. Interactive apps and GitHub Actions have different network access, so a successful image pull there does not prove that a Batch VM can pull it. See [Workbench network policy and container access](https://support.workbench.verily.com/docs/guides/governance/network_policy/).
+The image runs as root and has no runtime entrypoint. `Rscript` is on `PATH`, so tasks can call R directly without an environment activation script. Micromamba installs the pinned R environment during the image build.
 
-Run the following from an interactive environment that can reach both registries and has a working Docker daemon. The destination repository must already exist. The source digest selects the image that passed the published-image startup check. No image is built:
+The WDL defaults to `docker.io/epadhi/rarevariantenrichment-olink:root-no-entrypoint`. The user reported that a minimal Workbench workflow passed with this image. Its digest is `sha256:bd3a69b1aad32966959fb4eb68f883afe48fd1a6ba64a29530a710ef659e97ef`. All four tasks use this workflow input. Set the optional `docker_image` input to select another image version or registry. The All of Us Docker guide documents Docker Hub and Google Artifact Registry image access. It does not require all WDL images to be copied into a workspace GAR repository.
+
+A Workbench Network policy restricts Batch VM internet access. Image access also depends on the registry route used by the workflow service. A generic task failure does not prove that a registry pull failed. Interactive apps and GitHub Actions have different network access, so a successful image pull there does not prove that a Batch VM can pull it. See [Workbench network policy and container access](https://support.workbench.verily.com/docs/guides/governance/network_policy/).
+
+### Docker Hub publication
+
+1. Create a public Docker Hub repository named `epadhi/rarevariantenrichment-olink`.
+2. Create a Docker personal access token with **Read & Write** permission. See [Docker access tokens](https://docs.docker.com/security/access-tokens/).
+3. In this GitHub repository, open **Settings → Secrets and variables → Actions**. Add two repository secrets: `DOCKERHUB_USERNAME` with value `epadhi`, and `DOCKERHUB_TOKEN` with the token value. See [GitHub repository secrets](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets#creating-secrets-for-a-repository). Do not commit the token to a file or paste it into an issue.
+4. After these workflow changes reach `main`, open **Actions → Olink Docker Hub Publish → Run workflow**. Select `main`. Enter the full commit SHA of the Olink image that passed Image CI. Use a run that built the current Dockerfile. There is no default SHA, so this step cannot silently select the previous startup configuration.
+5. Check that the run succeeds. It copies the selected image with `main` and `sha-<source_sha>` tags and checks that the published image ID matches the source. It does not build an image or start an All of Us job.
+
+Future Olink image builds publish the same tested image to GHCR and Docker Hub. Changes to documentation, WDL files, tests, or publishing configuration do not trigger an image rebuild. Use the manual copy workflow to retry Docker Hub publication if GHCR publication succeeded but Docker Hub publication failed.
+
+### Optional copy into Google Artifact Registry
+
+Run the following from an interactive environment that can reach both registries and has a working Docker daemon. The destination repository must already exist. First set `OLINK_TESTED_DIGEST` to the `sha256:...` digest from the successful Image CI run that built the current Dockerfile. The earlier image digest uses the previous startup configuration. No image is built by this copy:
 
 ```bash
 (
   set -euo pipefail
-  olink_source='ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink@sha256:c682dc2ffb47da00a024580b4f1346368ed12fcda6b46663c520d69a9fb37a6a'
+  : "${OLINK_TESTED_DIGEST:?Set OLINK_TESTED_DIGEST to the tested image digest from Image CI}"
+  olink_source="ghcr.io/aou-multiomics-analysis/rarevariantenrichment-olink@${OLINK_TESTED_DIGEST}"
   olink_target='us-central1-docker.pkg.dev/wb-perky-tomato-1843/olink-images/rarevariantenrichment-olink:main'
 
   docker info >/dev/null
@@ -110,7 +154,7 @@ The account that copies the image needs write access to the repository. The work
 
 ### Current Workbench interface
 
-In the Workflows interface, add `workflows/olink_pc_outliers.wdl` from GitHub or upload this single WDL to a workspace bucket. Create a job, supply the two required inputs, and select a workspace bucket and folder for outputs. Use the actual storage URI for `npx_file`. The image defaults to the GAR `:main` address above; no image entry is required after that image has been copied. Remove any saved GHCR override to use this default. If you enter an override in the form, use plain text without surrounding quotes. JSON input files require JSON string quotes. Review the job settings before starting it. See [Workbench Cromwell instructions](https://support.workbench.verily.com/docs/guides/workflows/cromwell/).
+In the Workflows interface, add `workflows/olink_pc_outliers.wdl` from GitHub or upload this single WDL to a workspace bucket. Create a job, supply the two required inputs, and select a workspace bucket and folder for outputs. Use the actual storage URI for `npx_file`. The image defaults to the Docker Hub `:root-no-entrypoint` tag above. Clear any saved `docker_image` override to use this default, or set it to the same working tag. If you enter an override in the form, use plain text without surrounding quotes. JSON input files require JSON string quotes. Review the job settings before starting it. See [Workbench Cromwell instructions](https://support.workbench.verily.com/docs/guides/workflows/cromwell/).
 
 ### Earlier Cromwell application interface
 
@@ -128,9 +172,11 @@ The R tests compare PCA-prefix residuals with an independent QR regression. They
 
 The WDL tests begin with cloud File values, replace them with localized paths, and execute rendered commands. They include spaces, quotes, and shell characters. Production CLI checks reject unresolved cloud URIs before opening files. An AST check rejects workflow-scope `write_lines`, `write_tsv`, `write_map`, and `write_json`, including nested expressions and imported workflows.
 
-GitHub Actions builds the micromamba image, runs the R tests without network access, and runs the complete WDL on synthetic data for both NPX types at PCs 0 and 2. It publishes that tested image on `main`. Image rebuilds are triggered by the bundled R script or its build definitions; documentation, WDL, and test edits do not rebuild the image automatically.
+GitHub Actions builds the micromamba image, checks that it runs as root with no entrypoint, and runs validation without an activation script. It then runs the R tests without network access and the complete WDL on synthetic data for both NPX types at PCs 0 and 2. It publishes that tested image on `main`. Image rebuilds are triggered by the bundled R script or its build definitions; documentation, WDL, and test edits do not rebuild the image automatically.
 
 The separate `Olink Published Image Startup` workflow checks an existing image without rebuilding it. It runs `validate` with a `/bin/bash` entrypoint, the image's default user, a writable task directory, one CPU, and a hard 2 GB memory limit without extra swap. It checks both validation output files. This test does not reproduce the Workbench network policy or the complete Batch VM.
+
+The `Olink R and WDL Checks` workflow also runs the complete synthetic WDL with the published `root-no-entrypoint` image. It checks both NPX types, PC counts 0 and 2, output filenames, and the links between result records and flat output arrays. It does not rebuild or publish an image.
 
 Local checks:
 

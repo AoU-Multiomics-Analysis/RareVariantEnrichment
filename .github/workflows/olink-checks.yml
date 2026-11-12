@@ -10,6 +10,7 @@ on:
       - "envs/olink-environment.yml"
       - "tests/olink/**"
       - "tests/test_olink_wdl.py"
+      - "tests/test_olink_collection.py"
       - "tools/check_workflow_file_writes.py"
       - "tools/smoke_olink_wdl.py"
   pull_request:
@@ -20,6 +21,7 @@ on:
       - "envs/olink-environment.yml"
       - "tests/olink/**"
       - "tests/test_olink_wdl.py"
+      - "tests/test_olink_collection.py"
       - "tools/check_workflow_file_writes.py"
       - "tools/smoke_olink_wdl.py"
 
@@ -34,6 +36,7 @@ jobs:
       OLINK_SCRIPT: scripts/olink_outliers.R
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
+      OLINK_TEST_IMAGE: docker.io/epadhi/rarevariantenrichment-olink:root-no-entrypoint
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -72,4 +75,18 @@ jobs:
         run: |
           set -euo pipefail
           echo "[olink-checks] Run WDL checks with R on PATH"
-          "${{ steps.python.outputs.python-path }}" -m pytest -q tests/test_olink_wdl.py
+          "${{ steps.python.outputs.python-path }}" -m pytest -q tests/test_olink_wdl.py tests/test_olink_collection.py
+
+      - name: Test the complete WDL with the published working image
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "[olink-checks] Pull the published image without rebuilding it"
+          docker pull "$OLINK_TEST_IMAGE"
+          echo "[olink-checks] Start Docker Swarm for miniwdl"
+          if [ "$(docker info --format '{{.Swarm.LocalNodeState}}')" != "active" ]; then
+            docker swarm init --advertise-addr 127.0.0.1
+          fi
+          echo "[olink-checks] Run both NPX types at PCs 0 and 2"
+          "${{ steps.python.outputs.python-path }}" tools/smoke_olink_wdl.py \
+            --image "$OLINK_TEST_IMAGE"
