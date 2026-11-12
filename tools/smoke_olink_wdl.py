@@ -54,7 +54,9 @@ def check_outputs(outputs: dict) -> None:
         "undefined_residual_assay_files": "undefined_residual_assays",
         "run_summaries": "summary",
     }.items():
-        assert outputs[prefix + output] == [item[member] for item in results]
+        assert [Path(path).resolve() for path in outputs[prefix + output]] == [
+            Path(item[member]).resolve() for item in results
+        ]
     vectors = {}
     for item in results:
         metric, count = item["npx_type"], item["pcs_removed"]

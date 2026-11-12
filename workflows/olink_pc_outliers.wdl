@@ -100,9 +100,10 @@ workflow OlinkPcOutliers {
 
     # Assemble records from the collected File outputs; this starts no tasks.
     scatter (result_index in range(length(adjustment_grid))) {
+        Pair[Int, Int] result_setting = adjustment_grid[result_index]
         OlinkPcResult result = object {
-            npx_type: metrics[adjustment_grid[result_index].left],
-            pcs_removed: adjustment_grid[result_index].right,
+            npx_type: metrics[result_setting.left],
+            pcs_removed: result_setting.right,
             z_scores: CollectOlinkSummaries.z_score_matrices[result_index],
             protein_outliers: CollectOlinkSummaries.protein_outlier_files[result_index],
             sample_outliers: CollectOlinkSummaries.sample_outlier_files[result_index],
